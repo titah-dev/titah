@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { PassThrough } from "node:stream"
 import test from "node:test"
 import { createElement } from "react"
@@ -160,7 +163,25 @@ interface Harness {
   cleanup: () => void
 }
 
-function mount(options: { agents?: string[]; defaultAgent?: string } = {}): Harness {
+/** Direktori skill sungguhan di disk sementara, untuk memicu popup "Insert skill". */
+function tree(spec: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-tui-skill-"))
+  for (const [relative, content] of Object.entries(spec)) {
+    const full = path.join(root, relative)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, content)
+  }
+  return root
+}
+
+function mount(
+  options: {
+    agents?: string[]
+    defaultAgent?: string
+    /** discover: [] tetap wajib — kalau tidak, test ini membaca ~/.claude sungguhan. */
+    skillPaths?: { path: string; as: string }[]
+  } = {},
+): Harness {
   const stdin = new FakeStdin()
   const mouse = createMouseSource()
   const captureLog: boolean[] = []
@@ -203,6 +224,10 @@ function mount(options: { agents?: string[]; defaultAgent?: string } = {}): Harn
             models: { "m1": {}, "m2": {} },
           },
         },
+        // discover: [] di semua test, bukan hanya yang menyentuh skill — supaya
+        // menambah skill ke satu test tidak diam-diam membuat SEMUA test lain
+        // mulai membaca ~/.claude atau ~/.config/opencode sungguhan.
+        skills: { discover: [], paths: options.skillPaths ?? [] },
       }),
       ...(options.agents ? { agents: options.agents } : {}),
       ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
@@ -607,6 +632,42 @@ test("/model membuka pemilih model dan pilihannya dipakai giliran berikutnya", a
     h.stdin.press("\r")
     await tick()
     assert.equal(h.recorded.sent.length, 1, "prompt biasa tetap terkirim setelahnya")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("memilih skill dari popup MENGGANTI draft, bukan menambahkannya setelah teks yang sudah ada", async () => {
+  // Regresi konkret: popup "Insert skill" (fromMenu) tidak menyaring lewat
+  // ketikan tambahan — tombol biasa jatuh ke editor di baliknya (baris 556-557).
+  // Jadi draft BISA berisi teks sebelum sebuah skill dipilih, dan memilihnya
+  // harus MENGGANTI teks itu, bukan menambahkannya — kalau tidak, command
+  // skill mendarat di tengah kalimat dan tidak pernah ditafsirkan sebagai
+  // command (`/` hanya berlaku di awal baris).
+  const skillDir = tree({ "a/SKILL.md": "---\nname: a\n---\nisi" })
+  const h = mount({ skillPaths: [{ path: skillDir, as: "ns" }] })
+  try {
+    await tick()
+    for (const ch of "/skill") h.stdin.press(ch)
+    await tick()
+    h.stdin.press("\r") // buka popup "Insert skill"; draft dikosongkan di sini
+    await tick()
+    assert.match(h.frame(), /Insert skill/)
+
+    for (const ch of "oops ") h.stdin.press(ch) // "teks yang sudah ada" — masuk diam-diam ke draft
+    await tick()
+
+    h.stdin.press("\r") // pilih satu-satunya skill di daftar
+    await tick()
+
+    h.stdin.press("\r") // kirim, supaya isi draft yang sebenarnya bisa diperiksa
+    await tick()
+
+    assert.deepEqual(
+      h.recorded.sent.map((item) => item.text),
+      ["/ns:a"],
+      "draft harus PERSIS command skill, tanpa sisa \"oops\" di depannya",
+    )
   } finally {
     h.cleanup()
   }
