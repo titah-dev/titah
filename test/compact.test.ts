@@ -133,6 +133,13 @@ test("instruksi peringkas melarang mengarang, dan itu aturan pertamanya", () => 
   assert.match(COMPACT_SYSTEM, /unresolved/)
 })
 
+test("peringkas diminta mencatat skill, bukan menyalin ulang isinya", () => {
+  // Sebuah skill 9 KB yang disalin utuh ke ringkasan membatalkan seluruh gunanya
+  // memadatkan konteks.
+  assert.match(COMPACT_SYSTEM, /<skill/)
+  assert.match(COMPACT_SYSTEM, /which skills were loaded/i)
+})
+
 test("fokus dari user menajamkan ringkasan tanpa membuang sisanya", () => {
   const dengan = compactPrompt("transkrip", "keputusan soal skema")
   assert.match(dengan, /keputusan soal skema/)
