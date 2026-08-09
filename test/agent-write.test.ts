@@ -11,6 +11,11 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "titah-aw-"))
 process.env.XDG_DATA_HOME = path.join(root, "data")
 process.env.XDG_CONFIG_HOME = path.join(root, "config")
 process.env.TITAH_DB = path.join(root, "aw.db")
+// prompt() memanggil buildSystemPrompt di setiap giliran, dan config di sini
+// tidak mematikan skills.discover — jadi claudeSources akan membaca $HOME
+// sungguhan kalau HOME tidak diisolasi juga. XDG_CONFIG_HOME tidak cukup:
+// claudeSources baca <home>/.claude langsung, tidak lewat variabel XDG apa pun.
+process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver } = await import("../src/core/agent.ts")
 const { createSession, listMessages } = await import("../src/core/storage/session.ts")

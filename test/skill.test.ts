@@ -160,6 +160,10 @@ test("id kembar: yang pertama menang DAN konfliknya dicatat", () => {
   assert.equal(index.skills[0]?.body, "pertama")
   assert.equal(index.conflicts.length, 1)
   assert.equal(index.conflicts[0]?.id, "ns:sama")
+  // kept/dropped adalah yang ditunjukkan ke user di /skills dan titah doctor —
+  // kalau tertukar, penjelasan bentroknya jadi salah tanpa test manapun sadar.
+  assert.equal(index.conflicts[0]?.kept, path.join(root, "a", "skills", "sama", "SKILL.md"))
+  assert.equal(index.conflicts[0]?.dropped, path.join(root, "b", "skills", "sama", "SKILL.md"))
 })
 
 test("katalog memakai id lengkap, karena itu yang harus diketik user", () => {

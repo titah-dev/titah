@@ -8,6 +8,11 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "titah-del-")
 process.env.XDG_DATA_HOME = path.join(root, "data")
 process.env.XDG_CONFIG_HOME = path.join(root, "config")
 process.env.TITAH_DB = path.join(root, "del.db")
+// prompt() memanggil buildSystemPrompt di setiap giliran, dan config di sini
+// tidak mematikan skills.discover — jadi claudeSources akan membaca $HOME
+// sungguhan kalau HOME tidak diisolasi juga. XDG_CONFIG_HOME tidak cukup:
+// claudeSources baca <home>/.claude langsung, tidak lewat variabel XDG apa pun.
+process.env.HOME = path.join(root, "home")
 
 const STUB = path.join(import.meta.dirname, "fixtures", "stub-agent.js")
 const project = path.join(root, "proyek")

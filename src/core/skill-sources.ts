@@ -56,8 +56,20 @@ export function claudeSources(home = os.homedir()): SkillSource[] {
   return out
 }
 
+/**
+ * Direktori config dasar, mengikuti aturan yang sama dengan src/core/paths.ts:
+ * XDG_CONFIG_HOME kalau diisi, jika tidak `<home>/.config`.
+ *
+ * Tanpa ini, user yang mengatur XDG_CONFIG_HOME ke tempat lain kehilangan skill
+ * opencode-nya secara diam-diam — bukan cuma soal test, itu bug produksi.
+ */
+function xdgConfigHome(home: string): string {
+  const fromEnv = process.env["XDG_CONFIG_HOME"]
+  return fromEnv && fromEnv.trim() !== "" ? fromEnv : path.join(home, ".config")
+}
+
 export function opencodeSources(home = os.homedir()): SkillSource[] {
-  const config = readJSON(path.join(home, ".config", "opencode", "opencode.json"))
+  const config = readJSON(path.join(xdgConfigHome(home), "opencode", "opencode.json"))
   if (config === null || typeof config !== "object") return []
 
   const paths = (config as { skills?: { paths?: unknown } }).skills?.paths
