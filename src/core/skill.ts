@@ -11,10 +11,19 @@ import type { Config } from "./schema.ts"
  */
 
 export interface Skill {
+  /** `namespace:name` — satu-satunya bentuk yang dipakai memanggil skill. */
+  id: string
+  namespace: string
   name: string
   description: string
   body: string
   file: string
+}
+
+/** Satu direktori skill beserta namespace yang mewakilinya. */
+export interface SkillSource {
+  root: string
+  namespace: string
 }
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/
@@ -41,7 +50,7 @@ export function parseFrontmatter(content: string): {
   return { fields, body: content.slice(match[0].length) }
 }
 
-function readSkill(file: string, fallbackName: string): Skill | undefined {
+function readSkill(file: string, fallbackName: string, namespace: string): Skill | undefined {
   let content: string
   try {
     content = fs.readFileSync(file, "utf8")
@@ -49,42 +58,89 @@ function readSkill(file: string, fallbackName: string): Skill | undefined {
     return undefined
   }
   const { fields, body } = parseFrontmatter(content)
+  const name = fields["name"] ?? fallbackName
   return {
-    name: fields["name"] ?? fallbackName,
+    id: `${namespace}:${name}`,
+    namespace,
+    name,
     description: fields["description"] ?? "",
     body: body.trim(),
     file,
   }
 }
 
-export function discoverSkills(config: Config, cwd: string): Skill[] {
-  const found = new Map<string, Skill>()
+/**
+ * Menentukan namespace sebuah direktori skill.
+ *
+ * Manifes plugin menang karena ia otoritatif. Kalau tidak ada, nama folder
+ * dipakai — kecuali foldernya bernama `skills`, yang tidak memberi tahu apa pun,
+ * sehingga induknya yang dipakai. Aturan terakhir itu yang menghasilkan
+ * "opencode" untuk ~/.config/opencode/skills.
+ */
+export function deriveNamespace(root: string): string {
+  const resolved = path.resolve(root)
 
-  for (const dir of config.skills.paths) {
-    const root = path.resolve(cwd, dir)
-    let entries: fs.Dirent[]
+  // Manifes bisa berada di direktori skill atau di akar paket di atasnya.
+  for (const candidate of [resolved, path.dirname(resolved)]) {
     try {
-      entries = fs.readdirSync(root, { withFileTypes: true })
+      const raw = fs.readFileSync(path.join(candidate, ".claude-plugin", "plugin.json"), "utf8")
+      const name = (JSON.parse(raw) as { name?: unknown }).name
+      if (typeof name === "string" && name.trim() !== "") return name.trim()
     } catch {
-      continue // path skill yang salah tidak boleh menggagalkan sesi
-    }
-
-    for (const entry of entries) {
-      const skill = entry.isDirectory()
-        ? readSkill(path.join(root, entry.name, "SKILL.md"), entry.name)
-        : entry.name.endsWith(".md")
-          ? readSkill(path.join(root, entry.name), entry.name.replace(/\.md$/, ""))
-          : undefined
-      // Path yang lebih awal menang, supaya urutan di config berarti sesuatu.
-      if (skill && !found.has(skill.name)) found.set(skill.name, skill)
+      // Tanpa manifes bukan kesalahan — sebagian besar folder skill memang tidak punya.
     }
   }
 
-  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const base = path.basename(resolved)
+  return base === "skills" ? path.basename(path.dirname(resolved)) : base
 }
 
+/** Semua skill di dalam satu sumber, dipindai sampai ke sub-direktori terdalam. */
+export function scanSource(source: SkillSource): Skill[] {
+  const out: Skill[] = []
+
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 8) return // pagar terhadap symlink yang berputar
+
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return // path skill yang salah tidak boleh menggagalkan sesi
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        const skill = readSkill(path.join(full, "SKILL.md"), entry.name, source.namespace)
+        if (skill) out.push(skill)
+        // Tetap turun: `skills/productivity/` bukan skill, ia hanya wadah.
+        else walk(full, depth + 1)
+      } else if (entry.name.endsWith(".md") && entry.name !== "SKILL.md") {
+        const skill = readSkill(full, entry.name.replace(/\.md$/, ""), source.namespace)
+        if (skill) out.push(skill)
+      }
+    }
+  }
+
+  walk(path.resolve(source.root), 0)
+  return out
+}
+
+export function discoverSkills(config: Config, cwd: string): Skill[] {
+  const found = new Map<string, Skill>()
+  for (const dir of config.skills.paths) {
+    const root = path.resolve(cwd, typeof dir === "string" ? dir : (dir as any).path)
+    for (const skill of scanSource({ root, namespace: deriveNamespace(root) })) {
+      if (!found.has(skill.id)) found.set(skill.id, skill)
+    }
+  }
+  return [...found.values()].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** Sementara: dipakai prompt.ts sampai Task 4 menggantinya dengan skillById. */
 export function skillByName(skills: Skill[], name: string): Skill | undefined {
-  return skills.find((skill) => skill.name === name)
+  return skills.find((skill) => skill.name === name || skill.id === name)
 }
 
 /** Katalog satu baris per skill, cukup untuk model tahu apa yang tersedia. */
