@@ -130,7 +130,7 @@ export function scanSource(source: SkillSource): Skill[] {
 export function discoverSkills(config: Config, cwd: string): Skill[] {
   const found = new Map<string, Skill>()
   for (const dir of config.skills.paths) {
-    const root = path.resolve(cwd, typeof dir === "string" ? dir : (dir as any).path)
+    const root = path.resolve(cwd, dir)
     for (const skill of scanSource({ root, namespace: deriveNamespace(root) })) {
       if (!found.has(skill.id)) found.set(skill.id, skill)
     }
