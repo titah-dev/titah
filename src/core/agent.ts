@@ -16,7 +16,7 @@ import {
   renderTranscript,
   wrapSummary,
 } from "./compact.ts"
-import { discoverSkills, renderSkill, skillById } from "./skill.ts"
+import { discoverSkills, renderSkill, renderSkillReport, skillById } from "./skill.ts"
 import { ask, effectivePermission, setAutoApprove, type EffectivePermission } from "./permission.ts"
 import { externalSessionFor, rememberExternalSession } from "./storage/external.ts"
 import { take } from "./snapshot.ts"
@@ -558,11 +558,14 @@ function renderAgents(config: Config): string {
 }
 
 function renderSkills(config: Config, cwd: string): string {
+  const report = renderSkillReport(config, cwd)
   const skills = discoverSkills(config, cwd)
   if (skills.length === 0) {
-    return "No skills found. Add a directory to `skills.paths` in titah.json."
+    return `${report}\n\nNo skills found. Add a directory to \`skills.paths\` in titah.json.`
   }
   return [
+    report,
+    "",
     `${skills.length} skills found:`,
     ...skills.map((skill) => `  ${skill.name.padEnd(28)} ${skill.description}`),
   ].join("\n")

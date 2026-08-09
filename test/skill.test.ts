@@ -1,5 +1,13 @@
 import assert from "node:assert/strict"
-import { deriveNamespace, scanSource, discoverSkills, buildSkillIndex, skillById, skillCatalog } from "../src/core/skill.ts"
+import {
+  deriveNamespace,
+  scanSource,
+  discoverSkills,
+  buildSkillIndex,
+  skillById,
+  skillCatalog,
+  renderSkillReport,
+} from "../src/core/skill.ts"
 import { Config } from "../src/core/schema.ts"
 import fs from "node:fs"
 import os from "node:os"
@@ -178,4 +186,50 @@ test("skillById menemukan lewat id lengkap saja", () => {
   const skills = [{ id: "ns:a", namespace: "ns", name: "a", description: "", body: "", file: "f" }]
   assert.equal(skillById(skills, "ns:a")?.name, "a")
   assert.equal(skillById(skills, "a"), undefined, "nama telanjang tidak pernah cocok")
+})
+
+// ---------- renderSkillReport ----------
+// `titah doctor` dan `/skills` memanggil renderSkillReport, bukan CLI-nya
+// langsung — ia string builder murni tanpa I/O, jadi diuji di sini bersama
+// buildSkillIndex yang menjadi sumber datanya.
+
+test("doctor melaporkan jumlah skill per namespace dan konflik yang terjadi", () => {
+  const root = tree({
+    "a/skills/sama/SKILL.md": "---\nname: sama\n---\nsatu",
+    "b/skills/sama/SKILL.md": "---\nname: sama\n---\ndua",
+  })
+  const config = Config.parse({
+    skills: {
+      discover: [],
+      paths: [
+        { path: path.join(root, "a", "skills"), as: "ns" },
+        { path: path.join(root, "b", "skills"), as: "ns" },
+      ],
+    },
+  })
+  const laporan = renderSkillReport(config, root)
+
+  assert.match(laporan, /ns\s+1 skill/)
+  assert.match(laporan, /1 conflict/)
+})
+
+test("always yang menggantung disebut namanya", () => {
+  const root = tree({ "skills/a/SKILL.md": "---\nname: a\n---\nbadan" })
+  const config = Config.parse({
+    skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }], always: ["ns:hilang"] },
+  })
+  assert.match(renderSkillReport(config, root), /ns:hilang/)
+})
+
+test("setup bersih tidak melaporkan apa-apa selain hitungan", () => {
+  // Baris konflik dan `always` yang menggantung hanya tampil kalau ada isinya —
+  // kalau selalu tampil (misalnya "0 conflicts"), user berhenti membacanya.
+  const root = tree({ "skills/a/SKILL.md": "---\nname: a\n---\nbadan" })
+  const config = Config.parse({
+    skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }], always: ["ns:a"] },
+  })
+  const laporan = renderSkillReport(config, root)
+
+  assert.doesNotMatch(laporan, /conflict/)
+  assert.doesNotMatch(laporan, /not found/)
 })

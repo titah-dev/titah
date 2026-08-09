@@ -497,18 +497,85 @@ command.
 ## Skills
 
 A skill is a markdown file with frontmatter, loaded into context when used.
-
-```jsonc
-{ "skills": { "paths": ["~/.config/opencode/skills", "./.titah/skills"] } }
-```
-
 Two layouts are recognised: `<dir>/<name>/SKILL.md` (superpowers/Claude Code
 style) and `<dir>/<name>.md`. `name` and `description` are read from the
 frontmatter.
 
-A skill **assigned to an agent** through `skills: [...]` is loaded in full into
-that agent's system prompt. The rest are only catalogued one line each — loading
-everything would exhaust the context window before any work begins.
+### Config
+
+```jsonc
+{
+  "skills": {
+    "discover": ["claude", "opencode"],       // read installed registries automatically
+    "paths": ["~/.config/opencode/skills", { "path": "./.titah/skills", "as": "team" }],
+    "always": ["superpowers:using-superpowers"] // loaded in full every turn, not just catalogued
+  }
+}
+```
+
+- `discover` reads the Claude Code (`~/.claude`) and opencode
+  (`~/.config/opencode`) skill/plugin registries so anything already installed
+  there works with zero configuration. Set it to `[]` in tests or in any setup
+  that must not touch those directories.
+- `paths` adds explicit directories, either as a bare string or as `{ path,
+  as }` to override the namespace that directory would otherwise get.
+- `always` names skill ids that are loaded in full on every turn, rather than
+  only appearing one line each in the catalogue.
+
+### Ids and namespaces
+
+A skill's id is always fully qualified as `namespace:name` — the bare name
+alone is never accepted, since two different sources can otherwise define the
+same name. The namespace comes from, in order:
+
+1. the plugin manifest's `name` (`.claude-plugin/plugin.json`), if one exists
+   for that directory or its parent;
+2. otherwise the skill directory's own folder name;
+3. except when that folder is literally called `skills`, which tells you
+   nothing on its own — in that case the *parent* directory's name is used
+   instead. This is what turns `~/.config/opencode/skills` into the `opencode`
+   namespace rather than `skills`.
+
+### Invoking a skill
+
+Type `/plugin:skill <message>` to run one directly, e.g.
+`/superpowers:brainstorming a new caching layer`. The transcript shows the
+command you typed, not the skill's full body — the model receives the skill's
+instructions followed by your message.
+
+The model can also load a skill on its own, without being asked, via the
+`skill` tool: it passes a fully qualified id (as seen in the `/skills`
+catalogue) and the skill's instructions are inserted into the conversation.
+This is how a skill whose description matches the current task gets used
+without a slash command.
+
+A skill **assigned to an agent** through that agent's `skills: [...]` (see
+[Custom agents](#custom-agents)) is loaded in full into its system prompt from
+the start. Every other skill is only catalogued one line each — loading
+everything up front would exhaust the context window before any work begins.
+
+### When something is misconfigured
+
+Two situations are tolerated rather than treated as fatal, because a
+misconfigured skill should not take down a session: a duplicate id (same
+`namespace:name` from two sources) keeps the first one found and drops the
+second, and a name in `always` that resolves to nothing is simply skipped.
+Both are silent at the point they happen — but `/skills` and `titah doctor`
+report the skill count per namespace and, only when there is something to
+flag, list every conflict and every unresolved `always` entry by name.
+
+### Two things skills do **not** do
+
+- **opencode *plugins* are not supported.** opencode has two different
+  extension mechanisms that share a folder structure but are not the same
+  thing: *skills* are plain markdown files, and Titah reads those like any
+  other skill source. *Plugins* are JavaScript modules written against
+  opencode's own runtime API (hooks, event handlers, etc.) — there is no
+  markdown to load, so Titah cannot run them and does not try to.
+- **A skill cannot make Titah do anything by itself.** A skill is text
+  inserted into a prompt — instructions, not code. It cannot open a browser,
+  call an API, or perform any action beyond what the model can already do
+  with the tools it has. Any new capability requires a tool, not a skill.
 
 ## Delegation
 

@@ -195,3 +195,37 @@ export function skillCatalog(skills: Skill[]): string {
     .map((skill) => `- ${skill.id}${skill.description ? `: ${skill.description}` : ""}`)
     .join("\n")
 }
+
+/**
+ * Ringkasan keadaan skill untuk `titah doctor` dan `/skills`.
+ *
+ * Konflik dan `always` yang menggantung ditampilkan di sini karena keduanya
+ * dilewati diam-diam saat sesi berjalan — kalau tidak pernah muncul di mana pun,
+ * user tidak punya cara menemukan konfigurasinya salah.
+ */
+export function renderSkillReport(config: Config, cwd: string, home?: string): string {
+  const index = buildSkillIndex(config, cwd, home)
+  const perNamespace = new Map<string, number>()
+  for (const skill of index.skills) {
+    perNamespace.set(skill.namespace, (perNamespace.get(skill.namespace) ?? 0) + 1)
+  }
+
+  const lines = [`Skills: ${index.skills.length} from ${perNamespace.size} namespaces`]
+  for (const [namespace, count] of [...perNamespace].sort()) {
+    lines.push(`  ${namespace.padEnd(24)} ${count} skill${count === 1 ? "" : "s"}`)
+  }
+
+  if (index.conflicts.length > 0) {
+    lines.push(`  ${index.conflicts.length} conflict${index.conflicts.length === 1 ? "" : "s"}:`)
+    for (const conflict of index.conflicts) {
+      lines.push(`    ${conflict.id}: kept ${conflict.kept}, ignored ${conflict.dropped}`)
+    }
+  }
+
+  const missing = config.skills.always.filter((id) => !skillById(index.skills, id))
+  if (missing.length > 0) {
+    lines.push(`  always, not found: ${missing.join(", ")}`)
+  }
+
+  return lines.join("\n")
+}

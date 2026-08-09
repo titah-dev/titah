@@ -28,6 +28,7 @@ import {
   type ProviderChoice,
 } from "./core/onboarding.ts"
 import { formatBytes, prune } from "./core/retention.ts"
+import { renderSkillReport } from "./core/skill.ts"
 import {
   createSession,
   deleteSession,
@@ -350,6 +351,10 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
     const found = which(agent.command)
     out(`  ${id.padEnd(18)} ${found ?? `unavailable (${agent.command} not in PATH)`}`)
   }
+  out()
+
+  out("Skills")
+  for (const line of renderSkillReport(loaded.config, process.cwd()).split("\n")) out(`  ${line}`)
   out()
   out('Delegation is live: type "@<agent> <prompt>" inside a session.')
 }
