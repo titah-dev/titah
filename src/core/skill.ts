@@ -130,10 +130,12 @@ export function scanSource(source: SkillSource): Skill[] {
 export function discoverSkills(config: Config, cwd: string): Skill[] {
   const found = new Map<string, Skill>()
   for (const dirEntry of config.skills.paths) {
-    // Menangani path skill yang bisa berupa string atau objek dengan namespace override
+    // Type guard diperlukan karena paths adalah union, bukan cast.
     const dirPath = typeof dirEntry === "string" ? dirEntry : dirEntry.path
+    const namespaceOverride = typeof dirEntry === "string" ? undefined : dirEntry.as
     const root = path.resolve(cwd, dirPath)
-    for (const skill of scanSource({ root, namespace: deriveNamespace(root) })) {
+    const namespace = namespaceOverride ?? deriveNamespace(root)
+    for (const skill of scanSource({ root, namespace })) {
       if (!found.has(skill.id)) found.set(skill.id, skill)
     }
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { deriveNamespace, scanSource } from "../src/core/skill.ts"
+import { deriveNamespace, scanSource, discoverSkills } from "../src/core/skill.ts"
+import type { Config } from "../src/core/schema.ts"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -61,4 +62,77 @@ test("tata letak satu file per skill tetap didukung", () => {
   const root = tree({ "skills/ringkas.md": "---\nname: ringkas\n---\nbadan" })
   const [skill] = scanSource({ root: path.join(root, "skills"), namespace: "ns" })
   assert.equal(skill?.id, "ns:ringkas")
+})
+
+test("discoverSkills menangani kedua bentuk paths: string dan objek {path, as}", () => {
+  // Kedua bentuk harus ditangani dengan benar: string biasa dan object dengan path + as.
+  // Test ini mendeteksi jika ternary tertukar atau if-else branch tercampur.
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "titah-discover-"))
+  try {
+    // Buat dua pohon skill terpisah
+    const stringPath = path.join(tmpRoot, "stdlib")
+    const objectPath = path.join(tmpRoot, "custom-lib")
+
+    fs.mkdirSync(stringPath, { recursive: true })
+    fs.mkdirSync(objectPath, { recursive: true })
+
+    // Skill di path pertama (diakses sebagai string): namespace akan "stdlib"
+    fs.mkdirSync(path.join(stringPath, "first"), { recursive: true })
+    fs.writeFileSync(
+      path.join(stringPath, "first", "SKILL.md"),
+      "---\nname: first-skill\ndescription: dari path string\n---\nbadan",
+    )
+
+    // Skill di path kedua (diakses sebagai object {path, as}): namespace akan override ke "override"
+    fs.mkdirSync(path.join(objectPath, "second"), { recursive: true })
+    fs.writeFileSync(
+      path.join(objectPath, "second", "SKILL.md"),
+      "---\nname: second-skill\ndescription: dari path object\n---\nbadan",
+    )
+
+    // Config dengan kedua bentuk paths: satu string, satu object dengan as override
+    const config: Config = {
+      skills: {
+        discover: ["claude", "opencode"],
+        paths: [
+          stringPath, // bentuk string → namespace: "stdlib"
+          { path: objectPath, as: "override" }, // bentuk object dengan as → namespace: "override"
+        ],
+        always: [],
+      },
+      model: undefined,
+      smallModel: undefined,
+      provider: {},
+      externalAgent: {},
+      agent: {},
+      command: {},
+      defaultAgent: undefined,
+      permission: { edit: "ask", write: "ask", bash: "ask", allowlist: [] },
+      keybinds: {},
+      instructions: [],
+      logLevel: "INFO",
+    }
+
+    const skills = discoverSkills(config, tmpRoot)
+
+    // Pastikan kedua skill ditemukan dengan id yang benar
+    const skillIds = skills.map((s) => s.id).sort()
+    assert.deepEqual(skillIds, ["override:second-skill", "stdlib:first-skill"], "Skill dari string path dan object path harus ditemukan keduanya")
+
+    // Verifikasi skill pertama dari string path: namespace dari deriveNamespace
+    const firstSkill = skills.find((s) => s.name === "first-skill")
+    assert.ok(firstSkill, "Skill dari string path harus ditemukan")
+    assert.equal(firstSkill?.id, "stdlib:first-skill")
+    assert.equal(firstSkill?.namespace, "stdlib", "Namespace untuk string path harus dari deriveNamespace(path)")
+    assert.match(firstSkill?.file ?? "", /stdlib.*first.*SKILL\.md/, "File path harus berasal dari stringPath")
+
+    // Verifikasi skill kedua dari object path dengan namespace override
+    const secondSkill = skills.find((s) => s.name === "second-skill")
+    assert.ok(secondSkill, "Skill dari object path harus ditemukan")
+    assert.equal(secondSkill?.id, "override:second-skill", "Namespace override di object.as harus dipakai daripada deriveNamespace")
+    assert.equal(secondSkill?.namespace, "override")
+    assert.match(secondSkill?.file ?? "", /custom-lib.*second.*SKILL\.md/, "File path harus berasal dari objectPath")
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  }
 })
