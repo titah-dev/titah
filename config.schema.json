@@ -258,13 +258,60 @@
     },
     "skills": {
       "default": {
-        "paths": []
+        "discover": [
+          "claude",
+          "opencode"
+        ],
+        "paths": [],
+        "always": []
       },
       "type": "object",
       "properties": {
+        "discover": {
+          "default": [
+            "claude",
+            "opencode"
+          ],
+          "description": "Read Claude Code and opencode registries so installed skills work without configuration",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "opencode"
+            ]
+          }
+        },
         "paths": {
           "default": [],
           "description": "Directories containing skills. Supports <dir>/<name>/SKILL.md and <dir>/<name>.md",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "as": {
+                    "description": "Namespace override; derived from the folder when omitted",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            ]
+          }
+        },
+        "always": {
+          "default": [],
+          "description": "Skill ids loaded in full every turn, e.g. \"superpowers:using-superpowers\"",
           "type": "array",
           "items": {
             "type": "string"

@@ -114,11 +114,27 @@ export const Command = z.object({
   model: z.string().optional(),
 })
 
+const SkillPath = z.union([
+  z.string(),
+  z.object({
+    path: z.string(),
+    as: z.string().optional().describe("Namespace override; derived from the folder when omitted"),
+  }),
+])
+
 export const Skills = z.object({
+  discover: z
+    .array(z.enum(["claude", "opencode"]))
+    .default(["claude", "opencode"])
+    .describe("Read Claude Code and opencode registries so installed skills work without configuration"),
   paths: z
-    .array(z.string())
+    .array(SkillPath)
     .default([])
     .describe("Directories containing skills. Supports <dir>/<name>/SKILL.md and <dir>/<name>.md"),
+  always: z
+    .array(z.string())
+    .default([])
+    .describe('Skill ids loaded in full every turn, e.g. "superpowers:using-superpowers"'),
 })
 
 export const Permission = z
@@ -147,7 +163,7 @@ export const Config = z.object({
   externalAgent: z.record(z.string(), ExternalAgent).default({}),
   agent: z.record(z.string(), Agent).default({}),
   command: z.record(z.string(), Command).default({}),
-  skills: Skills.default({ paths: [] }),
+  skills: Skills.default({ discover: ["claude", "opencode"], paths: [], always: [] }),
   defaultAgent: z
     .string()
     .optional()

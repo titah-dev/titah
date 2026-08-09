@@ -262,3 +262,45 @@ test("agent milik user sendiri hidup berdampingan dengan bawaan", () => {
     box.cleanup()
   }
 })
+
+test("skills.discover menyala untuk claude dan opencode secara default", () => {
+  const config = loadConfig(sandbox().project).config
+  assert.deepEqual(config.skills.discover, ["claude", "opencode"])
+  assert.deepEqual(config.skills.always, [])
+})
+
+test("path skill boleh string biasa atau objek berlabel", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, {
+      skills: { paths: ["./skills", { path: "~/lib/skills", as: "punyaku" }] },
+    })
+    const { config } = loadConfig(box.project)
+    assert.equal(config.skills.paths[0], "./skills")
+    assert.deepEqual(config.skills.paths[1], { path: "~/lib/skills", as: "punyaku" })
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("auto-deteksi bisa dimatikan seluruhnya", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, { skills: { discover: [] } })
+    assert.deepEqual(loadConfig(box.project).config.skills.discover, [])
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("sumber auto-deteksi yang tidak dikenal ditolak, bukan diabaikan", () => {
+  // Salah ketik "openccode" yang diam-diam diabaikan berarti skill hilang tanpa
+  // satu pun petunjuk kenapa.
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, { skills: { discover: ["openccode"] } })
+    assert.throws(() => loadConfig(box.project))
+  } finally {
+    box.cleanup()
+  }
+})
