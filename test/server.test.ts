@@ -7,6 +7,14 @@ import test, { before, after } from "node:test"
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-server-"))
 process.env.XDG_DATA_HOME = root
 process.env.TITAH_DB = path.join(root, "server.db")
+// Pesan yang diposting di sini kebetulan semuanya `/agents`, yang berhenti
+// sebelum buildSystemPrompt — tapi satu pesan biasa saja sudah cukup untuk
+// membuat berkas ini memindai 56 skill milik siapa pun yang menjalankannya.
+// HOME diisolasi karena os.homedir() membaca $HOME langsung, melewati XDG;
+// XDG_CONFIG_HOME karena loadConfig di sini kalau tidak akan membaca
+// titah.json global pengembang.
+process.env.HOME = path.join(root, "home")
+process.env.XDG_CONFIG_HOME = path.join(root, "config")
 
 const { listen } = await import("../src/server/index.ts")
 const { bus } = await import("../src/core/event.ts")

@@ -51,10 +51,13 @@ test("nama always yang tidak ketemu DILEWATI, tidak menggagalkan apa pun", () =>
       always: ["ns:hilang"],
     },
   })
+  // Yang MELAPORKAN nama menggantung adalah renderSkillReport (dipakai
+  // `/skills` dan `titah doctor`) — lihat test/skill.test.ts. Di sini yang
+  // dipaku cuma: prompt tetap tersusun dan skill yang ada tetap masuk katalog.
   const result = buildSystemPrompt(config, root)
 
-  assert.deepEqual(result.missingSkills, ["ns:hilang"])
   assert.match(result.system, /- ns:a/)
+  assert.doesNotMatch(result.system, /ns:hilang/)
 })
 
 test("model diberi tahu tool skill ada, kalau memang ada skill", () => {

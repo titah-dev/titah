@@ -22,6 +22,7 @@ const { createSession, listMessages, listModelMessages } = await import(
   "../src/core/storage/session.ts"
 )
 const { bus } = await import("../src/core/event.ts")
+const { loadedSkillIds } = await import("../src/core/tool/skill.ts")
 
 const project = path.join(root, "proyek")
 // Proyek terpisah supaya titah.json di sini tidak memengaruhi test lain yang
@@ -385,6 +386,11 @@ test("/namespace:skill memuat isi skill ke model, transkrip tetap tampilkan yang
   assert.ok(userText?.type === "text")
   assert.equal(userText.text, "/demo:hello lakukan sesuatu")
   assert.doesNotMatch(userText.text, /ISI SKILL DEMO/)
+
+  // Pemuatan lewat command harus terbaca oleh pagar tool — dan terbaca dari
+  // PENANDA pesannya, bukan dari tulisan di dalamnya. Tanpa penanda yang ikut
+  // tersimpan, model bisa memuat ulang skill yang barusan diberikan user.
+  assert.ok(loadedSkillIds(session.id).has("demo:hello"))
 })
 
 test("skill yang tidak dikenal menyarankan skill lain di namespace yang sama", async () => {
@@ -413,6 +419,10 @@ test("/skills menampilkan ringkasan skill DI ATAS daftar, bukan di bawahnya", as
   assert.ok(reportAt >= 0, "ringkasan report harus muncul")
   assert.ok(listAt > reportAt, "daftar skill harus di BAWAH report")
   assert.match(body.text, /demo\s+1 skill/)
+
+  // Id lengkap, bukan nama telanjang: `/skills` adalah satu-satunya tempat user
+  // membaca apa yang bisa diketik, dan `hello` saja dijawab "Unknown command".
+  assert.match(body.text, /\/demo:hello/)
 })
 
 test("skill dengan namespace yang tidak dikenal sama sekali diarahkan ke /skills", async () => {

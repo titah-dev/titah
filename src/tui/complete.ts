@@ -112,7 +112,7 @@ export function suggest(options: SuggestOptions): Suggestion[] {
   const query = trigger.query
 
   if (trigger.char === "/") {
-    return listCommands(config)
+    const commands: Suggestion[] = listCommands(config)
       .filter((entry) => matches(query, entry.name))
       .map((entry) => ({
         kind: "command" as const,
@@ -120,6 +120,13 @@ export function suggest(options: SuggestOptions): Suggestion[] {
         label: `/${entry.name}`,
         detail: entry.description,
       }))
+
+    // Skill dipanggil lewat `/namespace:nama` persis seperti command, jadi ia
+    // harus ada di daftar yang sama. Kalau tidak, mengetik `/superpowers:apa`
+    // menghasilkan daftar KOSONG untuk sesuatu yang sebenarnya bisa dijalankan.
+    // Command lebih dulu: jumlahnya belasan dan hafal di kepala user, sementara
+    // skill puluhan dan justru dicari lewat pengetikan.
+    return [...commands, ...skillSuggestions(config, options.cwd, query)]
   }
 
   // `@` menggabungkan agent dan file dalam satu daftar: keduanya adalah "yang

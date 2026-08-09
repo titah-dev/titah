@@ -1,40 +1,44 @@
 import { z } from "zod"
-import { discoverSkills, renderSkill, skillById } from "../skill.ts"
+import { discoverSkills, markedSkillId, renderSkill, skillById } from "../skill.ts"
 import { listModelMessages } from "../storage/session.ts"
 import type { TitahTool } from "./types.ts"
 
-const LOADED = /<skill name="([^"]+)"/g
+const LOADED = /<skill name="([^"]+)"/
 
 /**
- * Menarik teks yang bisa dibaca manusia dari satu bagian `content` pesan.
+ * Id skill dari hasil pemanggilan tool INI, kalau bagian pesannya memang itu.
  *
- * Isi pesan model BUKAN selalu string. Hasil tool call sungguhan datang lewat
- * AI SDK sebagai `{ role: "tool", content: [{ type: "tool-result", output:
- * { type: "text", value: "..." } }] }` — array, bukan string. `JSON.stringify`
- * atas array itu meng-escape setiap `"` di dalam `value` jadi `\"`, sehingga
- * regex yang mencari `name="` tidak akan pernah cocok dengan `name=\"`. Jalan
- * satu-satunya yang benar adalah membongkar bentuknya secara struktural, tidak
- * meregex JSON.
+ * `toolName === "skill"` adalah syarat pertama dan yang menentukan. Isi hasil
+ * tool `skill` ditulis `renderSkill` di proses ini juga, jadi meregex isinya
+ * aman: tulisan `<skill name="` di situ pasti berasal dari kami. Regex yang
+ * sama dijalankan atas teks sembarang — hasil `read`, `grep`, atau ketikan
+ * user — justru berbahaya, karena file dokumentasi yang memuat contoh tag itu
+ * akan menandai skill yang disebutnya sebagai sudah dimuat.
+ *
+ * Kalau id sebuah skill sendiri memuat tanda kutip, regex ini meleset dan
+ * skill dianggap belum dimuat: gagal ke arah MEMUAT ULANG, bukan ke arah
+ * menyatakan instruksi berlaku padahal tidak pernah dikirim.
  */
-function extractText(part: unknown): string {
-  if (typeof part !== "object" || part === null) return ""
+function skillResultId(part: unknown): string | undefined {
+  if (typeof part !== "object" || part === null) return undefined
   const record = part as Record<string, unknown>
+  if (record["type"] !== "tool-result" || record["toolName"] !== "skill") return undefined
 
-  if (record["type"] === "tool-result") {
-    const output = record["output"]
-    if (typeof output === "object" && output !== null) {
-      const value = (output as Record<string, unknown>)["value"]
-      if (typeof value === "string") return value
-    }
-    return ""
-  }
-
-  if (record["type"] === "text" && typeof record["text"] === "string") return record["text"] as string
-  return ""
+  const output = record["output"]
+  if (typeof output !== "object" || output === null) return undefined
+  const value = (output as Record<string, unknown>)["value"]
+  if (typeof value !== "string") return undefined
+  return LOADED.exec(value)?.[1]
 }
 
 /**
  * Skill yang sudah terlihat oleh model di sesi ini.
+ *
+ * Hanya DUA hal yang pernah memuat isi skill, dan keduanya dikenali dari
+ * bentuknya, bukan dari teksnya: hasil tool bernama `skill`, dan pesan user
+ * bertanda yang ditulis jalur command `/namespace:skill`. Konten string polos
+ * dilewati seluruhnya — teks bisa datang dari mana saja dan karena itu tidak
+ * pernah membuktikan apa pun.
  *
  * Dihitung dari riwayat yang DILIHAT MODEL, bukan dari baris mentah. Setelah
  * `/compact`, isi skill sudah lenyap dari pandangan model walau barisnya masih
@@ -43,13 +47,12 @@ function extractText(part: unknown): string {
  */
 export function loadedSkillIds(sessionID: string): Set<string> {
   const ids = new Set<string>()
-  for (const message of listModelMessages(sessionID)) {
-    const { content } = message
-    // Pesan command (`/namespace:skill`) datang sebagai string polos; hasil
-    // tool call datang sebagai array bagian yang harus dibongkar satu-satu.
-    const text =
-      typeof content === "string" ? content : Array.isArray(content) ? content.map(extractText).join("\n") : ""
-    for (const match of text.matchAll(LOADED)) ids.add(match[1] as string)
+  for (const { content } of listModelMessages(sessionID)) {
+    if (!Array.isArray(content)) continue
+    for (const part of content) {
+      const id = markedSkillId(part) ?? skillResultId(part)
+      if (id !== undefined) ids.add(id)
+    }
   }
   return ids
 }

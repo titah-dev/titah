@@ -422,7 +422,7 @@ concurrency.
       "description": "Run tests and report",
       "model": "9router/gapis",
       "permission": { "bash": "allow", "edit": "ask" },
-      "skills": ["project-analyzer"]
+      "skills": ["team:project-analyzer"]
     }
   }
 }
@@ -437,6 +437,12 @@ Two ways to restrict an agent, both applied before anything runs:
 
 Use `permission` when you want the model to know why it was refused; use `tools`
 when you do not want it thinking about the tool at all.
+
+**`skills`** loads those skills into this agent's system prompt in full, and
+takes fully-qualified ids (`namespace:name`), exactly like `skills.always` —
+see [Skills](#skills). A bare name such as `"project-analyzer"` never resolves;
+run `/skills` or `titah doctor` to see the ids you have and which configured
+ids were not found.
 
 ## Custom commands
 
@@ -520,7 +526,8 @@ frontmatter.
 - `paths` adds explicit directories, either as a bare string or as `{ path,
   as }` to override the namespace that directory would otherwise get.
 - `always` names skill ids that are loaded in full on every turn, rather than
-  only appearing one line each in the catalogue.
+  only appearing one line each in the catalogue. An agent's own `skills: [...]`
+  is the per-agent counterpart and takes the same fully-qualified ids.
 
 ### Ids and namespaces
 
@@ -559,10 +566,12 @@ everything up front would exhaust the context window before any work begins.
 Two situations are tolerated rather than treated as fatal, because a
 misconfigured skill should not take down a session: a duplicate id (same
 `namespace:name` from two sources) keeps the first one found and drops the
-second, and a name in `always` that resolves to nothing is simply skipped.
-Both are silent at the point they happen — but `/skills` and `titah doctor`
-report the skill count per namespace and, only when there is something to
-flag, list every conflict and every unresolved `always` entry by name.
+second, and an id in `always` or in an agent's `skills` that resolves to
+nothing is simply skipped. Both are silent at the point they happen — but
+`/skills` and `titah doctor` report the skill count per namespace and, only
+when there is something to flag, list every conflict, every configured path
+that yielded no skills, and every unresolved id together with where it was
+configured.
 
 ### Two things skills do **not** do
 

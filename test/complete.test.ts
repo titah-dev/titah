@@ -14,6 +14,10 @@ import { spinnerFrame } from "../dist/tui/components.js"
 import { Config } from "../src/core/schema.ts"
 
 const config = Config.parse({
+  // `discover: []` wajib: suggest("/") sekarang ikut mendaftar skill, dan
+  // default ["claude", "opencode"] akan membaca ~/.claude sungguhan milik siapa
+  // pun yang menjalankan test ini.
+  skills: { discover: [] },
   agent: {
     plan: { description: "Plan only" },
     build: { description: "Build Manual" },
@@ -98,7 +102,7 @@ test("/ menyarankan command bawaan dan custom", () => {
   assert.ok(labels.includes("/model"))
   assert.ok(labels.includes("/consensus"))
   assert.ok(labels.includes("/review"), "command dari config ikut")
-  assert.ok(items.every((item) => item.kind === "command"))
+  assert.ok(items.every((item) => item.kind === "command"), "config ini memang tanpa skill")
 })
 
 test("pilihan command menyisakan spasi supaya argumen bisa langsung diketik", () => {
@@ -142,6 +146,43 @@ test("memilih skill menyisipkan commandnya, bukan kalimat tentang skill itu", ()
 
   assert.equal(item?.label, "/ns:a")
   assert.equal(item?.value, "/ns:a ")
+})
+
+test("/ mendaftar skill di samping command, dan namespace mempersempitnya", () => {
+  // Persyaratan spec §TUI yang hilang antara spec dan plan: tanpa ini,
+  // `/superpowers:brainstorming` menghasilkan daftar KOSONG, popup nol item
+  // menelan Enter, dan prompt terlihat mati untuk skill yang sebenarnya ada.
+  const skillDir = tree({ "brainstorming/SKILL.md": "---\nname: brainstorming\n---\nisi" })
+  const withSkills = Config.parse({
+    skills: { discover: [], paths: [{ path: skillDir, as: "superpowers" }] },
+    command: { review: { template: "Review {{.Input}}" } },
+  })
+
+  const semua = suggest({ config: withSkills, cwd: "/x", trigger: { char: "/", start: 0, query: "" } })
+  assert.ok(semua.some((item) => item.kind === "command"), "command tetap ada")
+  assert.ok(semua.some((item) => item.label === "/superpowers:brainstorming"), "skill ikut terdaftar")
+
+  const disaring = suggest({
+    config: withSkills,
+    cwd: "/x",
+    trigger: { char: "/", start: 0, query: "superpowers:" },
+  })
+  assert.deepEqual(
+    disaring.map((item) => item.label),
+    ["/superpowers:brainstorming"],
+    "mengetik namespace menyisakan skill plugin itu saja",
+  )
+
+  // Kasus yang persis jadi jalan buntu: id LENGKAP tanpa argumen. Harus tetap
+  // menghasilkan tepat satu pilihan, karena daftar kosonglah yang membuat Enter
+  // tertelan dan popup nol item terbuka.
+  const penuh = suggest({
+    config: withSkills,
+    cwd: "/x",
+    trigger: { char: "/", start: 0, query: "superpowers:brainstorming" },
+  })
+  assert.equal(penuh.length, 1)
+  assert.equal(penuh[0]?.value, "/superpowers:brainstorming ")
 })
 
 test("mengetik namespace mempersempit ke plugin itu saja", () => {

@@ -281,24 +281,25 @@ export function App({
     [activeAgent, client, flash, model, session.id],
   )
 
+  // Menu yang dibuka perintah pun tidak boleh muncul kosong, dengan alasan yang
+  // sama seperti popup ketikan — dan di sini diam saja lebih buruk lagi, karena
+  // user baru saja MEMINTA daftarnya. Sebutkan bahwa memang tidak ada isinya.
   const openModelPicker = useCallback(
     (query = "") => {
       const items = modelSuggestions(config, query)
+      if (items.length === 0) return flash(query ? `no model matches "${query}"` : "no models configured")
       setPopup({ title: "Switch model", items, selected: 0, fromMenu: true })
     },
-    [config],
+    [config, flash],
   )
 
   const openSkillPicker = useCallback(
     (query = "") => {
-      setPopup({
-        title: "Insert skill",
-        items: skillSuggestions(config, cwd, query),
-        selected: 0,
-        fromMenu: true,
-      })
+      const items = skillSuggestions(config, cwd, query)
+      if (items.length === 0) return flash(query ? `no skill matches "${query}"` : "no skills found")
+      setPopup({ title: "Insert skill", items, selected: 0, fromMenu: true })
     },
-    [config, cwd],
+    [config, cwd, flash],
   )
 
   const openAgentPicker = useCallback(() => {
@@ -514,8 +515,18 @@ export function App({
       return
     }
     const items = suggest({ config, cwd, trigger })
+    // Popup tanpa satu pun pilihan bukan popup: ia menutupi layar, lalu MEMAKAN
+    // Enter karena tidak ada item yang bisa dijalankan — prompt terlihat mati
+    // sampai user menemukan Escape sendiri. Dijaga di sini, di tempat daftarnya
+    // dibuat, bukan di penangan tombol: penangan itu punya empat cabang yang
+    // semuanya menganggap ada pilihan, dan menambal satu per satu menyisakan
+    // kotak kosong yang tetap tergambar.
+    if (items.length === 0) {
+      setPopup((current) => (current?.fromMenu ? current : undefined))
+      return
+    }
     setPopup({
-      title: trigger.char === "/" ? "Commands" : "Agents & files",
+      title: trigger.char === "/" ? "Commands & skills" : "Agents & files",
       items,
       selected: 0,
       fromMenu: false,

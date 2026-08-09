@@ -89,7 +89,10 @@ export const Agent = z.object({
   skills: z
     .array(z.string())
     .default([])
-    .describe("Skill names whose full content is loaded into this agent's system prompt"),
+    .describe(
+      'Skill ids ("namespace:name", as listed by /skills) whose full content is loaded ' +
+        "into this agent's system prompt. Bare names never match.",
+    ),
   permission: z
     .object({
       edit: z.enum(["ask", "allow", "deny"]).optional(),

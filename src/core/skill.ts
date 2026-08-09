@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
+import type { ModelMessage } from "ai"
 import type { Config } from "./schema.ts"
 import { allSources } from "./skill-sources.ts"
 
@@ -221,6 +222,50 @@ export function renderSkill(skill: Skill, args = ""): string {
   return args.trim() === "" ? block : `${block}\n\n${args.trim()}`
 }
 
+/**
+ * Namespace penanda milik Titah di `providerOptions`.
+ *
+ * `providerOptions` dibaca setiap provider HANYA pada namespace-nya sendiri,
+ * jadi kunci "titah" sampai ke provider mana pun tanpa berarti apa-apa bagi
+ * mereka — tapi tetap ikut tersimpan di riwayat dan bisa kita baca lagi.
+ */
+const SKILL_MARK = "titah"
+
+/**
+ * Pesan user untuk `/namespace:skill`: isi skill BESERTA penanda identitasnya.
+ *
+ * Penanda sengaja bukan teks. Pagar "sudah dimuat" dulu dihitung dengan mencari
+ * tulisan `<skill name="` di seluruh yang dilihat model, sehingga file repo mana
+ * pun yang kebetulan memuat tulisan itu — dokumentasi, README, hasil `read` —
+ * menandai skill yang disebutnya sebagai termuat, lalu tool menolak memuatnya
+ * dan memberi tahu model bahwa instruksi yang tidak pernah dikirim itu berlaku.
+ * Metadata pesan tidak bisa dipalsukan isi file: hanya jalur command ini yang
+ * pernah menuliskannya, sehingga penandanya berarti persis satu hal.
+ */
+export function skillCommandMessage(skill: Skill, args = ""): ModelMessage {
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: renderSkill(skill, args),
+        providerOptions: { [SKILL_MARK]: { skill: skill.id } },
+      },
+    ],
+  }
+}
+
+/** Id skill dari penanda sebuah bagian pesan, kalau bagian itu memang bertanda. */
+export function markedSkillId(part: unknown): string | undefined {
+  if (typeof part !== "object" || part === null) return undefined
+  const options = (part as Record<string, unknown>)["providerOptions"]
+  if (typeof options !== "object" || options === null) return undefined
+  const mark = (options as Record<string, unknown>)[SKILL_MARK]
+  if (typeof mark !== "object" || mark === null) return undefined
+  const id = (mark as Record<string, unknown>)["skill"]
+  return typeof id === "string" ? id : undefined
+}
+
 /** Katalog satu baris per skill, dengan id lengkap karena itu yang harus diketik user. */
 export function skillCatalog(skills: Skill[]): string {
   return skills
@@ -233,9 +278,14 @@ export function skillCatalog(skills: Skill[]): string {
  *
  * Tiga hal ditampilkan di sini karena ketiganya dilewati diam-diam saat sesi
  * berjalan — kalau tidak pernah muncul di mana pun, user tidak punya cara
- * menemukan konfigurasinya salah: id kembar (konflik), nama `always` yang
+ * menemukan konfigurasinya salah: id kembar (konflik), nama yang diminta tapi
  * tidak pernah cocok dengan skill apa pun, dan path di `skills.paths` yang
  * tidak menghasilkan satu skill pun (salah ketik, izin, atau memang kosong).
+ *
+ * `always` DAN `agent.*.skills` dihitung di sini, di satu tempat. Sebelumnya
+ * `buildSystemPrompt` ikut menghitung yang tidak ketemu dan mengembalikannya,
+ * tapi tidak ada satu pun pemanggil yang membacanya — jadi separuh aturannya
+ * (yang per-agent) tidak pernah sampai ke mata user meski kodenya ada.
  */
 export function renderSkillReport(config: Config, cwd: string, home?: string): string {
   const index = buildSkillIndex(config, cwd, home)
@@ -260,9 +310,16 @@ export function renderSkillReport(config: Config, cwd: string, home?: string): s
     lines.push(`  sources with no skills: ${index.emptySources.join(", ")}`)
   }
 
-  const missing = config.skills.always.filter((id) => !skillById(index.skills, id))
+  const wanted: { id: string; where: string }[] = [
+    ...config.skills.always.map((id) => ({ id, where: "always" })),
+    ...Object.entries(config.agent).flatMap(([agentID, agent]) =>
+      agent.skills.map((id) => ({ id, where: `agent ${agentID}` })),
+    ),
+  ]
+  const missing = wanted.filter((entry) => !skillById(index.skills, entry.id))
   if (missing.length > 0) {
-    lines.push(`  always, not found: ${missing.join(", ")}`)
+    const listed = missing.map((entry) => `${entry.id} (${entry.where})`).join(", ")
+    lines.push(`  configured but not found: ${listed}`)
   }
 
   return lines.join("\n")

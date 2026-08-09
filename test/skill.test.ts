@@ -239,7 +239,26 @@ test("always yang menggantung disebut namanya", () => {
   const config = Config.parse({
     skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }], always: ["ns:hilang"] },
   })
-  assert.match(renderSkillReport(config, root), /ns:hilang/)
+  const laporan = renderSkillReport(config, root)
+  assert.match(laporan, /ns:hilang/)
+  assert.match(laporan, /\(always\)/, "user harus tahu DI MANA namanya didaftarkan")
+})
+
+test("skill agent yang menggantung ikut dilaporkan, dengan nama agentnya", () => {
+  // Spec: "Name in `always` or `agent.skills` not found → recorded, shown in
+  // doctor, noted in /skills". Separuh per-agent-nya dulu dihitung
+  // buildSystemPrompt lalu dikembalikan ke pemanggil yang tidak pernah
+  // membacanya — jadi config yang berhenti bekerja setelah upgrade (nama
+  // telanjang tidak lagi cocok) tidak pernah muncul di mana pun.
+  const root = tree({ "skills/a/SKILL.md": "---\nname: a\n---\nbadan" })
+  const config = Config.parse({
+    skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }] },
+    agent: { qc: { skills: ["project-analyzer"] } },
+  })
+  const laporan = renderSkillReport(config, root)
+
+  assert.match(laporan, /project-analyzer/)
+  assert.match(laporan, /\(agent qc\)/)
 })
 
 test("setup bersih tidak melaporkan apa-apa selain hitungan", () => {

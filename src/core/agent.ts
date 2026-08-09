@@ -16,7 +16,13 @@ import {
   renderTranscript,
   wrapSummary,
 } from "./compact.ts"
-import { discoverSkills, renderSkill, renderSkillReport, skillById } from "./skill.ts"
+import {
+  discoverSkills,
+  renderSkill,
+  renderSkillReport,
+  skillById,
+  skillCommandMessage,
+} from "./skill.ts"
 import { ask, effectivePermission, setAutoApprove, type EffectivePermission } from "./permission.ts"
 import { externalSessionFor, rememberExternalSession } from "./storage/external.ts"
 import { take } from "./snapshot.ts"
@@ -101,6 +107,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   let text = input.text
   let agentID = input.agent ?? config.defaultAgent
   let modelOverride = input.model
+  // Pesan siap-pakai untuk jalur skill: isi skill BESERTA penanda identitas
+  // yang dibaca pagar "sudah dimuat". Penanda itu harus ikut ke riwayat, jadi
+  // pesannya dirakit di sini sekali dan dipakai untuk mengirim maupun menyimpan.
+  let skillMessage: ModelMessage | undefined
 
   const command = parseCommand(input.text)
   if (command) {
@@ -123,6 +133,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         )
       }
       text = renderSkill(skill, command.args)
+      skillMessage = skillCommandMessage(skill, command.args)
     } else if (isBuiltin(command.name)) {
       return builtinTurn(session, config, command.name, command.args, input)
     } else {
@@ -208,7 +219,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
   }
 
   const history = listModelMessages(session.id)
-  const messages: ModelMessage[] = [...history, { role: "user", content: text }]
+  const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
+  const messages: ModelMessage[] = [...history, userTurn]
 
   try {
     const result = streamText({
@@ -307,7 +319,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
     const steps = await result.steps
     appendModelMessages(session.id, [
-      { role: "user", content: text },
+      userTurn,
       ...steps.flatMap((step) => step.response.messages),
     ])
     publishSnapshot()
@@ -567,7 +579,10 @@ function renderSkills(config: Config, cwd: string): string {
     report,
     "",
     `${skills.length} skills found:`,
-    ...skills.map((skill) => `  ${skill.name.padEnd(28)} ${skill.description}`),
+    // Id lengkap, bukan `name`: nama telanjang tidak pernah bisa dipanggil, dan
+    // daftar yang menampilkannya membuat user mengetik `/brainstorming` lalu
+    // dijawab "Unknown command" oleh satu-satunya tempat yang menjelaskannya.
+    ...skills.map((skill) => `  /${skill.id.padEnd(36)} ${skill.description}`),
   ].join("\n")
 }
 

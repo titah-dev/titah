@@ -182,7 +182,7 @@
           },
           "skills": {
             "default": [],
-            "description": "Skill names whose full content is loaded into this agent's system prompt",
+            "description": "Skill ids (\"namespace:name\", as listed by /skills) whose full content is loaded into this agent's system prompt. Bare names never match.",
             "type": "array",
             "items": {
               "type": "string"

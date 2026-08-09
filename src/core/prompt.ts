@@ -2,13 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
-import {
-  buildSkillIndex,
-  skillById,
-  skillCatalog,
-  type Skill,
-  type SkillConflict,
-} from "./skill.ts"
+import { buildSkillIndex, skillById, skillCatalog, type Skill } from "./skill.ts"
 
 /**
  * Urutan file instruksi (Q13): AGENTS.md → CLAUDE.md → TITAH.md.
@@ -79,8 +73,6 @@ function discover(cwd: string): InstructionFile[] {
 export interface BuiltPrompt {
   system: string
   sources: string[]
-  missingSkills: string[]
-  conflicts: SkillConflict[]
 }
 
 export function buildSystemPrompt(config: Config, cwd: string, agentID?: string): BuiltPrompt {
@@ -110,17 +102,17 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
   // `always` berlaku untuk semua agent; `agent.skills` menambahkan yang khusus
   // agent ini. Keduanya dimuat UTUH — sisanya cukup dikatalogkan, karena memuat
   // semuanya menghabiskan context window sebelum kerja dimulai.
+  //
+  // Yang tidak ketemu dilewati tanpa suara DI SINI dengan sengaja: yang melapor
+  // adalah `renderSkillReport`, yang dibaca `/skills` dan `titah doctor`.
+  // Menyusun prompt bukan tempat untuk mengeluh, dan dua penghitung untuk hal
+  // yang sama berarti salah satunya pasti ketinggalan zaman.
   const wanted = [...config.skills.always, ...(agent?.skills ?? [])]
-  const missingSkills: string[] = []
   const full: Skill[] = []
 
   for (const id of wanted) {
     const skill = skillById(index.skills, id)
-    if (skill) {
-      if (!full.includes(skill)) full.push(skill)
-    } else if (!missingSkills.includes(id)) {
-      missingSkills.push(id)
-    }
+    if (skill && !full.includes(skill)) full.push(skill)
   }
 
   for (const skill of full) {
@@ -141,7 +133,5 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
   return {
     system: sections.join("\n\n"),
     sources: [...files.map((file) => file.path), ...full.map((skill) => skill.file)],
-    missingSkills,
-    conflicts: index.conflicts,
   }
 }
