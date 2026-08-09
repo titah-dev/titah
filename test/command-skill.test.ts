@@ -147,7 +147,7 @@ test("prompt agent dan skill yang ditugaskan dimuat utuh; sisanya cuma dikatalog
       qc: {
         description: "Quality control",
         prompt: "Kamu teliti dan skeptis.",
-        skills: ["systematic-debugging"],
+        skills: ["ns:systematic-debugging"],
       },
     },
   })

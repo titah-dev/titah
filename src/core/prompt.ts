@@ -2,7 +2,13 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
-import { discoverSkills, skillCatalog } from "./skill.ts"
+import {
+  buildSkillIndex,
+  skillById,
+  skillCatalog,
+  type Skill,
+  type SkillConflict,
+} from "./skill.ts"
 
 /**
  * Urutan file instruksi (Q13): AGENTS.md → CLAUDE.md → TITAH.md.
@@ -73,6 +79,8 @@ function discover(cwd: string): InstructionFile[] {
 export interface BuiltPrompt {
   system: string
   sources: string[]
+  missingSkills: string[]
+  conflicts: SkillConflict[]
 }
 
 export function buildSystemPrompt(config: Config, cwd: string, agentID?: string): BuiltPrompt {
@@ -92,36 +100,48 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
     sections.push(`--- Project instructions from ${file.path} ---\n${file.content.trim()}`)
   }
 
-  const skills = discoverSkills(config, cwd)
+  const index = buildSkillIndex(config, cwd)
   const agent = agentID ? config.agent[agentID] : undefined
 
   if (agent?.prompt) {
     sections.push(`--- Instructions for agent "${agentID}" ---\n${agent.prompt.trim()}`)
   }
 
-  // Skill yang ditugaskan ke agent dimuat UTUH; sisanya cukup dikatalogkan,
-  // karena memuat semuanya akan menghabiskan context window sebelum kerja dimulai.
-  //
-  // Dicocokkan lewat id ATAU nama telanjang: skillByName sudah dihapus (Task 4),
-  // tapi config agent.skills masih ditulis dengan nama telanjang di sini. Task 5
-  // yang merapikan config ini supaya konsisten memakai id lengkap.
-  const assigned = (agent?.skills ?? [])
-    .map((name) => skills.find((skill) => skill.id === name || skill.name === name))
-    .filter((skill): skill is NonNullable<typeof skill> => skill !== undefined)
+  // `always` berlaku untuk semua agent; `agent.skills` menambahkan yang khusus
+  // agent ini. Keduanya dimuat UTUH — sisanya cukup dikatalogkan, karena memuat
+  // semuanya menghabiskan context window sebelum kerja dimulai.
+  const wanted = [...config.skills.always, ...(agent?.skills ?? [])]
+  const missingSkills: string[] = []
+  const full: Skill[] = []
 
-  for (const skill of assigned) {
-    sections.push(`--- Skill: ${skill.name} ---\n${skill.body}`)
+  for (const id of wanted) {
+    const skill = skillById(index.skills, id)
+    if (skill) {
+      if (!full.includes(skill)) full.push(skill)
+    } else if (!missingSkills.includes(id)) {
+      missingSkills.push(id)
+    }
   }
 
-  const rest = skills.filter((skill) => !assigned.includes(skill))
+  for (const skill of full) {
+    sections.push(`--- Skill: ${skill.id} ---\n${skill.body}`)
+  }
+
+  const rest = index.skills.filter((skill) => !full.includes(skill))
   if (rest.length > 0) {
     sections.push(
-      `--- Available skills (ask the user to run /skills for details) ---\n${skillCatalog(rest)}`,
+      [
+        "--- Available skills ---",
+        'Call skill("<id>") to load one in full when it applies to the task.',
+        skillCatalog(rest),
+      ].join("\n"),
     )
   }
 
   return {
     system: sections.join("\n\n"),
-    sources: [...files.map((file) => file.path), ...assigned.map((skill) => skill.file)],
+    sources: [...files.map((file) => file.path), ...full.map((skill) => skill.file)],
+    missingSkills,
+    conflicts: index.conflicts,
   }
 }
