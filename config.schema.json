@@ -1,0 +1,356 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Titah configuration",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "model": {
+      "description": "Default model, in \"provider/model\" form. Nothing is guessed.",
+      "type": "string"
+    },
+    "smallModel": {
+      "description": "Cheap model for light work (session titles, compaction summaries)",
+      "type": "string"
+    },
+    "provider": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Provider display name",
+            "type": "string"
+          },
+          "npm": {
+            "default": "@ai-sdk/openai-compatible",
+            "description": "AI SDK package to use. openai-compatible is the default.",
+            "type": "string",
+            "enum": [
+              "@ai-sdk/openai-compatible",
+              "@ai-sdk/anthropic"
+            ]
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "baseURL": {
+                "description": "Endpoint base URL, e.g. https://host/v1",
+                "type": "string"
+              },
+              "apiKey": {
+                "description": "API key. Prefer `${env:VAR_NAME}` or auth.json — do not put plaintext here.",
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "includeUsage": {
+                "default": true,
+                "description": "Ask for token usage while streaming (stream_options.include_usage). Turn off if your endpoint rejects that field.",
+                "type": "boolean"
+              }
+            },
+            "description": "Options passed to the AI SDK provider factory"
+          },
+          "models": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "Display name for this model",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "externalAgent": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Executable to invoke, e.g. \"claude\""
+          },
+          "args": {
+            "default": [],
+            "description": "Arguments for the FIRST call. `{prompt}` and `{session}` are substituted.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resumeArgs": {
+            "default": [],
+            "description": "Arguments for resuming a session. Empty means reuse `args`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sessionMode": {
+            "default": "discover",
+            "description": "\"generate\": Titah creates a UUID and hands it to the CLI (Claude Code style). \"discover\": the session id is read from the first call's output (opencode style).",
+            "type": "string",
+            "enum": [
+              "generate",
+              "discover"
+            ]
+          },
+          "format": {
+            "default": "stream-json",
+            "description": "Output format expected from the CLI",
+            "type": "string",
+            "enum": [
+              "stream-json",
+              "json",
+              "text"
+            ]
+          },
+          "timeout": {
+            "default": 600000,
+            "description": "Timeout in milliseconds. Defaults to 10 minutes.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    "agent": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "Shown in the agent picker",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "Appended to the system prompt",
+            "type": "string"
+          },
+          "model": {
+            "description": "Model override, in \"provider/model\" form",
+            "type": "string"
+          },
+          "tools": {
+            "default": {},
+            "description": "Tool filter, e.g. {\"write\": false}. Tools not listed stay enabled.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "skills": {
+            "default": [],
+            "description": "Skill names whose full content is loaded into this agent's system prompt",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "permission": {
+            "description": "Permission override for this agent, on top of the global `permission`. This is what separates Build Auto from Build Manual.",
+            "type": "object",
+            "properties": {
+              "edit": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
+              "write": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
+              "bash": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
+              "allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "command": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "string",
+            "description": "Prompt template. `{{.Input}}` or `$ARGUMENTS` is replaced with the argument."
+          },
+          "description": {
+            "type": "string"
+          },
+          "agent": {
+            "description": "Agent that runs this command",
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "template"
+        ]
+      }
+    },
+    "skills": {
+      "default": {
+        "paths": []
+      },
+      "type": "object",
+      "properties": {
+        "paths": {
+          "default": [],
+          "description": "Directories containing skills. Supports <dir>/<name>/SKILL.md and <dir>/<name>.md",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "defaultAgent": {
+      "description": "Agent used when none is selected",
+      "type": "string"
+    },
+    "permission": {
+      "default": {
+        "edit": "ask",
+        "write": "ask",
+        "bash": "ask",
+        "allowlist": []
+      },
+      "type": "object",
+      "properties": {
+        "edit": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
+        "write": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
+        "bash": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
+        "allowlist": {
+          "default": [],
+          "description": "Command patterns that are always allowed, e.g. \"git *\"",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Deny by default. With no client connected, every ask becomes a deny."
+    },
+    "keybinds": {
+      "default": {},
+      "description": "TUI keybinding overrides, e.g. {\"session_interrupt\": \"ctrl+g\"}. Defaults follow opencode; \"none\" disables an action.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "instructions": {
+      "default": [],
+      "description": "Extra instruction file paths, beyond AGENTS.md/CLAUDE.md/TITAH.md",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "logLevel": {
+      "default": "INFO",
+      "type": "string",
+      "enum": [
+        "DEBUG",
+        "INFO",
+        "WARN",
+        "ERROR"
+      ]
+    }
+  }
+}

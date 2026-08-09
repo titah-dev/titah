@@ -1,0 +1,72 @@
+{
+  "name": "titah",
+  "version": "0.1.0",
+  "description": "Coding agent CLI yang bisa mendelegasikan pertanyaan ke agent editor lain (claude, opencode, ...)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "titah": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "files": [
+    "dist",
+    "src",
+    "config.schema.json",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE",
+    "ascii-titah-art.txt",
+    "ascii-titah-art-wide.txt",
+    "ascii-logo-art.txt"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node src/cli.ts",
+    "schema": "node scripts/gen-schema.ts",
+    "smoke": "node scripts/smoke.ts",
+    "test": "npm run build --silent && node --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm run schema && npm run build && npm test",
+    "release:check": "npm pack --dry-run",
+    "watch": "tsc -p tsconfig.json --watch --preserveWatchOutput"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.36",
+    "@ai-sdk/openai-compatible": "^3.0.27",
+    "ai": "^7.0.58",
+    "ink": "^7.1.1",
+    "jsonc-parser": "^3.3.1",
+    "react": "^19.2.8",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "typescript": "^5.9.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "coding-agent",
+    "llm",
+    "tui",
+    "claude",
+    "opencode",
+    "delegation",
+    "consensus"
+  ],
+  "author": "Akil",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/titah-dev/titah.git"
+  },
+  "homepage": "https://github.com/titah-dev/titah#readme",
+  "bugs": {
+    "url": "https://github.com/titah-dev/titah/issues"
+  },
+  "sideEffects": false
+}

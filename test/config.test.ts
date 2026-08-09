@@ -1,0 +1,264 @@
+import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import test from "node:test"
+import { loadConfig, redact, ConfigError } from "../src/core/config.ts"
+
+function sandbox(): { configHome: string; project: string; cleanup: () => void } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-test-"))
+  const configHome = path.join(root, "config")
+  const project = path.join(root, "project")
+  fs.mkdirSync(path.join(configHome, "titah"), { recursive: true })
+  fs.mkdirSync(project, { recursive: true })
+
+  const prevConfig = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = configHome
+  const prevData = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = path.join(root, "data")
+
+  return {
+    configHome,
+    project,
+    cleanup() {
+      if (prevConfig === undefined) delete process.env.XDG_CONFIG_HOME
+      else process.env.XDG_CONFIG_HOME = prevConfig
+      if (prevData === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = prevData
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  }
+}
+
+function writeGlobal(configHome: string, value: unknown): void {
+  fs.writeFileSync(
+    path.join(configHome, "titah", "titah.json"),
+    typeof value === "string" ? value : JSON.stringify(value),
+  )
+}
+
+test("membaca JSONC: komentar dan trailing comma diterima", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(
+      box.configHome,
+      `{
+        // model default
+        "model": "local/tiny",
+        "logLevel": "DEBUG", /* blok */
+      }`,
+    )
+    const { config } = loadConfig(box.project)
+    assert.equal(config.model, "local/tiny")
+    assert.equal(config.logLevel, "DEBUG")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("config proyek di-merge di atas config global, array diganti utuh", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, {
+      model: "global/model",
+      logLevel: "WARN",
+      instructions: ["a.md", "b.md"],
+      provider: { p: { npm: "@ai-sdk/openai-compatible", options: { baseURL: "http://g/v1" } } },
+    })
+    fs.writeFileSync(
+      path.join(box.project, "titah.json"),
+      JSON.stringify({ model: "project/model", instructions: ["only.md"] }),
+    )
+
+    const { config, sources } = loadConfig(box.project)
+    assert.equal(config.model, "project/model")
+    assert.equal(config.logLevel, "WARN", "kunci yang tidak ditimpa harus bertahan")
+    assert.deepEqual(config.instructions, ["only.md"], "array diganti, bukan digabung")
+    assert.equal(config.provider["p"]?.options?.baseURL, "http://g/v1")
+    assert.equal(sources.length, 2)
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("${env:VAR} diganti kalau variabelnya ada", () => {
+  const box = sandbox()
+  process.env.TITAH_TEST_KEY = "rahasia-123"
+  try {
+    writeGlobal(box.configHome, {
+      provider: {
+        p: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://x/v1", apiKey: "${env:TITAH_TEST_KEY}" },
+        },
+      },
+    })
+    const { config, missingEnv } = loadConfig(box.project)
+    assert.equal(config.provider["p"]?.options?.apiKey, "rahasia-123")
+    assert.deepEqual(missingEnv, [])
+  } finally {
+    delete process.env.TITAH_TEST_KEY
+    box.cleanup()
+  }
+})
+
+test("${env:VAR} yang tidak ada membuang kuncinya dan dicatat, bukan melempar error", () => {
+  const box = sandbox()
+  delete process.env.TITAH_TEST_ABSENT
+  try {
+    writeGlobal(box.configHome, {
+      model: "p/m",
+      provider: {
+        p: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "http://x/v1", apiKey: "${env:TITAH_TEST_ABSENT}" },
+        },
+      },
+    })
+    const { config, missingEnv } = loadConfig(box.project)
+
+    // Config tetap termuat — lima provider di config, satu yang dipakai.
+    assert.equal(config.model, "p/m")
+    assert.equal(config.provider["p"]?.options?.apiKey, undefined)
+    assert.equal(missingEnv.length, 1)
+    assert.equal(missingEnv[0]?.variable, "TITAH_TEST_ABSENT")
+    assert.match(missingEnv[0]?.at ?? "", /provider\.p\.options\.apiKey/)
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("JSON rusak melempar ConfigError dengan nama file", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, "{ \"model\": }")
+    assert.throws(() => loadConfig(box.project), (error: unknown) => {
+      assert.ok(error instanceof ConfigError)
+      assert.match(error.message, /titah\.json/)
+      return true
+    })
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("nilai enum yang tidak sah melempar ConfigError, bukan diam-diam diterima", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, { logLevel: "VERBOSE" })
+    assert.throws(() => loadConfig(box.project), ConfigError)
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("registry agent eksternal punya default claude + opencode, config user menang", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, {
+      externalAgent: { claude: { command: "claude-custom", timeout: 1000 } },
+    })
+    const { config } = loadConfig(box.project)
+    assert.equal(config.externalAgent["claude"]?.command, "claude-custom")
+    assert.equal(config.externalAgent["claude"]?.timeout, 1000)
+    assert.equal(config.externalAgent["opencode"]?.command, "opencode")
+    assert.equal(config.externalAgent["opencode"]?.timeout, 600_000, "default 10 menit (Q24)")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("redact menyembunyikan apiKey dan header yang mengandung rahasia", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, {
+      provider: {
+        p: {
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "http://x/v1",
+            apiKey: "sk-jangan-bocor",
+            headers: { "X-Api-Token": "rahasia", "X-Trace": "boleh-terlihat" },
+          },
+        },
+      },
+    })
+    const { config } = loadConfig(box.project)
+    const safe = redact(config)
+
+    assert.equal(safe.provider["p"]?.options?.apiKey, "***")
+    assert.equal(safe.provider["p"]?.options?.headers?.["X-Api-Token"], "***")
+    assert.equal(safe.provider["p"]?.options?.headers?.["X-Trace"], "boleh-terlihat")
+    assert.equal(config.provider["p"]?.options?.apiKey, "sk-jangan-bocor", "asli tidak berubah")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("tiga mode bawaan disuntikkan: plan, build, build-auto", () => {
+  const box = sandbox()
+  try {
+    const { config } = loadConfig(box.project)
+
+    assert.deepEqual(
+      Object.keys(config.agent).sort(),
+      ["build", "build-auto", "plan"],
+    )
+    assert.equal(config.agent["plan"]?.permission?.write, "deny")
+    assert.equal(config.agent["plan"]?.permission?.bash, "deny")
+    assert.equal(config.agent["build"]?.permission?.write, "ask")
+    assert.equal(config.agent["build-auto"]?.permission?.write, "allow")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("mode default adalah build — bukan 'tanpa agent' yang tak bernama", () => {
+  const box = sandbox()
+  try {
+    assert.equal(loadConfig(box.project).config.defaultAgent, "build")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("defaultAgent pilihan user tidak ditimpa", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, { defaultAgent: "plan" })
+    assert.equal(loadConfig(box.project).config.defaultAgent, "plan")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("agent bawaan bisa ditimpa user dengan id yang sama", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, {
+      agent: { plan: { description: "punyaku", tools: {} } },
+    })
+    const { config } = loadConfig(box.project)
+
+    assert.equal(config.agent["plan"]?.description, "punyaku")
+    assert.deepEqual(config.agent["plan"]?.tools, {}, "definisi user menang utuh")
+    assert.ok(config.agent["build-auto"], "bawaan lain tetap ada")
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("agent milik user sendiri hidup berdampingan dengan bawaan", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, { agent: { qc: { description: "punyaku" } } })
+    const { config } = loadConfig(box.project)
+
+    assert.deepEqual(
+      Object.keys(config.agent).sort(),
+      ["build", "build-auto", "plan", "qc"],
+    )
+  } finally {
+    box.cleanup()
+  }
+})

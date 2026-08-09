@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# jangan pernah commit kredensial
+auth.json
+.env
+.env.*
+
+# ruang kerja subagent-driven-development (scratch, bukan sumber)
+.superpowers/
