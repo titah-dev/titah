@@ -76,15 +76,45 @@ test("skills.paths opencode dibaca dari config-nya", () => {
   ])
 })
 
+test("config opencode yang hilang atau formatnya asing menghasilkan nol sumber, bukan error", () => {
+  // Format itu milik opencode dan bisa berubah kapan saja tanpa memberi tahu —
+  // aturan yang sama seperti claudeSources, dicek di sini supaya regresi pada
+  // guard opencodeSources tidak lolos tanpa terdeteksi.
+  assert.deepEqual(opencodeSources(fakeHome({})), [])
+  assert.deepEqual(
+    opencodeSources(fakeHome({ ".config/opencode/opencode.json": "{ bukan json" })),
+    [],
+  )
+  assert.deepEqual(
+    opencodeSources(fakeHome({ ".config/opencode/opencode.json": '{"skills":"bukan objek"}' })),
+    [],
+  )
+  assert.deepEqual(
+    opencodeSources(
+      fakeHome({
+        ".config/opencode/opencode.json": JSON.stringify({ skills: { paths: "bukan array" } }),
+      }),
+    ),
+    [],
+  )
+})
+
 test("path milik user menang atas hasil auto-deteksi", () => {
   // Konfigurasi yang ditulis sendiri harus mengalahkan apa pun yang disimpulkan.
+  // Urutan LENGKAP dicek, bukan cuma elemen pertama — kalau auto-deteksi
+  // diam-diam hilang (mis. `...auto` di allSources terlepas), sources[0]
+  // tetap "punyaku" tapi panjangnya jadi 1, dan itu harus tertangkap di sini.
   const home = fakeHome({
     ".config/opencode/opencode.json": JSON.stringify({ skills: { paths: ["/tmp/auto"] } }),
   })
   const config = Config.parse({ skills: { paths: [{ path: "/tmp/punyaku", as: "punyaku" }] } })
   const sources = allSources(config, "/tmp", home)
 
-  assert.equal(sources[0]?.namespace, "punyaku", "punya user lebih dulu")
+  assert.deepEqual(
+    sources.map((source) => source.namespace),
+    ["punyaku", "auto"],
+    "punya user lebih dulu, auto-deteksi tetap ada di belakangnya",
+  )
 })
 
 test("discover kosong mematikan seluruh auto-deteksi", () => {
