@@ -153,11 +153,15 @@ export function suggest(options: SuggestOptions): Suggestion[] {
 
 export function skillSuggestions(config: Config, cwd: string, query = ""): Suggestion[] {
   return discoverSkills(config, cwd)
-    .filter((skill) => matches(query, skill.name))
+    // Saring lewat id lengkap (`namespace:name`), bukan `name` — supaya
+    // mengetik "superpowers:" mempersempit ke plugin itu saja.
+    .filter((skill) => matches(query, skill.id))
     .map((skill) => ({
       kind: "skill" as const,
-      value: skill.name,
-      label: skill.name,
+      // Yang disisipkan adalah COMMAND-nya. Kalimat "Use the X skill" harus
+      // ditafsirkan model dan bisa diabaikan; command selalu dijalankan.
+      value: `/${skill.id} `,
+      label: `/${skill.id}`,
       detail: skill.description,
     }))
 }

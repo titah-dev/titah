@@ -1,9 +1,13 @@
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 import {
   applySuggestion,
   detectTrigger,
   modelSuggestions,
+  skillSuggestions,
   suggest,
 } from "../src/tui/complete.ts"
 import { spinnerFrame } from "../dist/tui/components.js"
@@ -113,6 +117,48 @@ test("model bisa disaring lewat query", () => {
     modelSuggestions(config, "llama").map((item) => item.value),
     ["local/llama:70b"],
   )
+})
+
+// ---------- skill ----------
+
+function tree(spec: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-complete-skill-"))
+  for (const [relative, content] of Object.entries(spec)) {
+    const full = path.join(root, relative)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, content)
+  }
+  return root
+}
+
+test("memilih skill menyisipkan commandnya, bukan kalimat tentang skill itu", () => {
+  // Sebelumnya menyisipkan: Use the "X" skill. — kalimat yang harus dipahami
+  // model, bukan perintah yang pasti dijalankan.
+  const skillDir = tree({ "a/SKILL.md": "---\nname: a\n---\nisi" })
+  const skillConfig = Config.parse({
+    skills: { discover: [], paths: [{ path: skillDir, as: "ns" }] },
+  })
+  const [item] = skillSuggestions(skillConfig, "/x", "")
+
+  assert.equal(item?.label, "/ns:a")
+  assert.equal(item?.value, "/ns:a ")
+})
+
+test("mengetik namespace mempersempit ke plugin itu saja", () => {
+  const skillDir = tree({ "a/SKILL.md": "---\nname: a\n---\nisi" })
+  const lainDir = tree({ "b/SKILL.md": "---\nname: b\n---\nisi" })
+  const skillConfig = Config.parse({
+    skills: {
+      discover: [],
+      paths: [
+        { path: skillDir, as: "ns" },
+        { path: lainDir, as: "lain" },
+      ],
+    },
+  })
+  const hasil = skillSuggestions(skillConfig, "/x", "ns:")
+  assert.ok(hasil.every((item) => item.label.startsWith("/ns:")))
+  assert.ok(hasil.length > 0)
 })
 
 // ---------- penerapan pilihan ----------

@@ -407,9 +407,10 @@ export function App({
         return
       }
       if (item.kind === "skill") {
-        const insert = `Use the "${item.value}" skill. `
-        setDraft((value) => value + insert)
-        return setCursor((value) => value + insert.length)
+        // item.value sudah "/namespace:nama " — command yang PASTI dijalankan,
+        // bukan kalimat yang model boleh abaikan.
+        setDraft(item.value)
+        return setCursor(item.value.length)
       }
 
       if (item.kind === "command") {
