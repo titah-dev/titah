@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { Config } from "./schema.ts"
+import { allSources } from "./skill-sources.ts"
 
 /**
  * Skill = file markdown yang dimuat ke konteks saat dipanggil (Q26).
@@ -127,30 +128,59 @@ export function scanSource(source: SkillSource): Skill[] {
   return out
 }
 
-export function discoverSkills(config: Config, cwd: string): Skill[] {
+export interface SkillConflict {
+  id: string
+  /** File yang dipakai. */
+  kept: string
+  /** File yang dikalahkan. */
+  dropped: string
+}
+
+export interface SkillIndex {
+  skills: Skill[]
+  conflicts: SkillConflict[]
+}
+
+/**
+ * Seluruh skill yang terlihat, beserta bentrok yang terjadi saat menyusunnya.
+ *
+ * Konflik dikembalikan, bukan dibuang, supaya `/skills` dan `titah doctor` bisa
+ * menunjukkannya. Bentrok yang senyap berarti skill yang dipanggil user bisa
+ * berganti sendiri begitu ada plugin baru terpasang.
+ */
+export function buildSkillIndex(config: Config, cwd: string, home?: string): SkillIndex {
   const found = new Map<string, Skill>()
-  for (const dirEntry of config.skills.paths) {
-    // Type guard diperlukan karena paths adalah union, bukan cast.
-    const dirPath = typeof dirEntry === "string" ? dirEntry : dirEntry.path
-    const namespaceOverride = typeof dirEntry === "string" ? undefined : dirEntry.as
-    const root = path.resolve(cwd, dirPath)
-    const namespace = namespaceOverride ?? deriveNamespace(root)
-    for (const skill of scanSource({ root, namespace })) {
-      if (!found.has(skill.id)) found.set(skill.id, skill)
+  const conflicts: SkillConflict[] = []
+
+  for (const source of allSources(config, cwd, home)) {
+    for (const skill of scanSource(source)) {
+      const existing = found.get(skill.id)
+      if (existing) {
+        conflicts.push({ id: skill.id, kept: existing.file, dropped: skill.file })
+        continue
+      }
+      found.set(skill.id, skill)
     }
   }
-  return [...found.values()].sort((a, b) => a.id.localeCompare(b.id))
+
+  return {
+    skills: [...found.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    conflicts,
+  }
 }
 
-/** Sementara: dipakai prompt.ts sampai Task 4 menggantinya dengan skillById. */
-export function skillByName(skills: Skill[], name: string): Skill | undefined {
-  return skills.find((skill) => skill.name === name || skill.id === name)
+export function discoverSkills(config: Config, cwd: string): Skill[] {
+  return buildSkillIndex(config, cwd).skills
 }
 
-/** Katalog satu baris per skill, cukup untuk model tahu apa yang tersedia. */
+/** Cocok hanya lewat id lengkap (`namespace:name`) — nama telanjang tidak pernah dipakai. */
+export function skillById(skills: Skill[], id: string): Skill | undefined {
+  return skills.find((skill) => skill.id === id)
+}
+
+/** Katalog satu baris per skill, dengan id lengkap karena itu yang harus diketik user. */
 export function skillCatalog(skills: Skill[]): string {
-  if (skills.length === 0) return ""
   return skills
-    .map((skill) => `- ${skill.name}${skill.description ? `: ${skill.description}` : ""}`)
+    .map((skill) => `- ${skill.id}${skill.description ? `: ${skill.description}` : ""}`)
     .join("\n")
 }

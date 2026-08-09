@@ -2,7 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
-import { discoverSkills, skillByName, skillCatalog } from "./skill.ts"
+import { discoverSkills, skillCatalog } from "./skill.ts"
 
 /**
  * Urutan file instruksi (Q13): AGENTS.md → CLAUDE.md → TITAH.md.
@@ -101,8 +101,12 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
 
   // Skill yang ditugaskan ke agent dimuat UTUH; sisanya cukup dikatalogkan,
   // karena memuat semuanya akan menghabiskan context window sebelum kerja dimulai.
+  //
+  // Dicocokkan lewat id ATAU nama telanjang: skillByName sudah dihapus (Task 4),
+  // tapi config agent.skills masih ditulis dengan nama telanjang di sini. Task 5
+  // yang merapikan config ini supaya konsisten memakai id lengkap.
   const assigned = (agent?.skills ?? [])
-    .map((name) => skillByName(skills, name))
+    .map((name) => skills.find((skill) => skill.id === name || skill.name === name))
     .filter((skill): skill is NonNullable<typeof skill> => skill !== undefined)
 
   for (const skill of assigned) {

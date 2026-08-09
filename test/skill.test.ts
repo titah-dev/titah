@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
-import { deriveNamespace, scanSource, discoverSkills } from "../src/core/skill.ts"
-import type { Config } from "../src/core/schema.ts"
+import { deriveNamespace, scanSource, discoverSkills, buildSkillIndex, skillById, skillCatalog } from "../src/core/skill.ts"
+import { Config } from "../src/core/schema.ts"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -136,4 +136,42 @@ test("discoverSkills menangani kedua bentuk paths: string dan objek {path, as}",
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   }
+})
+
+test("id kembar: yang pertama menang DAN konfliknya dicatat", () => {
+  // Perilaku lama membuang diam-diam. Karena namespace membuat bentrok jadi
+  // jarang, bentrok yang tersisa hampir pasti pertanda salah konfigurasi.
+  const root = tree({
+    "a/skills/sama/SKILL.md": "---\nname: sama\n---\npertama",
+    "b/skills/sama/SKILL.md": "---\nname: sama\n---\nkedua",
+  })
+  const config = Config.parse({
+    skills: {
+      discover: [],
+      paths: [
+        { path: path.join(root, "a", "skills"), as: "ns" },
+        { path: path.join(root, "b", "skills"), as: "ns" },
+      ],
+    },
+  })
+  const index = buildSkillIndex(config, root)
+
+  assert.equal(index.skills.length, 1)
+  assert.equal(index.skills[0]?.body, "pertama")
+  assert.equal(index.conflicts.length, 1)
+  assert.equal(index.conflicts[0]?.id, "ns:sama")
+})
+
+test("katalog memakai id lengkap, karena itu yang harus diketik user", () => {
+  const root = tree({ "skills/a/SKILL.md": "---\nname: a\ndescription: begini\n---\nbadan" })
+  const config = Config.parse({
+    skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }] },
+  })
+  assert.equal(skillCatalog(buildSkillIndex(config, root).skills), "- ns:a: begini")
+})
+
+test("skillById menemukan lewat id lengkap saja", () => {
+  const skills = [{ id: "ns:a", namespace: "ns", name: "a", description: "", body: "", file: "f" }]
+  assert.equal(skillById(skills, "ns:a")?.name, "a")
+  assert.equal(skillById(skills, "a"), undefined, "nama telanjang tidak pernah cocok")
 })

@@ -113,7 +113,7 @@ test("frontmatter dengan tanda kutip dan nilai berisi titik dua", () => {
 })
 
 test("discoverSkills menemukan dua tata letak dan melewati file lain", () => {
-  const config = Config.parse({ skills: { paths: [path.join(root, "skills")] } })
+  const config = Config.parse({ skills: { discover: [], paths: [path.join(root, "skills")] } })
   const skills = discoverSkills(config, root)
 
   assert.deepEqual(
@@ -125,14 +125,16 @@ test("discoverSkills menemukan dua tata letak dan melewati file lain", () => {
 })
 
 test("path skill yang tidak ada tidak menggagalkan sesi", () => {
-  const config = Config.parse({ skills: { paths: ["/tidak/ada/sama/sekali"] } })
+  const config = Config.parse({ skills: { discover: [], paths: ["/tidak/ada/sama/sekali"] } })
   assert.deepEqual(discoverSkills(config, root), [])
 })
 
 test("katalog skill ringkas satu baris per skill", () => {
-  const config = Config.parse({ skills: { paths: [path.join(root, "skills")] } })
+  const config = Config.parse({
+    skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }] },
+  })
   const catalog = skillCatalog(discoverSkills(config, root))
-  assert.match(catalog, /- systematic-debugging: Cara mendebug/)
+  assert.match(catalog, /- ns:systematic-debugging: Cara mendebug/)
   assert.equal(catalog.split("\n").length, 2)
 })
 
@@ -140,7 +142,7 @@ test("katalog skill ringkas satu baris per skill", () => {
 
 test("prompt agent dan skill yang ditugaskan dimuat utuh; sisanya cuma dikatalogkan", () => {
   const config = Config.parse({
-    skills: { paths: [path.join(root, "skills")] },
+    skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }] },
     agent: {
       qc: {
         description: "Quality control",
@@ -155,12 +157,16 @@ test("prompt agent dan skill yang ditugaskan dimuat utuh; sisanya cuma dikatalog
   assert.match(built.system, /Kamu teliti dan skeptis/)
   assert.match(built.system, /Isi skill debugging/, "skill yang ditugaskan dimuat utuh")
   assert.doesNotMatch(built.system, /Isi skill review/, "skill lain cukup dikatalogkan")
-  assert.match(built.system, /- review: Checklist review/)
+  assert.match(built.system, /- ns:review: Checklist review/)
   assert.ok(built.sources.some((source) => source.endsWith("SKILL.md")))
 })
 
 test("tanpa agent, tidak ada instruksi agent yang bocor ke system prompt", () => {
   const config = Config.parse({
+    // discover: [] wajib ada — tanpa agent pun buildSystemPrompt tetap memanggil
+    // discoverSkills, dan config kosong berarti default discover ["claude", "opencode"]
+    // akan membaca ~/.claude dan ~/.config/opencode sungguhan di mesin manapun test ini jalan.
+    skills: { discover: [] },
     agent: { qc: { prompt: "RAHASIA AGENT QC" } },
   })
   const built = buildSystemPrompt(config, root)
@@ -169,7 +175,7 @@ test("tanpa agent, tidak ada instruksi agent yang bocor ke system prompt", () =>
 
 test("skill yang ditugaskan tapi tidak ada dilewati diam-diam, bukan crash", () => {
   const config = Config.parse({
-    skills: { paths: [path.join(root, "skills")] },
+    skills: { discover: [], paths: [path.join(root, "skills")] },
     agent: { qc: { skills: ["skill-yang-tidak-ada"] } },
   })
   assert.doesNotThrow(() => buildSystemPrompt(config, root, "qc"))
