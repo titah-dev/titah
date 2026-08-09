@@ -162,7 +162,20 @@ export const Config = z.object({
   provider: z.record(z.string(), Provider).default({}),
   externalAgent: z.record(z.string(), ExternalAgent).default({}),
   agent: z.record(z.string(), Agent).default({}),
-  command: z.record(z.string(), Command).default({}),
+  command: z
+    .record(z.string(), Command)
+    .default({})
+    .superRefine((commands, ctx) => {
+      for (const name of Object.keys(commands)) {
+        if (!name.includes(":")) continue
+        ctx.addIssue({
+          code: "custom",
+          // `:` milik ruang nama skill. Membiarkannya di sini berarti dua hal
+          // berbeda bisa menjawab nama yang sama.
+          message: `Command name "${name}" must not contain a colon — that is reserved for skills (plugin:skill).`,
+        })
+      }
+    }),
   skills: Skills.default({ discover: ["claude", "opencode"], paths: [], always: [] }),
   defaultAgent: z
     .string()

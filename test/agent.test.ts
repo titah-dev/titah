@@ -24,11 +24,26 @@ const { createSession, listMessages, listModelMessages } = await import(
 const { bus } = await import("../src/core/event.ts")
 
 const project = path.join(root, "proyek")
+// Proyek terpisah supaya titah.json di sini tidak memengaruhi test lain yang
+// tidak peduli skill sama sekali.
+const skillProject = path.join(root, "proyek-skill")
 let restore: (() => void) | undefined
 
 before(() => {
   fs.mkdirSync(project, { recursive: true })
   fs.writeFileSync(path.join(project, "halo.txt"), "baris satu\nbaris dua\n")
+
+  fs.mkdirSync(path.join(skillProject, "skills", "hello"), { recursive: true })
+  fs.writeFileSync(
+    path.join(skillProject, "skills", "hello", "SKILL.md"),
+    "---\nname: hello\ndescription: Skill demo\n---\n\nISI SKILL DEMO.\n",
+  )
+  fs.writeFileSync(
+    path.join(skillProject, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [{ path: "skills", as: "demo" }] },
+    }),
+  )
 })
 
 afterEach(() => {
@@ -346,4 +361,49 @@ test("giliran yang berakhir tanpa teks tetap memberi penjelasan, bukan kosong", 
   const text = assistant.parts.find((part) => part.type === "text")
   assert.ok(text?.type === "text")
   assert.match(text.text, /stopped without giving a text answer/)
+})
+
+test("/namespace:skill memuat isi skill ke model, transkrip tetap tampilkan yang diketik", async () => {
+  mockStreaming([text("sudah dikerjakan")])
+  const session = createSession(skillProject)
+
+  const assistant = await prompt({
+    sessionID: session.id,
+    text: "/demo:hello lakukan sesuatu",
+  })
+  assert.equal(assistant.parts[0]?.type === "text" && assistant.parts[0].text, "sudah dikerjakan")
+
+  // Isi skill sampai ke model...
+  const sentToModel = JSON.stringify(listModelMessages(session.id))
+  assert.match(sentToModel, /ISI SKILL DEMO/)
+  assert.match(sentToModel, /lakukan sesuatu/)
+
+  // ...tapi transkrip yang terlihat user tetap menampilkan command apa adanya,
+  // bukan 9 KB isi skill.
+  const stored = listMessages(session.id)
+  const userText = stored[0]?.parts.find((part) => part.type === "text")
+  assert.ok(userText?.type === "text")
+  assert.equal(userText.text, "/demo:hello lakukan sesuatu")
+  assert.doesNotMatch(userText.text, /ISI SKILL DEMO/)
+})
+
+test("skill yang tidak dikenal menyarankan skill lain di namespace yang sama", async () => {
+  const session = createSession(skillProject)
+  const assistant = await prompt({ sessionID: session.id, text: "/demo:tidak-ada" })
+
+  assert.match(assistant.error ?? "", /Unknown skill "demo:tidak-ada"/)
+  const body = assistant.parts.find((part) => part.type === "text")
+  assert.ok(body?.type === "text")
+  assert.match(body.text, /Available in that namespace/)
+  assert.match(body.text, /\/demo:hello/)
+})
+
+test("skill dengan namespace yang tidak dikenal sama sekali diarahkan ke /skills", async () => {
+  const session = createSession(skillProject)
+  const assistant = await prompt({ sessionID: session.id, text: "/lain:apa-saja" })
+
+  assert.match(assistant.error ?? "", /Unknown skill "lain:apa-saja"/)
+  const body = assistant.parts.find((part) => part.type === "text")
+  assert.ok(body?.type === "text")
+  assert.match(body.text, /Run \/skills to see what is available/)
 })

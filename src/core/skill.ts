@@ -178,6 +178,17 @@ export function skillById(skills: Skill[], id: string): Skill | undefined {
   return skills.find((skill) => skill.id === id)
 }
 
+/**
+ * Isi skill sebagaimana dilihat model.
+ *
+ * Pembungkus `<skill>` bukan hiasan: peringkas `/compact` memakainya untuk
+ * mencatat "skill X dimuat" alih-alih menyalin ulang seluruh isinya ke ringkasan.
+ */
+export function renderSkill(skill: Skill, args = ""): string {
+  const block = `<skill name="${skill.id}" source="${skill.file}">\n${skill.body}\n</skill>`
+  return args.trim() === "" ? block : `${block}\n\n${args.trim()}`
+}
+
 /** Katalog satu baris per skill, dengan id lengkap karena itu yang harus diketik user. */
 export function skillCatalog(skills: Skill[]): string {
   return skills

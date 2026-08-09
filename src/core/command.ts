@@ -13,8 +13,12 @@ import type { Config } from "./schema.ts"
  * Tanpa itu, `/home/user/catatan.md` terbaca sebagai command `/home` — dan user
  * yang menempel path absolut ke dalam prompt akan mendapat error yang tidak
  * masuk akal alih-alih jawaban.
+ *
+ * Satu titik dua diizinkan untuk memisahkan namespace skill dari namanya.
+ * Karena skill SELALU bernama lengkap, kehadiran `:` sudah cukup menentukan
+ * bahwa ini skill — tidak ada aturan prioritas yang perlu diadili.
  */
-const COMMAND = /^\/([A-Za-z][\w-]*)(?:\s+([\s\S]*))?$/
+const COMMAND = /^\/([A-Za-z][\w-]*(?::[A-Za-z][\w-]*)?)(?:\s+([\s\S]*))?$/
 
 export interface CommandInvocation {
   name: string
@@ -25,6 +29,11 @@ export function parseCommand(text: string): CommandInvocation | undefined {
   const match = COMMAND.exec(text.trim())
   if (!match) return undefined
   return { name: match[1] as string, args: (match[2] ?? "").trim() }
+}
+
+/** Nama yang mengandung `:` adalah skill, bukan command dari config. */
+export function isSkillCommand(name: string): boolean {
+  return name.includes(":")
 }
 
 export function expandTemplate(template: string, args: string): string {

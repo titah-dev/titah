@@ -6,11 +6,12 @@ import test, { before, after } from "node:test"
 import {
   expandTemplate,
   isBuiltin,
+  isSkillCommand,
   listCommands,
   parseCommand,
   resolveCommand,
 } from "../src/core/command.ts"
-import { discoverSkills, parseFrontmatter, skillCatalog } from "../src/core/skill.ts"
+import { discoverSkills, parseFrontmatter, renderSkill, skillCatalog } from "../src/core/skill.ts"
 import { buildSystemPrompt } from "../src/core/prompt.ts"
 import { Config } from "../src/core/schema.ts"
 
@@ -92,6 +93,35 @@ test("command bawaan dikenali dan tidak bisa ditimpa config", () => {
   )
 })
 
+test("nama command boleh mengandung titik dua untuk skill", () => {
+  const parsed = parseCommand("/superpowers:brainstorming bikin fitur X")
+  assert.equal(parsed?.name, "superpowers:brainstorming")
+  assert.equal(parsed?.args, "bikin fitur X")
+})
+
+test("path absolut TETAP tidak terbaca sebagai command", () => {
+  // Perlindungan yang sudah ada: user yang menempel path tidak boleh dapat
+  // error command yang tidak masuk akal.
+  assert.equal(parseCommand("/home/user/catatan.md"), undefined)
+  assert.equal(parseCommand("/etc/hosts baca ini"), undefined)
+})
+
+test("isSkillCommand membedakan skill dari command config lewat titik dua", () => {
+  assert.equal(isSkillCommand("superpowers:brainstorming"), true)
+  assert.equal(isSkillCommand("review"), false)
+})
+
+test("kunci command di config tidak boleh mengandung titik dua", () => {
+  // `:` adalah ruang nama skill. Kalau config boleh memakainya, dua hal berbeda
+  // bisa menjawab nama yang sama dan aturan prioritas jadi perlu diadili —
+  // padahal seluruh desain ini dibangun supaya itu tidak pernah terjadi.
+  assert.throws(
+    () => Config.parse({ command: { "punya:saya": { template: "x" } } }),
+    /colon/i,
+  )
+  assert.doesNotThrow(() => Config.parse({ command: { biasa: { template: "x" } } }))
+})
+
 // ---------- skill ----------
 
 test("frontmatter dibaca, body dipisahkan", () => {
@@ -122,6 +152,28 @@ test("discoverSkills menemukan dua tata letak dan melewati file lain", () => {
     "nama dari frontmatter menang atas nama direktori/file",
   )
   assert.match(skills[1]?.body ?? "", /Isi skill debugging/)
+})
+
+test("isi skill dibungkus supaya bisa dikenali peringkas dan user", () => {
+  const skill = {
+    id: "ns:a",
+    namespace: "ns",
+    name: "a",
+    description: "",
+    body: "LANGKAH SATU",
+    file: "/tmp/a/SKILL.md",
+  }
+  const rendered = renderSkill(skill, "kerjakan X")
+
+  assert.match(rendered, /<skill name="ns:a" source="\/tmp\/a\/SKILL.md">/)
+  assert.match(rendered, /LANGKAH SATU/)
+  assert.match(rendered, /<\/skill>/)
+  assert.ok(rendered.trimEnd().endsWith("kerjakan X"), "argumen user datang setelah skill")
+})
+
+test("skill tanpa argumen tetap sah", () => {
+  const skill = { id: "ns:a", namespace: "ns", name: "a", description: "", body: "B", file: "f" }
+  assert.ok(renderSkill(skill, "").includes("B"))
 })
 
 test("path skill yang tidak ada tidak menggagalkan sesi", () => {

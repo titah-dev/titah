@@ -7,7 +7,7 @@ import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { resolveModel } from "./provider.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
-import { parseCommand, resolveCommand, isBuiltin, listCommands } from "./command.ts"
+import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
 import { runConsensus, synthesizerFor } from "./consensus.ts"
 import {
   COMPACT_SYSTEM,
@@ -16,7 +16,7 @@ import {
   renderTranscript,
   wrapSummary,
 } from "./compact.ts"
-import { discoverSkills } from "./skill.ts"
+import { discoverSkills, renderSkill, skillById } from "./skill.ts"
 import { ask, effectivePermission, setAutoApprove, type EffectivePermission } from "./permission.ts"
 import { externalSessionFor, rememberExternalSession } from "./storage/external.ts"
 import { take } from "./snapshot.ts"
@@ -104,38 +104,58 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
   const command = parseCommand(input.text)
   if (command) {
-    if (isBuiltin(command.name)) {
+    // Skill dipanggil langsung: `/superpowers:brainstorming pesan`. Isinya masuk
+    // ke pesan yang DIKIRIM, sementara transkrip tetap menampilkan yang diketik.
+    if (isSkillCommand(command.name)) {
+      const skills = discoverSkills(config, session.directory)
+      const skill = skillById(skills, command.name)
+      if (!skill) {
+        const sameNamespace = skills
+          .filter((entry) => entry.namespace === command.name.split(":")[0])
+          .map((entry) => `  /${entry.id}`)
+        return infoTurn(
+          session,
+          input.text,
+          sameNamespace.length > 0
+            ? `Unknown skill "${command.name}". Available in that namespace:\n${sameNamespace.join("\n")}`
+            : `Unknown skill "${command.name}". Run /skills to see what is available.`,
+          true,
+        )
+      }
+      text = renderSkill(skill, command.args)
+    } else if (isBuiltin(command.name)) {
       return builtinTurn(session, config, command.name, command.args, input)
-    }
-    const CLI_HINT: Record<string, string> = {
-      model: "From the CLI, pass --model instead. See `titah models`.",
-      agent: "From the CLI, pass --agent instead. See `titah run \"/agents\"`.",
-      skill: 'From the CLI, name the skill directly in your prompt. See `titah run "/skills"`.',
-      session: "From the CLI, use `titah sessions list` and `titah run -s <id>`.",
-      new: "From the CLI, `titah run` without -s already starts a new session.",
-    }
-    const hint = CLI_HINT[command.name]
-    if (hint) {
-      return infoTurn(
-        session,
-        input.text,
-        `/${command.name} only works inside the TUI, where it opens a picker.\n${hint}`,
-        true,
-      )
-    }
+    } else {
+      const CLI_HINT: Record<string, string> = {
+        model: "From the CLI, pass --model instead. See `titah models`.",
+        agent: "From the CLI, pass --agent instead. See `titah run \"/agents\"`.",
+        skill: 'From the CLI, name the skill directly in your prompt. See `titah run "/skills"`.',
+        session: "From the CLI, use `titah sessions list` and `titah run -s <id>`.",
+        new: "From the CLI, `titah run` without -s already starts a new session.",
+      }
+      const hint = CLI_HINT[command.name]
+      if (hint) {
+        return infoTurn(
+          session,
+          input.text,
+          `/${command.name} only works inside the TUI, where it opens a picker.\n${hint}`,
+          true,
+        )
+      }
 
-    const resolved = resolveCommand(config, command)
-    if (!resolved) {
-      return infoTurn(
-        session,
-        input.text,
-        `Unknown command "/${command.name}".\n\n${renderCommands(config)}`,
-        true,
-      )
+      const resolved = resolveCommand(config, command)
+      if (!resolved) {
+        return infoTurn(
+          session,
+          input.text,
+          `Unknown command "/${command.name}".\n\n${renderCommands(config)}`,
+          true,
+        )
+      }
+      text = resolved.prompt
+      agentID = resolved.agent ?? agentID
+      modelOverride = resolved.model ?? modelOverride
     }
-    text = resolved.prompt
-    agentID = resolved.agent ?? agentID
-    modelOverride = resolved.model ?? modelOverride
   }
 
   const agentDef = agentID ? config.agent[agentID] : undefined
