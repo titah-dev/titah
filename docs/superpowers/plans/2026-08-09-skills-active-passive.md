@@ -19,7 +19,8 @@ Every task's requirements implicitly include this section.
 - **No test may read the real `~/.claude` or `~/.config/opencode`.** Discovery adapters are tested against a temporary `HOME`. A test depending on whichever plugins happen to be installed passes on one machine and fails on every other.
 - **Tests never invoke a real external agent or a real provider.** Use stub models via `setModelResolver`.
 - **Every task ends green:** `npm run typecheck && npm run build && npm test` all pass before the task is considered done.
-- **Do not run `git commit` without explicit user approval.** The user has a standing instruction not to commit yet, and this repository still has zero commits. Commit steps below are written for when that approval arrives; until then, stage nothing and stop at the verification step.
+- **Commit every task.** The user approved committing and pushing on 2026-08-09; the baseline is `92ff181` on `main`, pushed to `git@github.com:titah-dev/titah.git`. Work happens on `feat/skills-active-passive`. Each task ends with its own commit — the review process diffs `BASE..HEAD` per task, so a task that does not commit cannot be reviewed.
+- **Every commit must leave the tree green.** No task may knowingly leave `npm run typecheck` broken "for a later task to fix": a red baseline makes the next task's failures indistinguishable from its own.
 - **Existing behaviour that must not regress:** the command regex must keep refusing to parse `/home/user/notes.md` as a command; `discoverSkills` must keep tolerating unreadable paths without failing a session.
 
 ---
@@ -213,6 +214,30 @@ export function scanSource(source: SkillSource): Skill[] {
 }
 ```
 
+**Keep the tree green.** `readSkill` gains a third parameter, and `prompt.ts` still
+calls `discoverSkills`/`skillByName`. Task 1 therefore keeps both working by
+deriving a namespace per configured path; Task 4 replaces the body entirely.
+Leaving typecheck red for three tasks would make Task 4's real failures
+indistinguishable from this one's leftovers.
+
+```ts
+export function discoverSkills(config: Config, cwd: string): Skill[] {
+  const found = new Map<string, Skill>()
+  for (const dir of config.skills.paths) {
+    const root = path.resolve(cwd, typeof dir === "string" ? dir : dir.path)
+    for (const skill of scanSource({ root, namespace: deriveNamespace(root) })) {
+      if (!found.has(skill.id)) found.set(skill.id, skill)
+    }
+  }
+  return [...found.values()].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** Sementara: dipakai prompt.ts sampai Task 4 menggantinya dengan skillById. */
+export function skillByName(skills: Skill[], name: string): Skill | undefined {
+  return skills.find((skill) => skill.name === name || skill.id === name)
+}
+```
+
 Update `readSkill` to take the namespace and build the id:
 
 ```ts
@@ -238,10 +263,10 @@ function readSkill(file: string, fallbackName: string, namespace: string): Skill
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npm run build && node --test test/skill.test.ts`
-Expected: PASS. Then `npm run typecheck` — expect errors in `prompt.ts` and `agent.ts` about the changed signature; those are fixed in Tasks 4 and 5. Leave them.
+Run: `npm run build && node --test test/skill.test.ts` → PASS
+Then the full gate: `npm run typecheck && npm run build && npm test` → all green.
 
-- [ ] **Step 5: Commit** *(only with user approval — see Global Constraints)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/skill.ts test/skill.test.ts
@@ -327,7 +352,7 @@ Update the default in the `Config` object (currently `skills: Skills.default({ p
 Run: `npm run build && node --test test/config.test.ts` → PASS
 Then regenerate the JSON schema: `npm run schema` (check `package.json` for the exact script name; it writes `config.schema.json`).
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/schema.ts config.schema.json test/config.test.ts
@@ -559,7 +584,7 @@ export function allSources(config: Config, cwd: string, home = os.homedir()): Sk
 
 Run: `npm run build && node --test test/skill-sources.test.ts` → PASS
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/skill-sources.ts test/skill-sources.test.ts
@@ -698,7 +723,7 @@ Add `import { allSources } from "./skill-sources.ts"` at the top. Delete the now
 
 Run: `npm run build && node --test test/skill.test.ts` → PASS
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/skill.ts test/skill.test.ts
@@ -845,7 +870,7 @@ and widen the function's declared return type to include `missingSkills: string[
 
 Run: `npm run build && node --test test/prompt.test.ts` → PASS, then `npm run typecheck` → clean.
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/prompt.ts test/prompt.test.ts
@@ -1009,7 +1034,7 @@ Restructure the existing `if (isBuiltin(...))` into the `else if` chain shown, k
 
 Run: `npm run build && node --test test/command.test.ts` → PASS, then `npm test` → all green.
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/command.ts src/core/skill.ts src/core/agent.ts test/command.test.ts
@@ -1233,7 +1258,7 @@ Register it in `src/core/tool/index.ts`: add the import, add `skillTool` to the 
 
 Run: `npm run build && node --test test/tool-skill.test.ts` → PASS, then `npm test` → all green.
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/tool/skill.ts src/core/tool/types.ts src/core/tool/index.ts src/core/agent.ts test/tool-skill.test.ts
@@ -1280,7 +1305,7 @@ In `src/core/compact.ts`, add one rule to `COMPACT_SYSTEM` between the current r
 
 Run: `npm run build && node --test test/compact.test.ts` → PASS
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/core/compact.ts test/compact.test.ts
@@ -1352,7 +1377,7 @@ Then in `src/tui/app.tsx`, the `item.kind === "skill"` branch of `runSuggestion`
 
 Run: `npm run build && node --test test/complete.test.ts` → PASS, then `npm test` → all green.
 
-- [ ] **Step 5: Commit** *(only with user approval)*
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/tui/complete.ts src/tui/app.tsx test/complete.test.ts
@@ -1458,7 +1483,7 @@ Run: `npm run build && node --test test/cli-doctor.test.ts` → PASS, then the f
 
 Add a "Skills" section documenting `discover`, `paths`, `always`, the `plugin:skill` naming rule, the folder-name namespace rule, and the two corrections from the spec (opencode plugins are JavaScript and are not supported; a skill cannot open a browser).
 
-- [ ] **Step 6: Commit** *(only with user approval)*
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/core/skill.ts src/cli.ts src/core/agent.ts README.md test/cli-doctor.test.ts
