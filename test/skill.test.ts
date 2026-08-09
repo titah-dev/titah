@@ -91,9 +91,10 @@ test("discoverSkills menangani kedua bentuk paths: string dan objek {path, as}",
     )
 
     // Config dengan kedua bentuk paths: satu string, satu object dengan as override
+    // discover: [] diperlukan agar test tidak membaca ~/.claude atau ~/.config/opencode
     const config: Config = {
       skills: {
-        discover: ["claude", "opencode"],
+        discover: [],
         paths: [
           stringPath, // bentuk string → namespace: "stdlib"
           { path: objectPath, as: "override" }, // bentuk object dengan as → namespace: "override"
