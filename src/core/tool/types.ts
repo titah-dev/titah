@@ -1,5 +1,6 @@
 import path from "node:path"
 import type { z } from "zod"
+import type { Config } from "../schema.ts"
 
 export interface ToolContext {
   /** Direktori kerja sesi. Semua path tool dibatasi di dalamnya. */
@@ -7,6 +8,8 @@ export interface ToolContext {
   sessionID: string
   callID: string
   signal: AbortSignal
+  /** Dibutuhkan tool yang membaca konfigurasi, mis. `skill`. */
+  config: Config
 }
 
 export interface ToolResult {

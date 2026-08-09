@@ -6,6 +6,7 @@ import test, { beforeEach, after } from "node:test"
 import { editTool, writeTool, bashTool, ToolError } from "../src/core/tool/index.ts"
 import { allowlistPattern } from "../src/core/tool/bash.ts"
 import type { ToolContext } from "../src/core/tool/types.ts"
+import { Config } from "../src/core/schema.ts"
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "titah-write-")))
 
@@ -23,11 +24,14 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+// discover: [] karena tool-tool ini tidak pernah menyentuh skill — config di
+// sini hanya mengisi bidang wajib ToolContext, bukan diuji.
 const ctx = (signal?: AbortSignal): ToolContext => ({
   cwd: root,
   sessionID: "ses_test",
   callID: "call_test",
   signal: signal ?? new AbortController().signal,
+  config: Config.parse({ skills: { discover: [] } }),
 })
 
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8")

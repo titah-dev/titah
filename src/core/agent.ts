@@ -866,7 +866,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
       async execute(input: unknown, options2: { toolCallId: string }) {
         const callID = options2.toolCallId
         const started = Date.now()
-        const ctx = { cwd, sessionID, callID, signal }
+        const ctx = { cwd, sessionID, callID, signal, config: options.config }
         upsert(callID, definition.name, { status: "running", input, started })
 
         try {

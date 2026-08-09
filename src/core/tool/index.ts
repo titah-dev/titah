@@ -6,6 +6,7 @@ import { grepTool } from "./grep.ts"
 import { editTool } from "./edit.ts"
 import { writeTool } from "./write.ts"
 import { bashTool } from "./bash.ts"
+import { skillTool } from "./skill.ts"
 
 /**
  * Tool baca berjalan tanpa izin. Tool yang mengubah sesuatu (`mutates: true`)
@@ -20,11 +21,12 @@ export const TOOLS: TitahTool[] = [
   editTool,
   writeTool,
   bashTool,
+  skillTool,
 ]
 
 export function toolByName(name: string): TitahTool | undefined {
   return TOOLS.find((tool) => tool.name === name)
 }
 
-export { readTool, listTool, globTool, grepTool, editTool, writeTool, bashTool }
+export { readTool, listTool, globTool, grepTool, editTool, writeTool, bashTool, skillTool }
 export * from "./types.ts"

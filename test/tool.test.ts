@@ -5,6 +5,7 @@ import path from "node:path"
 import test, { before, after } from "node:test"
 import { readTool, listTool, globTool, grepTool, ToolError, resolveInside } from "../src/core/tool/index.ts"
 import type { ToolContext } from "../src/core/tool/types.ts"
+import { Config } from "../src/core/schema.ts"
 
 let root: string
 
@@ -26,11 +27,14 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+// discover: [] karena tool-tool ini tidak pernah menyentuh skill — config di
+// sini hanya mengisi bidang wajib ToolContext, bukan diuji.
 const ctx = (): ToolContext => ({
   cwd: root,
   sessionID: "ses_test",
   callID: "call_test",
   signal: new AbortController().signal,
+  config: Config.parse({ skills: { discover: [] } }),
 })
 
 test("read memberi nomor baris mulai dari 1", async () => {
