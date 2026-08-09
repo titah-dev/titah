@@ -3,10 +3,35 @@ import { discoverSkills, renderSkill, skillById } from "../skill.ts"
 import { listModelMessages } from "../storage/session.ts"
 import type { TitahTool } from "./types.ts"
 
-/** Isi skill terbesar hari ini 9 KB; batas ini longgar dengan sengaja. */
-const MAX_BODY = 64 * 1024
-
 const LOADED = /<skill name="([^"]+)"/g
+
+/**
+ * Menarik teks yang bisa dibaca manusia dari satu bagian `content` pesan.
+ *
+ * Isi pesan model BUKAN selalu string. Hasil tool call sungguhan datang lewat
+ * AI SDK sebagai `{ role: "tool", content: [{ type: "tool-result", output:
+ * { type: "text", value: "..." } }] }` — array, bukan string. `JSON.stringify`
+ * atas array itu meng-escape setiap `"` di dalam `value` jadi `\"`, sehingga
+ * regex yang mencari `name="` tidak akan pernah cocok dengan `name=\"`. Jalan
+ * satu-satunya yang benar adalah membongkar bentuknya secara struktural, tidak
+ * meregex JSON.
+ */
+function extractText(part: unknown): string {
+  if (typeof part !== "object" || part === null) return ""
+  const record = part as Record<string, unknown>
+
+  if (record["type"] === "tool-result") {
+    const output = record["output"]
+    if (typeof output === "object" && output !== null) {
+      const value = (output as Record<string, unknown>)["value"]
+      if (typeof value === "string") return value
+    }
+    return ""
+  }
+
+  if (record["type"] === "text" && typeof record["text"] === "string") return record["text"] as string
+  return ""
+}
 
 /**
  * Skill yang sudah terlihat oleh model di sesi ini.
@@ -19,8 +44,11 @@ const LOADED = /<skill name="([^"]+)"/g
 export function loadedSkillIds(sessionID: string): Set<string> {
   const ids = new Set<string>()
   for (const message of listModelMessages(sessionID)) {
+    const { content } = message
+    // Pesan command (`/namespace:skill`) datang sebagai string polos; hasil
+    // tool call datang sebagai array bagian yang harus dibongkar satu-satu.
     const text =
-      typeof message.content === "string" ? message.content : JSON.stringify(message.content)
+      typeof content === "string" ? content : Array.isArray(content) ? content.map(extractText).join("\n") : ""
     for (const match of text.matchAll(LOADED)) ids.add(match[1] as string)
   }
   return ids
@@ -63,15 +91,15 @@ export const skillTool: TitahTool<typeof inputSchema> = {
       }
     }
 
-    const truncated = skill.body.length > MAX_BODY
-    const body = truncated
-      ? `${skill.body.slice(0, MAX_BODY)}\n\n[truncated: skill body exceeds ${MAX_BODY} bytes]`
-      : skill.body
-
+    // Tidak ada batas ukuran di sini dengan sengaja: `storeOutput` di
+    // agent.ts sudah memotong SETIAP output tool pada INLINE_LIMIT dengan
+    // pemberitahuannya sendiri sebelum model melihat apa pun. Batas kedua di
+    // sini dengan angka dan kata-kata berbeda hanya akan berbohong soal apa
+    // yang sebenarnya dipotong.
     return {
       title: `skill ${skill.id}`,
-      output: renderSkill({ ...skill, body }),
-      metadata: { file: skill.file, truncated },
+      output: renderSkill(skill),
+      metadata: { file: skill.file },
     }
   },
 }
