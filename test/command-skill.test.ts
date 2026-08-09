@@ -106,6 +106,34 @@ test("path absolut TETAP tidak terbaca sebagai command", () => {
   assert.equal(parseCommand("/etc/hosts baca ini"), undefined)
 })
 
+// Regex `COMMAND` mengizinkan TEPAT SATU titik dua. Daftar ini memaku batas
+// itu supaya penyederhanaan yang tampak tidak berbahaya — melebarkan kelas
+// karakter segmen kedua, atau melonggarkan batas akhir nama — kembali
+// meloloskan path seperti `/home:user/notes.md` sebagai command alih-alih
+// ditolak. Tanpa test ini, regresi seperti itu lolos hijau karena tidak ada
+// yang menyebut bentuk-bentuk ini satu per satu.
+const DITOLAK: string[] = [
+  "/a:b:c", // lebih dari satu titik dua
+  "/home:user/notes.md", // segmen kedua tidak boleh memuat "/"
+  "/ns:1abc", // segmen setelah titik dua tidak boleh diawali digit
+  "/ns:", // titik dua tanpa segmen setelahnya
+  "/:ns", // titik dua tanpa segmen SEBELUMnya
+  "/a::b", // dua titik dua berurutan
+]
+
+test("regex nama command menolak titik dua ganda, kosong, atau salah posisi", () => {
+  for (const input of DITOLAK) {
+    assert.equal(parseCommand(input), undefined, `harus ditolak sebagai command: ${input}`)
+  }
+
+  // Arah sebaliknya, dipaku di sini juga: perbaikan yang menolak seluruh
+  // daftar di atas dengan cara mempersempit regex secara berlebihan — sampai
+  // menolak titik dua yang SAH — akan tertangkap oleh baris ini.
+  const parsed = parseCommand("/superpowers:brainstorming halo")
+  assert.equal(parsed?.name, "superpowers:brainstorming")
+  assert.equal(parsed?.args, "halo")
+})
+
 test("isSkillCommand membedakan skill dari command config lewat titik dua", () => {
   assert.equal(isSkillCommand("superpowers:brainstorming"), true)
   assert.equal(isSkillCommand("review"), false)
