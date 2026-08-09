@@ -72,6 +72,27 @@ test("tata letak satu file per skill tetap didukung", () => {
   assert.equal(skill?.id, "ns:ringkas")
 })
 
+test("dokumen .md longgar tanpa frontmatter BUKAN skill", () => {
+  // README.md, CHANGELOG.md, dst berbagi folder dengan skill sungguhan.
+  // Tanpa aturan ini, banyak README di plugin yang sama semuanya jatuh ke
+  // id "<ns>:README" dan bentrok satu sama lain — bukan konflik yang berarti
+  // apa-apa, cuma dokumentasi yang salah dikira skill.
+  const root = tree({
+    "skills/a/SKILL.md": "---\nname: a\n---\nbadan",
+    "skills/README.md": "Dokumentasi biasa, bukan skill.",
+  })
+  const found = scanSource({ root: path.join(root, "skills"), namespace: "ns" })
+  assert.deepEqual(found.map((skill) => skill.id), ["ns:a"])
+})
+
+test("SKILL.md di dalam foldernya sendiri tetap skill walau tanpa frontmatter", () => {
+  // Beda dengan .md longgar: lokasinya (nama folder) sudah menyatakan maksud,
+  // jadi SKILL.md tanpa frontmatter TIDAK boleh ikut ditolak oleh aturan di atas.
+  const root = tree({ "skills/tanpa-frontmatter/SKILL.md": "isi tanpa header apa pun" })
+  const found = scanSource({ root: path.join(root, "skills"), namespace: "ns" })
+  assert.equal(found[0]?.id, "ns:tanpa-frontmatter")
+})
+
 test("discoverSkills menangani kedua bentuk paths: string dan objek {path, as}", () => {
   // Kedua bentuk harus ditangani dengan benar: string biasa dan object dengan path + as.
   // Test ini mendeteksi jika ternary tertukar atau if-else branch tercampur.
@@ -222,8 +243,9 @@ test("always yang menggantung disebut namanya", () => {
 })
 
 test("setup bersih tidak melaporkan apa-apa selain hitungan", () => {
-  // Baris konflik dan `always` yang menggantung hanya tampil kalau ada isinya —
-  // kalau selalu tampil (misalnya "0 conflicts"), user berhenti membacanya.
+  // Baris konflik, sumber nihil, dan `always` yang menggantung hanya tampil
+  // kalau ada isinya — kalau selalu tampil (misalnya "0 conflicts"), user
+  // berhenti membacanya.
   const root = tree({ "skills/a/SKILL.md": "---\nname: a\n---\nbadan" })
   const config = Config.parse({
     skills: { discover: [], paths: [{ path: path.join(root, "skills"), as: "ns" }], always: ["ns:a"] },
@@ -232,4 +254,29 @@ test("setup bersih tidak melaporkan apa-apa selain hitungan", () => {
 
   assert.doesNotMatch(laporan, /conflict/)
   assert.doesNotMatch(laporan, /not found/)
+  assert.doesNotMatch(laporan, /sources with no skills/)
+})
+
+test("skills.paths yang tidak menghasilkan skill apa pun dilaporkan dengan path-nya", () => {
+  // scanSource sengaja menelan direktori yang salah ketik atau tidak
+  // terbaca (path skill yang salah tidak boleh menggagalkan sesi) — tapi itu
+  // berarti dari dalam buildSkillIndex saja, path yang tidak ada tidak
+  // dibedakan dari path yang sungguh kosong. renderSkillReport harus
+  // menyebutnya, karena ini persis jenis salah-ketik yang tidak punya cara
+  // lain untuk ditemukan user.
+  const root = tree({ "skills/a/SKILL.md": "---\nname: a\n---\nbadan" })
+  const typo = path.join(root, "skilsl-salah-ketik")
+  const config = Config.parse({
+    skills: {
+      discover: [],
+      paths: [
+        { path: path.join(root, "skills"), as: "ns" },
+        { path: typo, as: "typo" },
+      ],
+    },
+  })
+  const laporan = renderSkillReport(config, root)
+
+  assert.match(laporan, /sources with no skills/)
+  assert.ok(laporan.includes(typo), "path yang nihil harus disebut apa adanya")
 })

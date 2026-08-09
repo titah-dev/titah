@@ -51,13 +51,27 @@ export function parseFrontmatter(content: string): {
   return { fields, body: content.slice(match[0].length) }
 }
 
-function readSkill(file: string, fallbackName: string, namespace: string): Skill | undefined {
+/**
+ * `requireFrontmatter` membedakan `SKILL.md` dari `<nama>.md` longgar: yang
+ * pertama sudah dinyatakan skill oleh LOKASI-nya (namanya sendiri jadi nama
+ * skill kalau frontmatter kosong), tapi yang kedua berbagi folder dengan
+ * dokumen biasa seperti README.md — frontmatter satu-satunya sinyal bahwa
+ * file itu memang dimaksudkan sebagai skill, bukan dokumentasi.
+ */
+function readSkill(
+  file: string,
+  fallbackName: string,
+  namespace: string,
+  options: { requireFrontmatter?: boolean } = {},
+): Skill | undefined {
   let content: string
   try {
     content = fs.readFileSync(file, "utf8")
   } catch {
     return undefined
   }
+  if (options.requireFrontmatter === true && !FRONTMATTER.test(content)) return undefined
+
   const { fields, body } = parseFrontmatter(content)
   const name = fields["name"] ?? fallbackName
   return {
@@ -118,7 +132,12 @@ export function scanSource(source: SkillSource): Skill[] {
         // Tetap turun: `skills/productivity/` bukan skill, ia hanya wadah.
         else walk(full, depth + 1)
       } else if (entry.name.endsWith(".md") && entry.name !== "SKILL.md") {
-        const skill = readSkill(full, entry.name.replace(/\.md$/, ""), source.namespace)
+        // Longgar berarti berbagi folder dengan dokumen biasa (README.md,
+        // CHANGELOG.md, ...) — tanpa frontmatter, tidak ada cara membedakan
+        // dokumentasi dari skill selain menolak yang tidak mendeklarasikan diri.
+        const skill = readSkill(full, entry.name.replace(/\.md$/, ""), source.namespace, {
+          requireFrontmatter: true,
+        })
         if (skill) out.push(skill)
       }
     }
@@ -139,6 +158,8 @@ export interface SkillConflict {
 export interface SkillIndex {
   skills: Skill[]
   conflicts: SkillConflict[]
+  /** Root sumber yang tidak menghasilkan skill sama sekali — typo, izin, atau memang kosong. */
+  emptySources: string[]
 }
 
 /**
@@ -147,13 +168,23 @@ export interface SkillIndex {
  * Konflik dikembalikan, bukan dibuang, supaya `/skills` dan `titah doctor` bisa
  * menunjukkannya. Bentrok yang senyap berarti skill yang dipanggil user bisa
  * berganti sendiri begitu ada plugin baru terpasang.
+ *
+ * `emptySources` dicatat untuk alasan yang sama: `scanSource` sengaja menelan
+ * direktori yang salah ketik atau tidak terbaca supaya sesi tetap berjalan,
+ * tapi itu berarti hasilnya tidak dibedakan dari "sumbernya memang kosong" —
+ * satu-satunya cara user tahu path-nya salah adalah kalau sesuatu di luar
+ * scanSource ikut melaporkan sumber mana yang nihil.
  */
 export function buildSkillIndex(config: Config, cwd: string, home?: string): SkillIndex {
   const found = new Map<string, Skill>()
   const conflicts: SkillConflict[] = []
+  const emptySources: string[] = []
 
   for (const source of allSources(config, cwd, home)) {
-    for (const skill of scanSource(source)) {
+    const skills = scanSource(source)
+    if (skills.length === 0) emptySources.push(source.root)
+
+    for (const skill of skills) {
       const existing = found.get(skill.id)
       if (existing) {
         conflicts.push({ id: skill.id, kept: existing.file, dropped: skill.file })
@@ -166,6 +197,7 @@ export function buildSkillIndex(config: Config, cwd: string, home?: string): Ski
   return {
     skills: [...found.values()].sort((a, b) => a.id.localeCompare(b.id)),
     conflicts,
+    emptySources,
   }
 }
 
@@ -199,9 +231,11 @@ export function skillCatalog(skills: Skill[]): string {
 /**
  * Ringkasan keadaan skill untuk `titah doctor` dan `/skills`.
  *
- * Konflik dan `always` yang menggantung ditampilkan di sini karena keduanya
- * dilewati diam-diam saat sesi berjalan — kalau tidak pernah muncul di mana pun,
- * user tidak punya cara menemukan konfigurasinya salah.
+ * Tiga hal ditampilkan di sini karena ketiganya dilewati diam-diam saat sesi
+ * berjalan — kalau tidak pernah muncul di mana pun, user tidak punya cara
+ * menemukan konfigurasinya salah: id kembar (konflik), nama `always` yang
+ * tidak pernah cocok dengan skill apa pun, dan path di `skills.paths` yang
+ * tidak menghasilkan satu skill pun (salah ketik, izin, atau memang kosong).
  */
 export function renderSkillReport(config: Config, cwd: string, home?: string): string {
   const index = buildSkillIndex(config, cwd, home)
@@ -220,6 +254,10 @@ export function renderSkillReport(config: Config, cwd: string, home?: string): s
     for (const conflict of index.conflicts) {
       lines.push(`    ${conflict.id}: kept ${conflict.kept}, ignored ${conflict.dropped}`)
     }
+  }
+
+  if (index.emptySources.length > 0) {
+    lines.push(`  sources with no skills: ${index.emptySources.join(", ")}`)
   }
 
   const missing = config.skills.always.filter((id) => !skillById(index.skills, id))

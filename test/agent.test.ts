@@ -398,6 +398,23 @@ test("skill yang tidak dikenal menyarankan skill lain di namespace yang sama", a
   assert.match(body.text, /\/demo:hello/)
 })
 
+test("/skills menampilkan ringkasan skill DI ATAS daftar, bukan di bawahnya", async () => {
+  // renderSkills merangkai [report, "", daftar]; test ini memaku URUTAN itu,
+  // bukan cuma keberadaan kedua bagiannya — reorder atau hapus salah satu
+  // panggilan renderSkillReport di sana harus membuat test ini gagal, karena
+  // tanpa test ini keduanya lolos hijau begitu saja.
+  const session = createSession(skillProject)
+  const assistant = await prompt({ sessionID: session.id, text: "/skills" })
+
+  const body = assistant.parts.find((part) => part.type === "text")
+  assert.ok(body?.type === "text")
+  const reportAt = body.text.indexOf("Skills:")
+  const listAt = body.text.indexOf("skills found:")
+  assert.ok(reportAt >= 0, "ringkasan report harus muncul")
+  assert.ok(listAt > reportAt, "daftar skill harus di BAWAH report")
+  assert.match(body.text, /demo\s+1 skill/)
+})
+
 test("skill dengan namespace yang tidak dikenal sama sekali diarahkan ke /skills", async () => {
   const session = createSession(skillProject)
   const assistant = await prompt({ sessionID: session.id, text: "/lain:apa-saja" })

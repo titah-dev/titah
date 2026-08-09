@@ -99,5 +99,19 @@ export function allSources(config: Config, cwd: string, home = os.homedir()): Sk
   const auto: SkillSource[] = []
   if (config.skills.discover.includes("claude")) auto.push(...claudeSources(home))
   if (config.skills.discover.includes("opencode")) auto.push(...opencodeSources(home))
-  return [...configSources(config, cwd), ...auto]
+  const combined = [...configSources(config, cwd), ...auto]
+
+  // Menaruh path yang sama persis dengan hasil auto-deteksi di `skills.paths`
+  // (mis. demi override namespace) itu wajar — tapi kalau dibiarkan, direktori
+  // itu dipindai dua kali dan setiap skill di dalamnya "bentrok dengan dirinya
+  // sendiri" di buildSkillIndex. Menyisakan kemunculan PERTAMA saja
+  // mempertahankan urutan prioritas di atas: milik user datang lebih dulu di
+  // `combined`, jadi dialah yang tersisa.
+  const seen = new Set<string>()
+  return combined.filter((source) => {
+    const key = path.resolve(source.root)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }

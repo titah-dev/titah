@@ -123,6 +123,26 @@ test("path milik user menang atas hasil auto-deteksi", () => {
   )
 })
 
+test("path user yang sama dengan hasil auto-deteksi tidak dipindai dua kali", () => {
+  // Menaruh path yang SAMA dengan yang sudah ditemukan discover (mis. demi
+  // override namespace) itu wajar. Tanpa dedupe, direktori itu muncul dua kali
+  // di allSources, dan buildSkillIndex mencatat setiap skill di dalamnya
+  // "bentrok dengan dirinya sendiri" — kept dan dropped adalah file yang sama.
+  const home = fakeHome({
+    ".config/opencode/opencode.json": JSON.stringify({ skills: { paths: ["/tmp/bersama"] } }),
+  })
+  const config = Config.parse({ skills: { paths: [{ path: "/tmp/bersama", as: "override" }] } })
+  const sources = allSources(config, "/proyek", home)
+
+  assert.equal(sources.length, 1, "root yang sama tidak boleh dipindai dua kali")
+  assert.equal(sources[0]?.root, path.resolve("/tmp/bersama"))
+  assert.equal(
+    sources[0]?.namespace,
+    "override",
+    "kemunculan PERTAMA yang disisakan — milik user, bukan hasil auto-deteksi",
+  )
+})
+
 test("discover kosong mematikan seluruh auto-deteksi", () => {
   const home = fakeHome({
     ".config/opencode/opencode.json": JSON.stringify({ skills: { paths: ["/tmp/auto"] } }),

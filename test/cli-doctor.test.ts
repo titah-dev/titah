@@ -1,0 +1,72 @@
+import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import test from "node:test"
+
+/**
+ * `cmdDoctor` di src/cli.ts memanggil renderSkillReport secara langsung, dan
+ * tidak ada seam untuk mengimpornya tanpa menjalankan `main()` di ujung file
+ * (cli.ts punya `await main(...)` di top level). Jalan yang jujur untuk
+ * membuktikan pemanggilan itu sungguh terpasang — bukan cuma ada di source —
+ * adalah menjalankan biner hasil build sungguhan dan membaca stdout-nya,
+ * persis seperti "Manual verification" di brief melakukannya.
+ */
+
+const CLI = path.join(import.meta.dirname, "..", "dist", "cli.js")
+
+function isolatedProject(titahJson: unknown, skillFiles: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-doctor-proj-"))
+  for (const [relative, content] of Object.entries(skillFiles)) {
+    const full = path.join(root, relative)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, content)
+  }
+  fs.writeFileSync(path.join(root, "titah.json"), JSON.stringify(titahJson))
+  return root
+}
+
+function runDoctor(cwd: string): string {
+  // HOME dan XDG_* diisolasi supaya test ini tidak pernah membaca ~/.claude
+  // atau ~/.config/opencode sungguhan di mesin manapun ia berjalan.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "titah-doctor-home-"))
+  return execFileSync(process.execPath, [CLI, "doctor"], {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_CONFIG_HOME: path.join(home, ".config"),
+      XDG_DATA_HOME: path.join(home, ".local", "share"),
+    },
+  })
+}
+
+test("titah doctor menampilkan bagian Skills dengan hitungan, konflik, dan sumber nihil", () => {
+  const root = isolatedProject(
+    {
+      skills: {
+        discover: [],
+        paths: [
+          { path: "a/skills", as: "ns" },
+          { path: "b/skills", as: "ns" }, // sengaja sama persis, memicu konflik
+          { path: "tidak-ada", as: "typo" }, // path yang tidak pernah dibuat
+        ],
+        always: ["ns:hilang"],
+      },
+    },
+    {
+      "a/skills/sama/SKILL.md": "---\nname: sama\n---\nsatu",
+      "b/skills/sama/SKILL.md": "---\nname: sama\n---\ndua",
+    },
+  )
+
+  const output = runDoctor(root)
+
+  assert.match(output, /Skills/)
+  assert.match(output, /ns\s+1 skill/)
+  assert.match(output, /1 conflict/)
+  assert.match(output, /sources with no skills/)
+  assert.match(output, /ns:hilang/)
+})
