@@ -5,6 +5,7 @@ import path from "node:path"
 import test, { after, before } from "node:test"
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider"
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
+import type { Event } from "../src/core/event.ts"
 
 // Isolasi HOME/XDG dulu, SEBELUM modul apa pun diimpor — beberapa modul
 // membaca path-nya sendiri saat modul dievaluasi, jadi mengisolasi setelah
@@ -24,6 +25,7 @@ const { createSession, listChildSessions, listMessages } = await import(
   "../src/core/storage/session.ts"
 )
 const { Config } = await import("../src/core/schema.ts")
+const { bus } = await import("../src/core/event.ts")
 
 const project = path.join(root, "proyek")
 
@@ -93,6 +95,32 @@ function slowStubModel(): MockLanguageModelV4 {
         ),
       ),
   })
+}
+
+/**
+ * Berlangganan stream SATU sesi dan mengumpulkan event-nya ke array.
+ *
+ * Filter `sessionID` ada di `Bus.publish` sendiri, bukan cuma di sisi
+ * pembaca — jadi kalau kode publish ke sesi yang salah, langganan yang
+ * difilter ke sesi lain tidak akan pernah menerimanya sama sekali. Itulah
+ * yang membuat helper ini pembeda yang tepat untuk Finding 2: sub-agent
+ * yang publish ke stream anaknya sendiri membuat `events` di sini kosong,
+ * bukan cuma salah isi.
+ */
+function subscribeTo(sessionID: string): { events: Event[]; stop: () => Promise<void> } {
+  const events: Event[] = []
+  const controller = new AbortController()
+  const stream = bus.subscribe({ sessionID, signal: controller.signal })
+  const drained = (async () => {
+    for await (const event of stream) events.push(event)
+  })()
+  return {
+    events,
+    stop: async () => {
+      controller.abort()
+      await drained
+    },
+  }
 }
 
 /** Config in-memory untuk pengecekan dispatch — isinya harus sama dengan titah.json di atas. */
@@ -168,6 +196,18 @@ test("dibatalkan mengembalikan status stopped, BUKAN melempar", async () => {
 
     assert.equal(result.status, "stopped")
     assert.match(result.answer, /STOPPED BY USER/)
+
+    // Pengecekan di atas hanya membuktikan runSubagent MELABELI hasilnya
+    // "stopped" — itu benar juga kalau labelnya sekadar dibaca dari sinyal
+    // milik KOORDINATOR sendiri, tanpa giliran anak pernah sungguh berhenti.
+    // Baris ini memeriksa efek nyata di sesi anak: `prompt()` hanya menulis
+    // "Cancelled by user." kalau AbortController controller MILIK ANAK itu
+    // sendiri benar-benar di-abort — yang hanya terjadi kalau listener abort
+    // di `runSubagent` benar-benar terdaftar dan memanggil `abort(child.id)`.
+    const childMessages = listMessages(result.childSessionID)
+    const assistant = childMessages.find((message) => message.role === "assistant")
+    assert.ok(assistant, "giliran anak harus meninggalkan pesan asisten")
+    assert.equal(assistant?.error, "Cancelled by user.")
   } finally {
     restore()
   }
@@ -202,4 +242,46 @@ test("penulis yang dibatalkan sebelum antrean-nya sempat mulai tidak pernah mema
     0,
     "prompt() tidak boleh pernah dipanggil — kalau dipanggil, setidaknya satu pesan tersimpan",
   )
+})
+
+test("progres sub-agent disiarkan ke stream sesi INDUK, bukan sesi anak", async () => {
+  // TUI hanya berlangganan SATU sesi. Kalau `publish` di dalam `runSubagent`
+  // memakai sessionID anak, langganan yang difilter ke induk di bawah ini
+  // tidak akan menerima apa pun — panel sub-agent akan kosong sepanjang kerja
+  // berjalan, persis kegagalan utama yang brief-nya peringatkan.
+  const parent = createSession(project)
+  const onParent = subscribeTo(parent.id)
+  const restore = setModelResolver(() => stubModel("SELESAI"))
+  try {
+    const result = await runSubagent({
+      parentSessionID: parent.id,
+      agentID: "explore",
+      instruction: "cek publish",
+      cwd: project,
+      config: configWithExplore(),
+      signal: new AbortController().signal,
+    })
+
+    // Kosongkan microtask queue supaya event yang baru dipublish sesaat
+    // sebelum `runSubagent` resolve sempat dikonsumsi loop `for await` di
+    // `subscribeTo`, bukan masih tertahan di buffer internal `bus`.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const subagentEvents = onParent.events.filter(
+      (event): event is Extract<Event, { type: "subagent.updated" }> =>
+        event.type === "subagent.updated",
+    )
+    assert.ok(subagentEvents.length > 0, "harus ada event subagent.updated di stream induk")
+    for (const event of subagentEvents) {
+      assert.equal(event.sessionID, parent.id)
+      assert.equal(event.child.sessionID, result.childSessionID)
+    }
+    assert.ok(
+      subagentEvents.some((event) => event.child.status === "done"),
+      "status akhir 'done' harus ikut tersiar ke induk",
+    )
+  } finally {
+    await onParent.stop()
+    restore()
+  }
 })
