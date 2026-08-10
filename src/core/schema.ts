@@ -76,7 +76,11 @@ export const ExternalAgent = z.object({
 
 /**
  * Definisi agent internal (Q21): prompt + filter tool + override model per nama.
- * TANPA subagent spawning — tidak ada konkurensi rekursif di v1.
+ *
+ * `mode` (di bawah) membuka jalur spawning sub-agent lewat tool `task` — lihat
+ * `dispatchableAgents`/`runSubagent` di subagent.ts. Kedalamannya tetap
+ * DIBATASI SATU TINGKAT: sub-agent tidak pernah mewarisi tool `task`, jadi
+ * tidak ada konkurensi rekursif tanpa batas, meski spawning-nya sendiri ada.
  */
 export const Agent = z
   .object({

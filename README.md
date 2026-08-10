@@ -236,7 +236,7 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+X` `D` | Expand/collapse every tool block — works mid-turn, and a running tool shows its arguments |
 | `End` / `Ctrl+X` `B` | Jump to the newest message |
 | `Ctrl+X` `M` | Toggle mouse capture — turn it **off** to select and copy text |
-| `Ctrl+X` `↓` | Open the sub-agent panel — `↑`/`↓` selects, `x` cancels the selected sub-agent, `Esc` closes |
+| `Ctrl+X` `↓` | Toggle the sub-agent panel — `↑`/`↓` selects, `x` cancels the selected sub-agent, `Esc` closes |
 | Click a tool line | Expand/collapse just that block |
 | Mouse wheel | Scroll the history |
 | `Ctrl+X` `U` | Undo the last turn's changes |
@@ -517,25 +517,60 @@ A sub-agent never gets the `task` tool itself, no matter its own `mode` —
 dispatch depth is capped at exactly one level, so nothing can spawn a tree of
 sub-agents that burns through your provider quota with no way to stop it.
 
+### A sub-agent is not bound by the coordinator's mode
+
+A dispatched sub-agent's tool calls are checked against **its own**
+`permission`, resolved exactly as if it were your top-level agent (see
+[Permissions & undo](#permissions--undo)) — never against the coordinator's.
+This includes **Plan mode**: Plan's own turn refuses every change, but the
+`task` tool itself carries no permission check of its own, so a Plan-mode
+coordinator can still call it, and the sub-agent it dispatches runs under
+whatever `permission` *that agent's own config* gives it. With the
+`qc-developer` example above (`"bash": "allow"`), typing `/tim …` while in
+Plan mode gets its shell command run with **no confirmation**, even though
+Plan mode's own description says every command is refused. This is not
+something `/tim` added — it follows from how `task` was designed, with no
+gate of its own — but it means Plan mode is not a boundary sub-agents respect.
+
 ### Watching them work
 
-`Ctrl+X` then `↓` opens a panel listing every sub-agent from the current turn
-with its status (queued, running, done, failed, stopped) and a running clock.
-`↑` / `↓` selects a row, `x` cancels just that sub-agent — the coordinator
-sees it stop and carries on with the rest of the team — and `Esc` closes the
-panel without touching anything.
+`Ctrl+X` then `↓` **toggles** a panel listing every sub-agent dispatched so
+far in the current *session* — it keeps rows from earlier turns too, and only
+clears when you switch sessions — with each row's status (queued, running,
+done, failed, stopped) and a running clock. `↑` / `↓` selects a row, `x`
+cancels just that sub-agent — the coordinator sees it stop and carries on with
+the rest of the team — and `Esc` closes the panel without touching anything.
 
-### `/undo` is still per turn, not per sub-agent
+### `/undo` can revert more than the `/tim` turn — read this before relying on it
 
-Sub-agents change nothing about what `/undo` means: it reverts everything
-written during **one turn of one session**, never a single tool call in
-isolation (see [Permissions & undo](#permissions--undo)). Each sub-agent runs
-its own turn in its own child session, so its snapshot belongs there, not to
-the coordinator's turn. `Ctrl+X` `U` and a bare `titah undo` both target the
-session you are looking at — the coordinator's — so if the coordinator only
-dispatched work and wrote nothing itself, there is nothing there to undo.
-There is no way to undo just one sub-agent's slice of a `/tim` run: a turn's
-worth of changes reverts together, or not at all.
+Sub-agents change nothing about the *mechanism* of `/undo`: it still reverts
+to the last assistant message, in the given session, that actually took a
+snapshot — never a single tool call in isolation (see
+[Permissions & undo](#permissions--undo)). The part that changes is which
+message that turns out to be. A sub-agent's own writes take their snapshot on
+the **sub-agent's own (child) session**, not on the coordinator's turn — so if
+a `/tim` turn's coordinator dispatches work and writes nothing itself, its own
+turn has no snapshot at all. `/undo` does not stop there: it walks the
+session's messages for the most recent one that *does* have a snapshot, which
+skips straight past the empty `/tim` turn to whatever the coordinator last
+wrote **in an earlier turn** — reverting that older turn as well, silently,
+in the same `undo`.
+
+Concretely: edit a file in Build mode, then run `/tim …` where only sub-agents
+write a dozen new files, then press `Ctrl+X` `U`. It does not report "nothing
+to undo." It reverts the Build-mode edit **and** deletes all twelve files the
+sub-agents just created — files created after a snapshot are removed, same as
+any other undo — and reports it as one ordinary "undo: N files restored."
+There is no way to undo just one sub-agent's slice of a `/tim` run, and no way
+to undo a `/tim` turn in isolation if its own coordinator wrote nothing: you
+either revert back to the coordinator's last real write, however far back
+that is, or there is nothing to revert at all.
+
+`Ctrl+X` `U` and a bare `titah undo` never reach into a sub-agent's session
+directly — they operate on the session you're in (`Ctrl+X` `U`) or, for a bare
+`titah undo`, on the most recently updated top-level session in the current
+directory (`titah undo -s <id>` targets a specific one; a child session is
+never picked automatically).
 
 ## Custom commands
 

@@ -30,7 +30,11 @@ before(() => {
     path.join(withRoster, "titah.json"),
     JSON.stringify({
       agent: {
-        explore: {
+        // BUKAN "explore": kata itu sudah muncul di BASE_PROMPT ("tools to
+        // explore it" — src/core/prompt.ts) tanpa /tim melakukan apa pun.
+        // Test roster HARUS memakai id yang tidak bisa muncul kebetulan, atau
+        // menghapus seluruh blok roster di buildTeamPrompt tetap lolos hijau.
+        "roster-scout": {
           mode: "subagent",
           description: "Codebase explorer — read only",
           permission: { edit: "deny", write: "deny", bash: "deny" },
@@ -89,7 +93,10 @@ test("/tim adalah giliran biasa dengan roster di system prompt", async () => {
   const restore = setModelResolver(() => captureSystem((s) => (systemSeen = s)))
   try {
     await prompt({ sessionID: session.id, text: "/tim perbaiki bug auth" })
-    assert.match(systemSeen, /explore/, "roster disebutkan")
+    // Header roster DAN id agent-nya, bukan cuma kata yang kebetulan sama
+    // dengan BASE_PROMPT — lihat komentar di fixture `roster-scout` di atas.
+    assert.match(systemSeen, /Sub-agents you can dispatch with `task`:/, "header roster ada")
+    assert.match(systemSeen, /roster-scout/, "roster menyebut agent yang dikonfigurasi")
     assert.match(systemSeen, /split the work/i)
   } finally {
     restore()
