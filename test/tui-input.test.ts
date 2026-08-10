@@ -6,7 +6,8 @@ import { PassThrough } from "node:stream"
 import test from "node:test"
 import { createElement } from "react"
 import { render } from "ink"
-import { App, sanitizePaste } from "../dist/tui/app.js"
+import { App, sanitizePaste, toKeyPress } from "../dist/tui/app.js"
+import { buildKeymap, resolve } from "../dist/tui/keybinds.js"
 import { createMouseSource } from "../dist/tui/mouse.js"
 import { markLines } from "../dist/tui/logo.js"
 import { Config } from "../dist/core/schema.js"
@@ -1212,6 +1213,92 @@ test("prompt user tampil sebagai blok berlabel di riwayat", async () => {
     const frame = h.frame()
     assert.match(frame, /┌─ command/, "perintah diberi label berbeda dari pertanyaan")
     assert.match(frame, /│ \/compact/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+// ---------- regresi dari audit terminal sungguhan ----------
+
+test("home dan end diterjemahkan — ada binding yang bergantung padanya", () => {
+  // Ink menyediakan key.home dan key.end, tapi toKeyPress tidak memetakannya,
+  // jadi `messages_first: "ctrl+g,home"` dan chord `end` di `messages_last`
+  // diam-diam mati. Yang paling merugikan: penunjuk gulir berbunyi
+  // "end to jump" — menyuruh user menekan tombol yang tidak terhubung ke apa pun.
+  const none = {
+    escape: false, return: false, backspace: false, delete: false, tab: false,
+    upArrow: false, downArrow: false, leftArrow: false, rightArrow: false,
+    pageUp: false, pageDown: false, home: false, end: false,
+    ctrl: false, shift: false, meta: false,
+  } as unknown as Parameters<typeof toKeyPress>[1]
+
+  assert.equal(toKeyPress("", { ...none, home: true }).key, "home")
+  assert.equal(toKeyPress("", { ...none, end: true }).key, "end")
+
+  const keymap = buildKeymap()
+  assert.equal(
+    resolve(keymap, toKeyPress("", { ...none, end: true }), false, ["messages_last"]),
+    "messages_last",
+    "tombol yang disebut petunjuk di layar HARUS sampai ke aksinya",
+  )
+  assert.equal(
+    resolve(keymap, toKeyPress("", { ...none, home: true }), false, ["messages_first"]),
+    "messages_first",
+  )
+})
+
+test("layar pembuka menampilkan keadaan leader — tanpa itu ctrl+x terlihat rusak", async () => {
+  // Splash tidak merender Footer, satu-satunya tempat indikator leader dan pesan
+  // flash muncul. Akibatnya ctrl+x di layar pembuka TIDAK MEMBERI UMPAN BALIK
+  // APA PUN: tombolnya bekerja, tapi dari tempat user tidak ada bedanya dengan
+  // keybinding yang mati.
+  const h = mount()
+  try {
+    await tick()
+    h.clear()
+    h.stdin.press("\u0018") // ctrl+x
+    await tick()
+
+    assert.match(h.frame(), /ctrl\+x/, "leader harus terlihat sebelum ada percakapan")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("layar pembuka menampilkan pesan flash, mis. status mode mouse", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.clear()
+    h.stdin.press("m")
+    await tick()
+
+    assert.match(h.frame(), /mouse off/, "toggle berjalan; statusnya harus terlihat juga")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("command yang dijalankan dari popup tetap masuk histori prompt", async () => {
+  // Mengetik "/" SELALU membuka popup, dan memilih dari popup memanggil send()
+  // langsung — melewati submit(), satu-satunya tempat pushHistory dipanggil.
+  // Akibatnya tidak ada satu pun slash command yang pernah masuk histori.
+  const h = mount()
+  try {
+    await tick()
+    for (const ch of "/agents") h.stdin.press(ch)
+    await tick()
+    h.stdin.press("\r") // pilih /agents dari popup
+    await tick(6)
+    assert.equal(h.recorded.sent.at(-1)?.text, "/agents", "command benar-benar terkirim")
+
+    h.clear()
+    h.stdin.press("\u001b[A") // panah atas
+    await tick()
+
+    assert.match(h.frame(), /\/agents/, "panah atas harus memanggilnya kembali")
   } finally {
     h.cleanup()
   }

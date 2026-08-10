@@ -299,8 +299,12 @@ export function Splash({
 }) {
   const boxWidth = Math.min(72, Math.max(24, columns - 8))
 
+  // `flexGrow`, BUKAN `height={rows}`: layar pembuka harus menyisakan baris
+  // terakhir untuk Footer. Tanpa itu tidak ada satu pun umpan balik di sini —
+  // indikator leader dan seluruh pesan flash hanya hidup di footer, sehingga
+  // `ctrl+x m` bekerja tapi terlihat persis seperti keybinding yang mati.
   return (
-    <Box height={rows} flexDirection="column" justifyContent="center" alignItems="center">
+    <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center">
       {showLogo ? (
         <Logo columns={columns} rows={rows} />
       ) : (

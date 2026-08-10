@@ -61,6 +61,11 @@ export function toKeyPress(input: string, key: Key): KeyPress {
     [key.rightArrow, "right"],
     [key.pageUp, "pageup"],
     [key.pageDown, "pagedown"],
+    // Wajib ada: `messages_first` terikat ke `home` dan `messages_last` ke `end`,
+    // dan penunjuk gulir di layar menyebut "end to jump". Tanpa pemetaan ini
+    // petunjuk itu menyuruh user menekan tombol yang tidak terhubung ke apa pun.
+    [key.home, "home"],
+    [key.end, "end"],
   ]
   const match = named.find(([flag]) => flag)
   return {
@@ -272,13 +277,40 @@ export function App({
     setTimeout(() => setNotice(undefined), 4000)
   }, [])
 
+  /**
+   * Satu-satunya jalan mengirim prompt ke server.
+   *
+   * Pembukuannya — histori, lompat ke bawah, membersihkan error lama — ada DI
+   * SINI, bukan di `submit()`. Sebelumnya ia hidup di `submit()` saja, sementara
+   * command yang dipilih dari popup memanggil pengiriman langsung; karena
+   * mengetik `/` SELALU membuka popup, tidak ada satu pun slash command yang
+   * pernah masuk histori prompt.
+   */
+  /**
+   * Pembukuan yang berlaku untuk SETIAP prompt yang dikirim user — termasuk
+   * command yang ditangani sepenuhnya di klien dan tidak pernah menyentuh server.
+   */
+  const remember = useCallback((text: string) => {
+    // Error dan pemberitahuan dari giliran sebelumnya yang tertinggal di atas
+    // prompt terbaca seolah milik perintah yang BARU saja dikirim.
+    dispatch({ type: "notice.clear" })
+    setNotice(undefined)
+    // Tanpa ini, mengirim sementara riwayat tergulir ke atas membuat jawabannya
+    // datang di luar layar tanpa tanda apa pun bahwa ia sudah tiba.
+    setScroll(0)
+    setHistory((entries) => pushHistory(entries, text))
+    setHistoryIndex(DRAFT)
+    stash.current = ""
+  }, [])
+
   const send = useCallback(
     (text: string) => {
+      remember(text)
       client.send(session.id, text, model, activeAgent).catch((error: unknown) => {
         flash(error instanceof Error ? error.message : String(error))
       })
     },
-    [activeAgent, client, flash, model, session.id],
+    [activeAgent, client, flash, model, remember, session.id],
   )
 
   // Menu yang dibuka perintah pun tidak boleh muncul kosong, dengan alasan yang
@@ -462,25 +494,13 @@ export function App({
     const text = draft.trim()
     if (text === "" || state.status === "working") return
 
-    // Layar dibersihkan dari sisa giliran sebelumnya. Error dan pemberitahuan
-    // yang tertinggal di atas prompt terbaca seolah milik perintah yang BARU
-    // saja dikirim, padahal keduanya tentang sesuatu yang sudah lewat.
-    dispatch({ type: "notice.clear" })
-    setNotice(undefined)
-
-    // Melompat ke bawah saat mengirim. Tanpa ini, mengirim prompt sementara
-    // riwayat sedang digulir ke atas membuat jawabannya datang di luar layar —
-    // dan dari tempat user berada, tidak ada tanda apa pun bahwa ia sudah tiba.
-    setScroll(0)
-
-    setHistory((entries) => pushHistory(entries, text))
-    setHistoryIndex(DRAFT)
-    stash.current = ""
-
     // Perintah yang mengubah keadaan KLIEN ditangani di sini, tidak dikirim ke
     // server — server tidak tahu model mana yang sedang kamu pilih di layar.
     const local = /^\/(model|skill|agent|session|new)\b\s*(.*)$/.exec(text)
     if (local) {
+      // Ditangani di klien, tapi tetap sebuah prompt yang user ketik — ia harus
+      // bisa dipanggil kembali lewat panah atas seperti yang lain.
+      remember(text)
       setDraft("")
       setCursor(0)
       if (local[1] === "model") return openModelPicker(local[2] ?? "")
@@ -492,10 +512,8 @@ export function App({
 
     setDraft("")
     setCursor(0)
-    client.send(session.id, text, model, activeAgent).catch((error: unknown) => {
-      flash(error instanceof Error ? error.message : String(error))
-    })
-  }, [activeAgent, client, config, cwd, draft, flash, model, openModelPicker, session.id, state.status])
+    send(text)
+  }, [draft, openAgentPicker, openModelPicker, openSessionPicker, openSkillPicker, remember, send, startNewSession, state.status])
 
   useEffect(() => {
     // Popup yang dibuka perintah (/model, /skill) tidak boleh ditimpa detektor.
@@ -845,20 +863,33 @@ export function App({
   // Layar pembuka: belum ada percakapan sama sekali.
   if (state.messages.length === 0 && state.permission === undefined) {
     return (
-      <Splash
-        columns={size.columns}
-        rows={size.rows}
-        showLogo={shouldShowLogo(size.columns, size.rows)}
-        cwd={cwd}
-        model={model}
-        {...(activeAgent ? { agent: activeAgent } : {})}
-        editor={
-          <>
-            {popupBox}
-            {editorBox}
-          </>
-        }
-      />
+      <Box height={size.rows} flexDirection="column">
+        <Splash
+          columns={size.columns}
+          rows={size.rows}
+          showLogo={shouldShowLogo(size.columns, size.rows)}
+          cwd={cwd}
+          model={model}
+          {...(activeAgent ? { agent: activeAgent } : {})}
+          editor={
+            <>
+              {popupBox}
+              {editorBox}
+            </>
+          }
+        />
+        {/* Footer juga di sini: ia satu-satunya tempat keadaan leader dan pesan
+            flash terlihat, dan layar pembuka adalah tempat orang pertama kali
+            mencoba keybinding. */}
+        <Footer
+          status={state.status}
+          model={activeAgent ? `${activeAgent} · ${model}` : model}
+          usage={usage}
+          leaderActive={leaderActive}
+          {...(notice ? { hint: notice } : {})}
+          mouseCapture={mouseCapture}
+        />
+      </Box>
     )
   }
 
