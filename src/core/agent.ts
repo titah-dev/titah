@@ -38,7 +38,7 @@ import {
   saveMessage,
   touchSession,
 } from "./storage/session.ts"
-import { TOOLS } from "./tool/index.ts"
+import { allTools } from "./tool/index.ts"
 import type { TitahTool } from "./tool/index.ts"
 
 const MAX_STEPS = 20
@@ -241,7 +241,6 @@ export async function prompt(input: PromptInput): Promise<Message> {
         upsert: upsertTool,
         permission: effectivePermission(config, agentID, agentDef),
         isChild,
-        ...(session.parentID ? { parentSessionID: session.parentID } : {}),
         ...(agentDef ? { toolFilter: agentDef.tools } : {}),
         onSnapshot: (commit) => {
           assistant.snapshot = commit
@@ -880,8 +879,6 @@ interface BuildToolsOptions {
   toolFilter?: Record<string, boolean>
   /** Sesi anak tidak pernah mendapat `task` — lihat komentar di `prompt()`. */
   isChild: boolean
-  /** Terisi kalau `sessionID` sendiri adalah sesi anak. Diteruskan ke `ToolContext`. */
-  parentSessionID?: string
 }
 
 /**
@@ -896,7 +893,7 @@ function activeTools(options: {
   isChild: boolean
   toolFilter?: Record<string, boolean>
 }): TitahTool[] {
-  return TOOLS.filter((definition) => {
+  return allTools().filter((definition) => {
     if (definition.name === "task" && options.isChild) return false
     if (options.toolFilter?.[definition.name] === false) return false
     return true
@@ -909,7 +906,7 @@ export function buildToolNames(options: { isChild: boolean }): string[] {
 }
 
 function buildTools(options: BuildToolsOptions): ToolSet {
-  const { sessionID, cwd, signal, upsert, parentSessionID } = options
+  const { sessionID, cwd, signal, upsert } = options
   const set: ToolSet = {}
 
   for (const definition of activeTools(options)) {
@@ -919,14 +916,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
       async execute(input: unknown, options2: { toolCallId: string }) {
         const callID = options2.toolCallId
         const started = Date.now()
-        const ctx = {
-          cwd,
-          sessionID,
-          callID,
-          signal,
-          config: options.config,
-          ...(parentSessionID ? { parentSessionID } : {}),
-        }
+        const ctx = { cwd, sessionID, callID, signal, config: options.config }
         upsert(callID, definition.name, { status: "running", input, started })
 
         try {

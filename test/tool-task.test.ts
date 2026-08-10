@@ -18,16 +18,14 @@ process.env.XDG_CONFIG_HOME = path.join(root, "config")
 process.env.TITAH_DB = path.join(root, "tool-task.db")
 process.env.HOME = path.join(root, "home")
 
-// `agent.ts` diimpor SEBELUM `task.ts`. `task.ts` -> subagent.ts -> agent.ts ->
-// tool/index.ts -> task.ts adalah siklus modul yang sama seperti yang
-// disebutkan di task-6-brief.md; ESM mentolerirnya karena tak satu pun modul
-// MEMBACA binding sirkulernya di level atas — kecuali baris ini sendiri
-// menjadi entri PERTAMA ke siklus lewat task.ts. Masuk lewat agent.ts dulu
-// membuat urutan evaluasinya sama dengan jalur produksi (cli.ts memuat
-// agent.ts, bukan task.ts, sebagai titik masuk), sehingga `taskTool` sudah
-// terisi penuh saat `tool/index.ts` membangun array TOOLS-nya.
-const { buildToolNames, setModelResolver } = await import("../src/core/agent.ts")
+// `task.ts` -> subagent.ts -> agent.ts -> tool/index.ts -> task.ts adalah
+// siklus modul yang nyata. Urutan impor di bawah ini TIDAK RELEVAN terhadapnya
+// dengan sengaja: `tool/index.ts` membangun daftar tool-nya lewat `allTools()`,
+// dipanggil belakangan, bukan lewat array literal di level atas modul — jadi
+// tidak ada pembacaan binding sirkuler yang terjadi SAAT modul dimuat, apa pun
+// modul mana yang menjadi entri pertama ke siklus ini.
 const { taskTool } = await import("../src/core/tool/task.ts")
+const { buildToolNames, setModelResolver } = await import("../src/core/agent.ts")
 const { createSession } = await import("../src/core/storage/session.ts")
 const { Config } = await import("../src/core/schema.ts")
 
@@ -110,15 +108,26 @@ function ctx(sessionID: string, config: ReturnType<typeof Config.parse>): ToolCo
   }
 }
 
-test("task menjalankan sub-agent dan mengembalikan jawabannya", async () => {
+test("task menjalankan sub-agent dan mengembalikan jawabannya, TANPA tool task diwariskan", async () => {
   const session = createSession(project)
-  const restore = setModelResolver(() => stubModel("HASIL SUB-AGENT"))
+  // Instance-nya ditahan (bukan cuma arrow function anonim) supaya
+  // `doStreamCalls`-nya bisa diperiksa SETELAH giliran anak selesai — itulah
+  // yang membuktikan penjaga kedalaman sampai ke daftar tool yang benar-benar
+  // dikirim ke model, bukan cuma ke `buildToolNames` yang menirunya.
+  const model = stubModel("HASIL SUB-AGENT")
+  const restore = setModelResolver(() => model)
   try {
     const result = await taskTool.execute(
       { agent: "explore", instruction: "telusuri" },
       ctx(session.id, configWithExplore()),
     )
     assert.match(result.output, /HASIL SUB-AGENT/)
+
+    const sent = model.doStreamCalls[0]?.tools?.map((tool) => tool.name) ?? []
+    assert.ok(
+      !sent.includes("task"),
+      "giliran anak tidak boleh menerima tool task — itulah satu-satunya yang menahan pohon dari melebar tanpa batas",
+    )
   } finally {
     restore()
   }

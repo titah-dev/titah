@@ -18,20 +18,38 @@ import { taskTool } from "./task.ts"
  * mencegahnya diwariskan ke sub-agent hidup di `agent.ts` (`buildTools`), bukan
  * di sini, supaya satu-satunya tempat menegakkannya tetap satu-satunya tempat.
  */
-export const TOOLS: TitahTool[] = [
-  readTool,
-  listTool,
-  globTool,
-  grepTool,
-  editTool,
-  writeTool,
-  bashTool,
-  skillTool,
-  taskTool,
-]
+let cached: TitahTool[] | undefined
+
+/**
+ * Daftar tool, dibangun saat DIPANGGIL, bukan saat modul ini dievaluasi.
+ *
+ * `task.ts` menutup siklus modul balik ke sini lewat subagent.ts → agent.ts.
+ * Array literal di level atas modul akan membaca `taskTool` sebelum body
+ * task.ts sempat berjalan kalau `task.ts` adalah modul PERTAMA yang dimuat —
+ * TDZ ReferenceError yang tidak bergantung pada `task.ts` maupun siklusnya
+ * sama sekali, melainkan pada urutan impor siapa pun yang memuat modul ini.
+ * Menunda pembacaannya ke titik panggilan menghilangkan urutan itu dari
+ * persamaan: pada saat fungsi ini benar-benar dipanggil, seluruh grafik modul
+ * sudah selesai dimuat, jadi `taskTool` — dan tool apa pun lainnya — sudah
+ * pasti terisi, tidak peduli modul mana yang dimuat lebih dulu.
+ */
+export function allTools(): TitahTool[] {
+  cached ??= [
+    readTool,
+    listTool,
+    globTool,
+    grepTool,
+    editTool,
+    writeTool,
+    bashTool,
+    skillTool,
+    taskTool,
+  ]
+  return cached
+}
 
 export function toolByName(name: string): TitahTool | undefined {
-  return TOOLS.find((tool) => tool.name === name)
+  return allTools().find((tool) => tool.name === name)
 }
 
 export { readTool, listTool, globTool, grepTool, editTool, writeTool, bashTool, skillTool, taskTool }
