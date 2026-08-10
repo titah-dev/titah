@@ -20,7 +20,10 @@ Every task's requirements implicitly include this section.
 - **No test may read the real `~/.claude` or `~/.config/opencode`.** Tests building a Config for skill-level calls set `skills.discover: []`; tests going through `loadConfig()` also isolate `process.env.HOME`, because `os.homedir()` reads `$HOME` directly and bypasses XDG isolation.
 - **Every task ends green:** `npm run typecheck && npm run build && npm test`. The suite currently has 448 passing tests; none may break.
 - **Every commit leaves the tree green.** No task may knowingly leave typecheck broken for a later task to fix.
-- **Commit every task.** Work happens on a branch off `main`; the review process diffs `BASE..HEAD` per task.
+- **Commit every task.** Work happens on `feat/parallel-subagents`, branched from
+  `feat/skills-active-passive` — **not** from `main`. The `task` tool reads
+  `ToolContext.config`, which only exists on the skills branch. The review process
+  diffs `BASE..HEAD` per task.
 - **Depth is exactly one level.** A sub-agent never receives the `task` tool. This is a hard requirement, not a default.
 
 ---
