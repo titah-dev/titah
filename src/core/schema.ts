@@ -78,34 +78,60 @@ export const ExternalAgent = z.object({
  * Definisi agent internal (Q21): prompt + filter tool + override model per nama.
  * TANPA subagent spawning — tidak ada konkurensi rekursif di v1.
  */
-export const Agent = z.object({
-  description: z.string().optional().describe("Shown in the agent picker"),
-  prompt: z.string().optional().describe("Appended to the system prompt"),
-  model: z.string().optional().describe("Model override, in \"provider/model\" form"),
-  tools: z
-    .record(z.string(), z.boolean())
-    .default({})
-    .describe('Tool filter, e.g. {"write": false}. Tools not listed stay enabled.'),
-  skills: z
-    .array(z.string())
-    .default([])
-    .describe(
-      'Skill ids ("namespace:name", as listed by /skills) whose full content is loaded ' +
-        "into this agent's system prompt. Bare names never match.",
-    ),
-  permission: z
-    .object({
-      edit: z.enum(["ask", "allow", "deny"]).optional(),
-      write: z.enum(["ask", "allow", "deny"]).optional(),
-      bash: z.enum(["ask", "allow", "deny"]).optional(),
-      allowlist: z.array(z.string()).optional(),
-    })
-    .optional()
-    .describe(
-      "Permission override for this agent, on top of the global `permission`. " +
-        "This is what separates Build Auto from Build Manual.",
-    ),
-})
+export const Agent = z
+  .object({
+    description: z.string().optional().describe("Shown in the agent picker"),
+    mode: z
+      .enum(["primary", "subagent", "all"])
+      .default("primary")
+      .describe(
+        'Where this agent may run. "primary" is selectable with Tab; "subagent" can be ' +
+          'dispatched by the coordinator; "all" is both.',
+      ),
+    delegate: z
+      .string()
+      .optional()
+      .describe(
+        'Run this agent by spawning an external CLI from `externalAgent` instead of Titah\'s ' +
+          "own loop. Mutually exclusive with `model`.",
+      ),
+    prompt: z.string().optional().describe("Appended to the system prompt"),
+    model: z.string().optional().describe("Model override, in \"provider/model\" form"),
+    tools: z
+      .record(z.string(), z.boolean())
+      .default({})
+      .describe('Tool filter, e.g. {"write": false}. Tools not listed stay enabled.'),
+    skills: z
+      .array(z.string())
+      .default([])
+      .describe(
+        'Skill ids ("namespace:name", as listed by /skills) whose full content is loaded ' +
+          "into this agent's system prompt. Bare names never match.",
+      ),
+    permission: z
+      .object({
+        edit: z.enum(["ask", "allow", "deny"]).optional(),
+        write: z.enum(["ask", "allow", "deny"]).optional(),
+        bash: z.enum(["ask", "allow", "deny"]).optional(),
+        allowlist: z.array(z.string()).optional(),
+      })
+      .optional()
+      .describe(
+        "Permission override for this agent, on top of the global `permission`. " +
+          "This is what separates Build Auto from Build Manual.",
+      ),
+  })
+  .superRefine((agent, ctx) => {
+    // Satu agent, satu mesin. Menyetel keduanya berarti tidak ada jawaban atas
+    // "mana yang dipakai", dan diam-diam memilih salah satunya menyembunyikan
+    // kesalahan konfigurasi yang nyata.
+    if (agent.delegate !== undefined && agent.model !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "An agent cannot set both `delegate` and `model` — it has one engine, not two.",
+      })
+    }
+  })
 
 /** Custom command: template prompt yang dipanggil dengan `/nama <input>`. */
 export const Command = z.object({

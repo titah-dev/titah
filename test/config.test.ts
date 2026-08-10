@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { loadConfig, redact, ConfigError } from "../src/core/config.ts"
+import { Config } from "../src/core/schema.ts"
 
 function sandbox(): { configHome: string; project: string; cleanup: () => void } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-test-"))
@@ -303,4 +304,41 @@ test("sumber auto-deteksi yang tidak dikenal ditolak, bukan diabaikan", () => {
   } finally {
     box.cleanup()
   }
+})
+
+test("mode default-nya primary, bukan all", () => {
+  // Keputusan keamanan: `build-auto` yang sudah ada punya permission serba-izinkan.
+  // Default "all" akan menyerahkan bawahan yang TIDAK PERNAH bertanya sebelum
+  // menulis kepada model, tanpa user menuliskan sebaris pun.
+  const config = Config.parse({ agent: { build: {} } })
+  assert.equal(config.agent["build"]?.mode, "primary")
+})
+
+test("mode subagent dan all keduanya sah", () => {
+  const config = Config.parse({
+    agent: { explore: { mode: "subagent" }, build: { mode: "all" } },
+  })
+  assert.equal(config.agent["explore"]?.mode, "subagent")
+  assert.equal(config.agent["build"]?.mode, "all")
+})
+
+test("mode yang tidak dikenal ditolak, bukan diabaikan", () => {
+  assert.throws(() => Config.parse({ agent: { x: { mode: "worker" } } }))
+})
+
+test("delegate menunjuk agent eksternal", () => {
+  const config = Config.parse({
+    agent: { reviewer: { mode: "subagent", delegate: "claude" } },
+  })
+  assert.equal(config.agent["reviewer"]?.delegate, "claude")
+})
+
+test("delegate dan model bersamaan DITOLAK", () => {
+  // Satu agent, satu mesin. Menyetel keduanya berarti tidak ada jawaban atas
+  // "mana yang dipakai", dan diam-diam memilih salah satunya menyembunyikan
+  // kesalahan konfigurasi yang nyata.
+  assert.throws(
+    () => Config.parse({ agent: { x: { delegate: "claude", model: "9router/ant" } } }),
+    /delegate/i,
+  )
 })

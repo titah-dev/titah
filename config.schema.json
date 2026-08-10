@@ -161,6 +161,20 @@
             "description": "Shown in the agent picker",
             "type": "string"
           },
+          "mode": {
+            "default": "primary",
+            "description": "Where this agent may run. \"primary\" is selectable with Tab; \"subagent\" can be dispatched by the coordinator; \"all\" is both.",
+            "type": "string",
+            "enum": [
+              "primary",
+              "subagent",
+              "all"
+            ]
+          },
+          "delegate": {
+            "description": "Run this agent by spawning an external CLI from `externalAgent` instead of Titah's own loop. Mutually exclusive with `model`.",
+            "type": "string"
+          },
           "prompt": {
             "description": "Appended to the system prompt",
             "type": "string"
