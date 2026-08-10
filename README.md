@@ -236,7 +236,7 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+X` `D` | Expand/collapse every tool block — works mid-turn, and a running tool shows its arguments |
 | `End` / `Ctrl+X` `B` | Jump to the newest message |
 | `Ctrl+X` `M` | Toggle mouse capture — turn it **off** to select and copy text |
-| `Ctrl+X` `↓` | Toggle the sub-agent panel — `↑`/`↓` selects, `x` cancels the selected sub-agent, `Esc` closes |
+| `Ctrl+X` `↓` | Toggle the sub-agent panel — it owns the keyboard while open: `↑`/`↓` select, `x` `x` cancels the selected sub-agent, `Esc` closes |
 | Click a tool line | Expand/collapse just that block |
 | Mouse wheel | Scroll the history |
 | `Ctrl+X` `U` | Undo the last turn's changes |
@@ -334,7 +334,9 @@ order:
 1. `permission.<tool>` from the active agent, then from the config — `"deny"`
    refuses, `"allow"` skips the dialog
 2. `permission.allowlist` from the config, then the session allowlist built from
-   "always" answers
+   "always" answers — except for a dialog raised by a **sub-agent**, whose
+   "always" is scoped to the coordinator's turn instead (see
+   [Sub-agents](#sub-agents))
 3. `--auto` mode
 4. **no client connected → auto-denied**
 5. only then is the dialog shown
@@ -483,13 +485,22 @@ the same engine `@claude` uses, reached from `task`/`/tim` instead of a
 mention. It is **mutually exclusive with `model`**: an agent has one engine,
 and config setting both is rejected when it loads.
 
+**`permission` does nothing to a delegating agent.** The external CLI runs
+under its own policy and never asks Titah for anything, so Titah's `edit` /
+`write` / `bash` settings are not applied to it, and no permission dialog will
+appear on its behalf. Because Titah cannot know what that CLI will touch, a
+delegating agent is **always treated as a writer** — see below — no matter what
+its `permission` block says. If you want to restrain it, restrain it in that
+CLI's own configuration.
+
 ### Readers run together, writers take turns
 
 Whether a sub-agent may run *at the same time* as others is read from its
 `permission`, never from `tools`: an agent counts as a reader only when
-`edit`, `write`, **and** `bash` are all explicitly `"deny"`. Everything else —
-including an agent whose config never mentions `permission` at all — is
-treated as a writer. `bash` counts as writing on purpose: an allowed shell can
+`edit`, `write`, **and** `bash` are all explicitly `"deny"`, and it does not
+`delegate`. Everything else — an agent whose config never mentions
+`permission` at all, and every agent with `delegate` set, whatever its
+permission block says — is treated as a writer. `bash` counts as writing on purpose: an allowed shell can
 run `sed -i` just as well as the `edit` tool can, and treating it as read-only
 would open exactly the hole this rule exists to close.
 
@@ -501,8 +512,11 @@ the model not to order writers itself: Titah already does.
 
 ### `task` and `/tim`
 
-The coordinator hands work to a sub-agent with the `task` tool, one call per
-agent; several calls in the same step run concurrently. `/tim <task>` is not a
+The coordinator hands work to a sub-agent with the `task` tool; several calls
+in the same step run concurrently. The prompt asks the model for one call per
+agent, but nothing enforces it: the same agent named twice in one step is two
+sub-agents, and if it can write, the second waits for the first on the write
+lock below. `/tim <task>` is not a
 separate orchestration engine — it is an **ordinary turn**, with one extra
 system-prompt section listing the current dispatchable roster and instructing
 the model to split the work and dispatch it with `task`, doing any leftover
@@ -520,8 +534,18 @@ sub-agents that burns through your provider quota with no way to stop it.
 ### A sub-agent is not bound by the coordinator's mode
 
 A dispatched sub-agent's tool calls are checked against **its own**
-`permission`, resolved exactly as if it were your top-level agent (see
-[Permissions & undo](#permissions--undo)) — never against the coordinator's.
+`permission`, resolved by the same rules, in the same order, as your top-level
+agent (see [Permissions & undo](#permissions--undo)) — never against the
+coordinator's. One rule differs, deliberately, and in both directions:
+
+> **"Always" from a sub-agent lasts the turn, not the session.** Answering `a`
+> to a dialog raised by a sub-agent adds the pattern to an allowlist that is
+> discarded when the coordinator's turn ends — unlike the same answer at
+> top level, which lasts the whole session. And for that turn it covers
+> **every** sub-agent, not only the one that asked: five agents doing the same
+> job would otherwise ask the same question five times, and dialogs that
+> repeat are dialogs that stop being read.
+
 This includes **Plan mode**: Plan's own turn refuses every change, but the
 `task` tool itself carries no permission check of its own, so a Plan-mode
 coordinator can still call it, and the sub-agent it dispatches runs under
@@ -534,12 +558,31 @@ gate of its own — but it means Plan mode is not a boundary sub-agents respect.
 
 ### Watching them work
 
-`Ctrl+X` then `↓` **toggles** a panel listing every sub-agent dispatched so
-far in the current *session* — it keeps rows from earlier turns too, and only
-clears when you switch sessions — with each row's status (queued, running,
-done, failed, stopped) and a running clock. `↑` / `↓` selects a row, `x`
-cancels just that sub-agent — the coordinator sees it stop and carries on with
-the rest of the team — and `Esc` closes the panel without touching anything.
+`Ctrl+X` then `↓` **toggles** a panel listing every sub-agent of the **current
+turn**, with each row's status (queued, running, done, failed, stopped). Rows
+that have started show a running clock; a queued row shows none, on purpose —
+a clock on something that has not begun reads exactly like something stuck.
+
+The list is cleared when you send your next message, so it is always about the
+work in front of you. It lives in the TUI's memory, not in the session: quit
+and come back, or switch away with `/session` and back, and the panel starts
+empty even though the sub-agents' own child sessions are still on disk.
+
+While the panel is open it **owns the keyboard** — `↑` / `↓` select a row,
+`Esc` closes it, and everything else is swallowed rather than typed into your
+prompt behind it. `Ctrl+X` chords and `Ctrl+C` still reach through.
+
+`x` cancels the selected sub-agent, and asks first: the first press arms that
+row and says so in the panel's title, a second `x` on the same row does it,
+and any other key — including moving the selection — disarms it. Stopping
+cannot be undone, so a single keystroke is not allowed to do it.
+
+A cancelled sub-agent **reports** rather than fails. Its `task` call returns
+`STOPPED BY USER after 48s.` as an ordinary tool result, the coordinator reads
+it like any other result and carries on with the rest of the team, and the
+history line is marked `⊘`, not `✓`. This holds for both engines: a sub-agent
+running an external CLI has that CLI killed, exactly as an internal one has
+its turn stopped.
 
 ### `/undo` can revert more than the `/tim` turn — read this before relying on it
 
