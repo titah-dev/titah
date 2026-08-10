@@ -1303,3 +1303,51 @@ test("command yang dijalankan dari popup tetap masuk histori prompt", async () =
     h.cleanup()
   }
 })
+
+test("ctrl+x lalu panah bawah membuka panel sub-agent", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak", agent: "explore", status: "running", startedAt: Date.now(), note: "reading" },
+    })
+    await tick()
+
+    h.clear()
+    h.stdin.press("") // ctrl+x
+    await tick(1)
+    h.stdin.press("[B") // panah bawah
+    await tick()
+
+    assert.match(h.frame(), /sub-agents/)
+    assert.match(h.frame(), /explore/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("x di panel membatalkan satu sub-agent lewat klien", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak", agent: "explore", status: "running", startedAt: Date.now(), note: "reading" },
+    })
+    await tick()
+    h.stdin.press("")
+    await tick(1)
+    h.stdin.press("[B")
+    await tick()
+
+    h.stdin.press("x")
+    await tick()
+
+    assert.deepEqual(h.recorded.aborted, ["anak"], "yang dibatalkan sesi ANAK, bukan induk")
+  } finally {
+    h.cleanup()
+  }
+})

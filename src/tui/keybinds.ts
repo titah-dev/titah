@@ -45,6 +45,12 @@ export const DEFAULT_KEYBINDS = {
   tool_details: "<leader>d",
 
   /*
+   * Panel sub-agent. `<leader>` lalu panah bawah, sama seperti opencode —
+   * muscle memory yang sudah ada lebih berharga daripada tombol yang lebih rapi.
+   */
+  subagents_panel: "<leader>down",
+
+  /*
    * Mematikan pelacakan mouse supaya seleksi teks bawaan terminal hidup lagi.
    *
    * Keduanya TIDAK BISA menyala bersamaan: begitu terminal melaporkan klik ke

@@ -22,6 +22,7 @@ import {
   Splash,
   Working,
 } from "./components.tsx"
+import { SubagentPanel } from "./subagent-panel.tsx"
 import {
   agentPickerItems,
   applySuggestion,
@@ -129,6 +130,10 @@ export function App({
   const [expandAll, setExpandAll] = useState(false)
   const [openTools, setOpenTools] = useState<ReadonlySet<string>>(() => new Set())
   const expandTools: Expansion = expandAll ? true : openTools
+  // Panel sub-agent: `selected` disimpan lepas dari `open` supaya menutup lalu
+  // membuka lagi tidak melompat balik ke baris nol tanpa alasan.
+  const [subagentPanelOpen, setSubagentPanelOpen] = useState(false)
+  const [subagentSelected, setSubagentSelected] = useState(0)
   const [scroll, setScroll] = useState(0)
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [model, setModel] = useState(initialModel)
@@ -562,6 +567,36 @@ export function App({
   useInput((input, key) => {
     const press = toKeyPress(input, key)
 
+    // Panel sub-agent memakan navigasi SEBELUM popup — kalau tidak, keduanya
+    // berebut panah yang sama begitu keduanya sama-sama terbuka.
+    if (subagentPanelOpen && !state.permission) {
+      if (press.key === "escape") return setSubagentPanelOpen(false)
+      if (press.key === "up") {
+        return setSubagentSelected((current) => {
+          const total = state.subagents.length
+          return total === 0 ? 0 : (current - 1 + total) % total
+        })
+      }
+      if (press.key === "down") {
+        return setSubagentSelected((current) => {
+          const total = state.subagents.length
+          return total === 0 ? 0 : (current + 1) % total
+        })
+      }
+      if (press.key === "x") {
+        const target = state.subagents[subagentSelected]
+        if (target) {
+          // Sengaja sessionID ANAK, bukan `session.id` induk: membatalkan induk
+          // akan menghentikan seluruh giliran koordinator, padahal tujuan panel
+          // ini justru menghindari itu — satu sub-agent macet tidak boleh
+          // memaksa seluruh tim berhenti.
+          void client.abort(target.sessionID).catch(() => undefined)
+        }
+        return
+      }
+      // Tombol lain jatuh ke bawah, sama seperti popup di bawahnya.
+    }
+
     // Popup memakan navigasi lebih dulu. Tanpa ini, panah bawah menggulir
     // riwayat sementara mata user ada di daftar pilihan.
     if (popup && !state.permission) {
@@ -613,6 +648,7 @@ export function App({
         "session_new",
         "session_undo",
         "tool_details",
+        "subagents_panel",
         "messages_last",
         "mouse_toggle",
         "app_help",
@@ -642,6 +678,10 @@ export function App({
             if (value) setOpenTools(new Set())
             return !value
           })
+          return
+        case "subagents_panel":
+          setSubagentSelected(0)
+          setSubagentPanelOpen((value) => !value)
           return
         case "session_undo":
           void client
@@ -828,6 +868,9 @@ export function App({
   const popupBox = popup ? (
     <Popup title={popup.title} items={popup.items} selected={popup.selected} />
   ) : null
+  const subagentPanelBox = subagentPanelOpen ? (
+    <SubagentPanel subagents={state.subagents} selected={subagentSelected} />
+  ) : null
   const workingBox =
     state.status === "working" ? (
       <Working tick={tick} elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))} />
@@ -838,11 +881,14 @@ export function App({
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   const popupHeight = popup ? Math.min(10, Math.max(1, popup.items.length)) + 3 : 0
   const workingHeight = state.status === "working" ? 1 : 0
+  const subagentPanelHeight = subagentPanelOpen
+    ? Math.min(10, Math.max(1, state.subagents.length)) + 3
+    : 0
   const withMark = shouldShowMark(size.columns, size.rows)
   const headerHeight = withMark ? markLines().length + 2 : 4
   const available = historyRows(
     size.rows,
-    editorHeight + permissionHeight + popupHeight + workingHeight,
+    editorHeight + permissionHeight + popupHeight + workingHeight + subagentPanelHeight,
     headerHeight,
   )
   const window = viewport(lines, available, scroll)
@@ -873,6 +919,7 @@ export function App({
           {...(activeAgent ? { agent: activeAgent } : {})}
           editor={
             <>
+              {subagentPanelBox}
               {popupBox}
               {editorBox}
             </>
@@ -915,6 +962,7 @@ export function App({
       {state.error ? <Text color="red">⚠ {state.error}</Text> : null}
       {state.permission ? <PermissionDialog request={state.permission} /> : null}
 
+      {subagentPanelBox}
       {popupBox}
       {workingBox}
       {editorBox}
