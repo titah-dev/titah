@@ -1,5 +1,6 @@
 import path from "node:path"
 import { abort, prompt } from "./agent.ts"
+import { adapterFor } from "./delegate/index.ts"
 import { bus } from "./event.ts"
 import type { SubagentState } from "./event.ts"
 import { textOf } from "./message.ts"
@@ -124,6 +125,53 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
     publish("running", "working")
     try {
+      // Agent yang men-delegate memakai CLI eksternal sebagai mesinnya, bukan
+      // loop model Titah sendiri — lihat `Agent.delegate` di schema.ts. Cabang
+      // ini duduk di DALAM `try` yang sama dengan `prompt()` di bawah supaya
+      // `adapter.prompt()` yang reject (CLI tidak terpasang, timeout, dibunuh
+      // abort) jatuh ke `catch` yang sama: satu tempat yang menegakkan kontrak
+      // "tidak pernah melempar" untuk kedua mesin, bukan dua tempat yang bisa
+      // diam-diam melenceng satu sama lain.
+      if (definition.delegate !== undefined) {
+        const adapter = adapterFor(options.config, definition.delegate)
+        if (!adapter) {
+          const note = `unknown external agent "${definition.delegate}"`
+          publish("failed", note)
+          return {
+            answer: `Agent "${options.agentID}" delegates to "${definition.delegate}", which is not defined in \`externalAgent\`.`,
+            childSessionID: child.id,
+            status: "failed",
+          }
+        }
+
+        // Sengaja TANPA `resumeSessionID`: sub-agent diberi satu tugas, dan
+        // memakai sesi eksternal yang sudah dipetakan akan membiasnya dengan
+        // percakapan yang tidak pernah ia diberitahu.
+        const delegated = await adapter.prompt({
+          prompt: options.instruction,
+          cwd: options.cwd,
+          signal: options.signal,
+          onUpdate: (update) => {
+            if (update.kind === "tool") publish("running", `running ${update.name}`)
+          },
+        })
+
+        if (options.signal.aborted) {
+          publish("stopped", "stopped by user")
+          return { answer: stoppedNote(startedAt), childSessionID: child.id, status: "stopped" }
+        }
+
+        const note = delegated.isError ? (delegated.errorMessage ?? "failed") : "done"
+        publish(delegated.isError ? "failed" : "done", note)
+        return {
+          answer: delegated.isError
+            ? `FAILED: ${delegated.errorMessage ?? "no explanation"}`
+            : delegated.answer,
+          childSessionID: child.id,
+          status: delegated.isError ? "failed" : "done",
+        }
+      }
+
       const message = await prompt({
         sessionID: child.id,
         text: options.instruction,
