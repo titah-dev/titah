@@ -48,14 +48,25 @@ export const SUBAGENT_PANEL_ROWS = 8
 export function SubagentPanel({
   subagents,
   selected,
+  armed,
   height = SUBAGENT_PANEL_ROWS,
 }: {
   subagents: SubagentState[]
   /** Baris yang sedang disorot; `x` membatalkan sub-agent PADA baris ini. */
   selected: number
+  /**
+   * Sesi anak yang `x`-nya sudah dipersenjatai dan menunggu tekanan kedua.
+   *
+   * Diumumkan di JUDUL panel, bukan hanya lewat pesan flash di footer: selama
+   * giliran berjalan footer dipakai penuh oleh "working — esc to cancel", dan
+   * panel ini justru paling dipakai persis pada saat itu. Konfirmasi yang
+   * tidak terlihat sama saja dengan tidak ada.
+   */
+  armed?: string
   height?: number
 }) {
   const lines = panelLines(subagents, Date.now())
+  const armedAgent = subagents.find((entry) => entry.sessionID === armed)?.agent
 
   if (lines.length === 0) {
     return (
@@ -74,7 +85,13 @@ export function SubagentPanel({
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexShrink={0}>
-      <Text dimColor>sub-agents · {subagents.length} · ↑↓ move · x cancel · esc close</Text>
+      {armedAgent === undefined ? (
+        <Text dimColor>sub-agents · {subagents.length} · ↑↓ move · x cancel · esc close</Text>
+      ) : (
+        <Text color="yellow" bold>
+          press x again to cancel {armedAgent} · any other key keeps it running
+        </Text>
+      )}
       {visible.map((line, index) => {
         const actual = start + index
         const active = actual === selected

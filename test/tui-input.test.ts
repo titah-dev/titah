@@ -1343,10 +1343,86 @@ test("x di panel membatalkan satu sub-agent lewat klien", async () => {
     h.stdin.press("[B")
     await tick()
 
+    // `x` PERTAMA hanya mempersenjatai konfirmasi — menghentikan sub-agent
+    // tidak bisa dibatalkan, jadi satu tekanan tidak pernah cukup.
+    h.stdin.press("x")
+    await tick()
+    assert.deepEqual(h.recorded.aborted, [], "tekanan pertama belum boleh membatalkan apa pun")
+    assert.match(h.frame(), /press x again to cancel explore/)
+
     h.stdin.press("x")
     await tick()
 
     assert.deepEqual(h.recorded.aborted, ["anak"], "yang dibatalkan sesi ANAK, bukan induk")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("mengetik saat panel terbuka TIDAK membatalkan sub-agent dan tidak menyunting draft", async () => {
+  // Temuan review akhir, ditemukan lewat pty: panel bukan modal, jadi huruf
+  // "x" di tengah kata yang sedang diketik jatuh ke cabang pembatalan dan
+  // membunuh sub-agent terpilih tanpa konfirmasi — sementara "fi"-nya masuk
+  // draft dan "x"-nya hilang. Panel sekarang memiliki papan ketik selama
+  // terbuka: tidak satu pun dari ketiga huruf ini boleh punya efek.
+  const h = mount()
+  try {
+    await tick()
+    for (const id of ["a", "b"]) {
+      h.push({
+        type: "subagent.updated",
+        sessionID: session.id,
+        child: { sessionID: id, agent: `agent-${id}`, status: "running", startedAt: Date.now(), note: "n" },
+      })
+    }
+    await tick()
+
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[B") // buka panel
+    await tick()
+    assert.match(h.frame(), /sub-agents/, "panel harus terbuka dulu")
+
+    h.clear()
+    // Satu tick di antara tiap huruf: tanpa itu ketiganya menyatu jadi SATU
+    // chunk yang dibaca Ink sebagai tempelan, dan yang diuji bukan lagi
+    // mengetik melainkan menempel.
+    for (const ch of "fix") {
+      h.stdin.press(ch)
+      await tick(1)
+    }
+    await tick()
+
+    // Ketikan yang ditelan panel tidak menghasilkan render sama sekali, jadi
+    // bingkai kosong di sini BUKAN bukti apa pun — satu event dipakai untuk
+    // memaksa render baru, supaya `doesNotMatch` di bawahnya menguji layar
+    // sungguhan, bukan buffer yang kebetulan masih kosong.
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "a", agent: "agent-a", status: "running", startedAt: Date.now(), note: "still alive" },
+    })
+    await tick()
+
+    assert.deepEqual(h.recorded.aborted, [], "mengetik tidak boleh membatalkan sub-agent apa pun")
+    assert.match(h.frame(), /still alive/, "bingkai ini harus benar-benar hasil render baru")
+    assert.doesNotMatch(h.frame(), /fi(?!x again)/, "huruf yang ditelan panel tidak boleh muncul di draft")
+    // Huruf "x" di ujung kata pun tidak membunuh apa pun: ia hanya
+    // mempersenjatai konfirmasi, dan mengumumkannya.
+    assert.match(h.frame(), /press x again to cancel/)
+
+    // Dan papan ketik kembali ke penyunting begitu panel ditutup — modal
+    // berarti sementara, bukan permanen.
+    h.stdin.press("\u001b") // esc
+    await tick()
+    h.clear()
+    for (const ch of "fix") {
+      h.stdin.press(ch)
+      await tick(1)
+    }
+    await tick()
+    assert.match(h.frame(), /fix/, "setelah panel tertutup, ketikan harus masuk draft lagi")
+    assert.deepEqual(h.recorded.aborted, [], "dan tetap tidak membatalkan apa pun")
   } finally {
     h.cleanup()
   }
@@ -1439,7 +1515,10 @@ test("panah atas dan bawah di panel berputar di kedua ujung, tidak berhenti di s
     await tick()
 
     // Dari baris PERTAMA, panah ATAS harus berputar ke baris TERAKHIR.
+    // `x` ditekan DUA KALI: yang pertama mempersenjatai konfirmasi.
     h.stdin.press("[A")
+    await tick()
+    h.stdin.press("x")
     await tick()
     h.stdin.press("x")
     await tick()
@@ -1448,6 +1527,8 @@ test("panah atas dan bawah di panel berputar di kedua ujung, tidak berhenti di s
     // Dan dari baris TERAKHIR (masih terpilih — membatalkan tidak memindah
     // seleksi), panah BAWAH harus berputar balik ke baris PERTAMA.
     h.stdin.press("[B")
+    await tick()
+    h.stdin.press("x")
     await tick()
     h.stdin.press("x")
     await tick()
@@ -1587,9 +1668,17 @@ test("berganti sesi menutup panel dan menjepit seleksi yang basi terhadap sesi b
     h.stdin.press("[B") // indeks 2 — baris TERAKHIR dari sesi lama
     await tick()
 
-    // Panel dibiarkan TERBUKA saat berpindah — ini skenario konkret dari
-    // review: lima (di sini tiga) sub-agent, baris terakhir terpilih, sesi
-    // diganti SAMBIL panel masih terbuka.
+    // Panel sekarang MODAL: selama terbuka ia memiliki papan ketik, jadi
+    // "/new" tidak akan pernah sampai ke penyunting sebelum panelnya ditutup.
+    // Itu tidak menghapus skenario yang diuji di sini — `subagentSelected`
+    // sengaja BERTAHAN lewat tutup/buka, jadi indeks basi (2) tetap terbawa
+    // ke sesi baru yang cuma punya satu baris.
+    h.clear()
+    h.stdin.press("")
+    await tick()
+    assert.match(h.frame(), /enter to send/, "bingkai ini harus benar-benar hasil render baru")
+    assert.doesNotMatch(h.frame(), /sub-agents/, "esc harus menutup panel dulu")
+
     for (const ch of "/new") h.stdin.press(ch)
     await tick()
     h.stdin.press("\r")
@@ -1615,13 +1704,15 @@ test("berganti sesi menutup panel dan menjepit seleksi yang basi terhadap sesi b
     // tidak pernah terjadi sama sekali akan lolos identik dari cek
     // "tidak ada sub-agents" ini.
     assert.match(h.frame(), /ctrl\+x/, "bingkai ini harus benar-benar hasil render baru")
-    assert.doesNotMatch(h.frame(), /sub-agents/, "panel harus tertutup otomatis oleh perpindahan sesi")
+    assert.doesNotMatch(h.frame(), /sub-agents/, "panel harus tetap tertutup setelah pindah sesi")
 
     h.stdin.press("[B") // buka lagi, setelah berganti sesi
     await tick()
 
     assert.match(h.frame(), /›/, "marker seleksi harus ada di satu baris, tidak menghilang karena indeks basi")
 
+    h.stdin.press("x")
+    await tick()
     h.stdin.press("x")
     await tick()
     assert.deepEqual(

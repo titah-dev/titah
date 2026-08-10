@@ -134,6 +134,13 @@ export function App({
   // membuka lagi tidak melompat balik ke baris nol tanpa alasan.
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false)
   const [subagentSelected, setSubagentSelected] = useState(0)
+  /**
+   * Sesi anak yang `x`-nya sudah dipersenjatai dan menunggu tekanan kedua.
+   *
+   * Disimpan sebagai sessionID, bukan boolean: konfirmasi milik SATU baris,
+   * dan baris yang dipilih bisa berpindah di antara dua tekanan itu.
+   */
+  const [cancelArmed, setCancelArmed] = useState<string | undefined>(undefined)
   // Dijepit di SATU tempat, dipakai baik oleh handler `x` maupun render: indeks
   // yang tersimpan bisa basi kalau daftar menyusut (berganti sesi sambil panel
   // terbuka), dan tanpa penjepitan ini keduanya bisa membaca baris yang sudah
@@ -369,6 +376,7 @@ export function App({
       // sorotan `›` masih menunjuk indeks dari sesi LAMA.
       setSubagentPanelOpen(false)
       setSubagentSelected(0)
+      setCancelArmed(undefined)
       flash(`session: ${next.title || next.id.slice(0, 12)}`)
 
       // Pembersihan dilakukan SESUDAH berpindah, dan tidak pernah menggagalkan
@@ -597,33 +605,88 @@ export function App({
     //    jadi navigasi baris kalau modifier-nya tidak diperiksa.
     if (subagentPanelOpen && !state.permission && !leaderActive) {
       const plainKey = press.ctrl !== true && press.alt !== true && press.shift !== true
-      if (press.key === "escape" && plainKey) return setSubagentPanelOpen(false)
-      if (press.key === "up" && plainKey) {
-        return setSubagentSelected((current) => {
-          const total = state.subagents.length
-          return total === 0 ? 0 : (current - 1 + total) % total
-        })
+      if (press.key === "escape" && plainKey) {
+        setCancelArmed(undefined)
+        return setSubagentPanelOpen(false)
       }
-      if (press.key === "down" && plainKey) {
+      if ((press.key === "up" || press.key === "down") && plainKey) {
+        // Pindah baris membatalkan konfirmasi: `x` yang sudah dipersenjatai
+        // untuk satu sub-agent tidak boleh diwariskan ke baris tetangganya.
+        setCancelArmed(undefined)
+        const step = press.key === "up" ? -1 : 1
         return setSubagentSelected((current) => {
           const total = state.subagents.length
-          return total === 0 ? 0 : (current + 1) % total
+          return total === 0 ? 0 : (current + step + total) % total
         })
       }
       if (press.key === "x" && plainKey) {
         const target = state.subagents[clampedSubagentSelected]
-        if (target) {
-          // Sengaja sessionID ANAK, bukan `session.id` induk: membatalkan induk
-          // akan menghentikan seluruh giliran koordinator, padahal tujuan panel
-          // ini justru menghindari itu — satu sub-agent macet tidak boleh
-          // memaksa seluruh tim berhenti.
-          void client.abort(target.sessionID).catch(() => undefined)
+        if (!target) return
+
+        /*
+         * `x` DIKONFIRMASI, bukan langsung membunuh.
+         *
+         * Membuat panel modal saja tidak cukup, dan itu terbukti di terminal
+         * sungguhan: dengan panel modal, mengetik "fix" memang tidak lagi
+         * menyisakan "fi" di draft — tapi huruf ketiganya tetap menghentikan
+         * sub-agent terpilih. Menghentikan sub-agent tidak bisa dibatalkan
+         * dan pekerjaannya hilang, jadi satu tekanan tidak boleh cukup.
+         *
+         * Tekanan pertama mempersenjatai baris ini dan mengumumkannya; tekanan
+         * kedua di baris yang sama baru menjalankannya. Tombol lain apa pun —
+         * termasuk pindah baris — melucutinya lagi.
+         */
+        if (cancelArmed !== target.sessionID) {
+          setCancelArmed(target.sessionID)
+          return flash(`press x again to cancel ${target.agent}`)
         }
+        setCancelArmed(undefined)
+        // Sengaja sessionID ANAK, bukan `session.id` induk: membatalkan induk
+        // akan menghentikan seluruh giliran koordinator, padahal tujuan panel
+        // ini justru menghindari itu — satu sub-agent macet tidak boleh
+        // memaksa seluruh tim berhenti.
+        flash(`cancelling ${target.agent}`)
+        void client
+          .abort(target.sessionID)
+          // Hasilnya TIDAK dibuang: sub-agent yang sudah selesai tidak punya
+          // apa pun untuk dihentikan, dan tanpa pesan ini `x` di baris itu
+          // terlihat persis seperti `x` yang gagal bekerja.
+          .then((result) => {
+            if (!result.aborted) flash(`${target.agent} is no longer running`)
+          })
+          .catch(() => flash("server unreachable — nothing was cancelled"))
         return
       }
-      // Tombol lain (termasuk ctrl+x, ctrl+↑, shift+↑) jatuh ke bawah, sama
-      // seperti popup di bawahnya — supaya panel tidak mengunci keybinding
-      // yang independen dari navigasinya sendiri.
+
+      // Tombol apa pun selain `x` di baris yang sama melucuti konfirmasi.
+      if (cancelArmed !== undefined) setCancelArmed(undefined)
+
+      /*
+       * Panel bersifat MODAL: selama terbuka, ia memiliki papan ketik.
+       *
+       * Sebelumnya tombol lain jatuh ke penyunting di bawah, dan itu berarti
+       * user yang membuka panel untuk memantau lalu mulai mengetik pesan
+       * berikutnya kehilangan huruf `x`-nya ke pembatalan sub-agent — tanpa
+       * konfirmasi, tanpa jalan mengembalikan. Panel toh sudah mengambil
+       * ↑/↓ dari penyunting, jadi setengah-modal hanya menyisakan tebakan
+       * tentang tombol mana yang masih hidup.
+       *
+       * Yang tetap TEMBUS hanya dua jalan keluar global: tombol leader (chord
+       * `ctrl+x` — termasuk `ctrl+x ↓` yang menutup panel) dan tombol keluar.
+       * Keduanya bermodifier, jadi tak satu pun bisa muncul dari mengetik
+       * biasa. Palet perintah SENGAJA tidak ikut: panel ini duduk di atas
+       * popup dalam urutan penanganan, jadi palet yang terbuka di baliknya
+       * tidak akan pernah menerima panah maupun Enter — pintu yang membuka
+       * kotak yang tidak bisa dipakai lebih buruk daripada pintu yang terkunci.
+       */
+      if (resolve(keymap, press, false, ["leader", "app_exit"]) === undefined) {
+        // Tombol yang ditelan diam-diam terasa seperti terminal yang mati.
+        // Satu baris di footer memberi tahu KE MANA papan ketik pergi dan cara
+        // mengambilnya kembali — pesan yang sama untuk tiap tombol, jadi tidak
+        // menumpuk jadi kebisingan.
+        flash("sub-agent panel has the keyboard · esc to close it")
+        return
+      }
     }
 
     // Popup memakan navigasi lebih dulu. Tanpa ini, panah bawah menggulir
@@ -900,7 +963,11 @@ export function App({
     <Popup title={popup.title} items={popup.items} selected={popup.selected} />
   ) : null
   const subagentPanelBox = subagentPanelOpen ? (
-    <SubagentPanel subagents={state.subagents} selected={clampedSubagentSelected} />
+    <SubagentPanel
+      subagents={state.subagents}
+      selected={clampedSubagentSelected}
+      {...(cancelArmed !== undefined ? { armed: cancelArmed } : {})}
+    />
   ) : null
   const workingBox =
     state.status === "working" ? (
