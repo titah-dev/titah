@@ -106,12 +106,35 @@ export function isRunning(sessionID: string): boolean {
   return running.has(sessionID)
 }
 
+/**
+ * Handle pembatalan untuk sesi yang TIDAK menjalankan loop model Titah sendiri.
+ *
+ * `running` hanya terisi oleh `prompt()`. Sub-agent yang mesinnya CLI eksternal
+ * (`delegate`) tidak pernah lewat sana, jadi `x` di panel — yang membatalkan
+ * lewat sessionID ANAK — tidak menemukan apa pun untuk dihentikan: `abort()`
+ * mengembalikan false, CLI-nya terus membakar kuota sampai timeout-nya sendiri,
+ * dan satu-satunya jalan keluar user adalah membatalkan seluruh giliran
+ * koordinator — persis yang panel ini ada untuk dihindari.
+ */
+const cancellable = new Map<string, AbortController>()
+
+/** Mendaftarkan handle pembatalan sesi; mengembalikan fungsi pencabutnya. */
+export function registerCancel(sessionID: string, controller: AbortController): () => void {
+  cancellable.set(sessionID, controller)
+  return () => {
+    // Hanya mencabut milik SENDIRI: sesi anak yang dipakai ulang oleh
+    // pendaftaran berikutnya tidak boleh kehilangan handle yang masih hidup.
+    if (cancellable.get(sessionID) === controller) cancellable.delete(sessionID)
+  }
+}
+
 /** `Esc` di TUI membatalkan SELURUH turn, bukan hanya tool yang sedang jalan (Q17). */
 export function abort(sessionID: string): boolean {
   const controller = running.get(sessionID)
-  if (!controller) return false
-  controller.abort()
-  return true
+  const handle = cancellable.get(sessionID)
+  controller?.abort()
+  handle?.abort()
+  return controller !== undefined || handle !== undefined
 }
 
 export interface PromptInput {
@@ -1055,6 +1078,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
             title: result.title,
             output: stored.output,
             ...(stored.outputRef ? { outputRef: stored.outputRef } : {}),
+            ...(result.outcome ? { outcome: result.outcome } : {}),
             truncated: stored.truncated,
             started,
             ended: Date.now(),

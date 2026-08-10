@@ -20,7 +20,7 @@ process.env.TITAH_DB = path.join(root, "subagent-run.db")
 process.env.HOME = path.join(root, "home")
 
 const { runSubagent } = await import("../src/core/subagent.ts")
-const { setModelResolver } = await import("../src/core/agent.ts")
+const { abort, setModelResolver } = await import("../src/core/agent.ts")
 const { createSession, listChildSessions, listMessages } = await import(
   "../src/core/storage/session.ts"
 )
@@ -208,6 +208,42 @@ test("dibatalkan mengembalikan status stopped, BUKAN melempar", async () => {
     const assistant = childMessages.find((message) => message.role === "assistant")
     assert.ok(assistant, "giliran anak harus meninggalkan pesan asisten")
     assert.equal(assistant?.error, "Cancelled by user.")
+  } finally {
+    restore()
+  }
+})
+
+test("dibatalkan lewat sesi ANAK (jalur tombol x) juga stopped, bukan failed", async () => {
+  /*
+   * Semua test pembatalan di atas membatalkan controller INDUK. Tombol `x` di
+   * panel tidak melakukan itu: ia memanggil `abort(childSessionID)`, dan
+   * sinyal induk tetap bersih. Sebelum diperbaiki, setiap cabang `stopped` di
+   * `runSubagent` membaca sinyal induk, jadi jalur inilah yang jatuh ke cabang
+   * `message.error` dan melaporkan `FAILED: Cancelled by user.` — koordinator
+   * diberi tahu agent-nya GAGAL, dan bisa saja mengulang kerja yang baru saja
+   * dihentikan user.
+   */
+  const parent = createSession(project)
+  const restore = setModelResolver(() => slowStubModel())
+  try {
+    const running = runSubagent({
+      parentSessionID: parent.id,
+      agentID: "explore",
+      instruction: "kerja lama",
+      cwd: project,
+      config: configWithExplore(),
+      signal: new AbortController().signal,
+    })
+
+    const children = listChildSessions(parent.id)
+    const child = children.at(-1)
+    assert.ok(child, "sesi anak harus sudah ada begitu runSubagent dipanggil")
+    assert.equal(abort(child.id), true, "sesi anak harus punya handle pembatalan sendiri")
+
+    const result = await running
+    assert.equal(result.status, "stopped")
+    assert.match(result.answer, /STOPPED BY USER/)
+    assert.doesNotMatch(result.answer, /FAILED/)
   } finally {
     restore()
   }

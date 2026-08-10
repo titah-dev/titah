@@ -16,7 +16,8 @@ process.env.TITAH_DB = path.join(root, "subagent-delegate.db")
 process.env.HOME = path.join(root, "home")
 
 const { runSubagent } = await import("../src/core/subagent.ts")
-const { createSession } = await import("../src/core/storage/session.ts")
+const { abort } = await import("../src/core/agent.ts")
+const { createSession, listChildSessions } = await import("../src/core/storage/session.ts")
 const { Config } = await import("../src/core/schema.ts")
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures", "stub-agent.js")
@@ -100,4 +101,59 @@ test("adapter yang reject (timeout CLI) menjadi status failed, bukan exception y
 
   assert.equal(result.status, "failed")
   assert.match(result.answer, /timeout/i)
+})
+
+test("tombol x membatalkan sub-agent ber-delegate: CLI-nya mati dan statusnya stopped", async () => {
+  /*
+   * Temuan Penting review akhir: `abort(childSessionID)` — persis yang dikirim
+   * tombol `x` di panel — hanya melihat peta `running` milik `prompt()`. Jalur
+   * delegasi tidak pernah lewat sana, jadi id anak tidak pernah terdaftar:
+   * `abort` mengembalikan false, CLI eksternal terus jalan sampai timeout-nya
+   * sendiri (default 600 detik), dan barisnya tetap "running" sementara kuota
+   * habis. Satu-satunya jalan keluar user adalah membatalkan seluruh giliran
+   * koordinator — persis yang panel ini ada untuk dihindari.
+   *
+   * Timeout stub sengaja jauh lebih panjang dari test ini: kalau pembatalan
+   * TIDAK sampai ke subprocess, test ini menggantung berdetik-detik lalu gagal
+   * dengan "failed"/timeout, bukan lolos diam-diam.
+   */
+  process.env.TITAH_STUB_MODE = "slow"
+  const parent = createSession(project)
+  const config = Config.parse({
+    agent: { reviewer: { mode: "subagent", delegate: "stub" } },
+    externalAgent: {
+      stub: {
+        command: process.execPath,
+        args: [FIXTURE, "{prompt}"],
+        sessionMode: "generate",
+        format: "stream-json",
+        timeout: 30_000,
+      },
+    },
+  })
+
+  const running = runSubagent({
+    parentSessionID: parent.id,
+    agentID: "reviewer",
+    instruction: "kerja yang menggantung",
+    cwd: project,
+    config,
+    // Sinyal induk TIDAK PERNAH dibatalkan di sini: giliran koordinator harus
+    // tetap hidup, hanya anaknya yang dihentikan.
+    signal: new AbortController().signal,
+  })
+
+  const child = listChildSessions(parent.id).at(-1)
+  assert.ok(child, "sesi anak harus sudah ada begitu runSubagent dipanggil")
+
+  // Beri subprocess-nya waktu benar-benar hidup, supaya yang diuji adalah
+  // pembunuhan proses yang sedang berjalan, bukan jendela antrean sebelum
+  // adapter sempat dipanggil.
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  assert.equal(abort(child.id), true, "sesi anak ber-delegate harus punya handle pembatalan")
+
+  const result = await running
+  assert.equal(result.status, "stopped")
+  assert.match(result.answer, /STOPPED BY USER/)
+  assert.doesNotMatch(result.answer, /FAILED/)
 })
