@@ -1363,12 +1363,28 @@ test("ctrl+x saat panel terbuka mempersenjatai leader, BUKAN membatalkan sub-age
   const h = mount()
   try {
     await tick()
+    // DUA sub-agent, bukan satu: dengan satu baris saja, mutasi yang salah
+    // (panah bawah dibaca sebagai navigasi, bukan penutup) memindahkan
+    // seleksi 0 -> 0 lewat modulo 1 -- TIDAK ADA render sama sekali, dan
+    // bingkai KOSONG lolos begitu saja dari `doesNotMatch` di bawah tanpa
+    // membuktikan apa pun. Dengan dua baris, 0 -> 1 itu perubahan NYATA.
     h.push({
       type: "subagent.updated",
       sessionID: session.id,
       child: { sessionID: "anak", agent: "explore", status: "running", startedAt: Date.now(), note: "reading" },
     })
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak2", agent: "qc", status: "running", startedAt: Date.now(), note: "reviewing" },
+    })
     await tick()
+
+    // Tanda yang HARUS tetap terlihat sepanjang test -- pembuktian bahwa
+    // bingkai yang diperiksa nanti benar-benar hasil render baru, bukan
+    // buffer kosong yang lolos begitu saja dari `doesNotMatch`.
+    for (const ch of "zzz") h.stdin.press(ch)
+    await tick(1)
 
     h.stdin.press("") // ctrl+x
     await tick(1)
@@ -1385,6 +1401,11 @@ test("ctrl+x saat panel terbuka mempersenjatai leader, BUKAN membatalkan sub-age
     h.clear()
     h.stdin.press("[B") // panah bawah menyelesaikan chord leader yang sama — menutup panel
     await tick()
+    // Dibuktikan LEBIH DULU bahwa bingkai ini nyata (bukan buffer kosong)
+    // sebelum bergantung pada `doesNotMatch` di bawahnya -- kalau tidak,
+    // sebuah handler yang seluruhnya rusak dan tidak pernah me-render ulang
+    // akan lolos identik dengan handler yang benar.
+    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(
       h.frame(),
       /sub-agents/,
@@ -1451,6 +1472,13 @@ test("esc menutup panel sub-agent tanpa membatalkan apa pun", async () => {
     })
     await tick()
 
+    // Tanda yang HARUS tetap terlihat -- tanpa ini, kalau penangan esc
+    // suatu saat rusak total (tidak pernah menutup, tidak pernah me-render
+    // ulang apa pun), bingkai KOSONG tetap lolos dari `doesNotMatch` di
+    // bawah, persis seperti temuan review untuk test ctrl+x di atasnya.
+    for (const ch of "zzz") h.stdin.press(ch)
+    await tick(1)
+
     h.stdin.press("")
     await tick(1)
     h.stdin.press("[B")
@@ -1461,6 +1489,7 @@ test("esc menutup panel sub-agent tanpa membatalkan apa pun", async () => {
     h.stdin.press("") // esc polos
     await tick()
 
+    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(h.frame(), /sub-agents/, "panel harus tertutup")
     assert.deepEqual(h.recorded.aborted, [], "esc tidak membatalkan apa pun")
   } finally {
@@ -1484,11 +1513,12 @@ test("panel tanpa sub-agent menampilkan pesan kosong, bukan kotak hampa", async 
   }
 })
 
-test("panel menjendela baris — seleksi selalu ada di dalam jendela yang tampil", async () => {
-  // Important 2 dari review: reservasi tinggi mengasumsikan maksimal ~10
-  // baris, tapi komponennya dulu merender SEMUANYA tanpa batas. Dengan lebih
-  // dari satu jendela penuh sub-agent, baris yang disorot harus tetap
-  // terlihat — bukan terdorong keluar seperti riwayat percakapan yang lama.
+test("panel menjendela baris — baris yang terdorong keluar jendela benar-benar tidak tampil", async () => {
+  // Important 2 dari review: cek lama cuma memeriksa /agent11/ ADA, yang
+  // BENAR baik ketika windowing bekerja MAUPUN saat windowing dihapus
+  // seluruhnya (tanpa windowing, kedua belas baris tampil, termasuk
+  // agent11). Cek ini harus GAGAL kalau windowing hilang -- jadi ia juga
+  // membuktikan baris paling ATAS (agent0) sudah terdorong keluar jendela.
   const h = mount()
   try {
     await tick()
@@ -1506,13 +1536,25 @@ test("panel menjendela baris — seleksi selalu ada di dalam jendela yang tampil
     h.stdin.press("[B") // buka panel, baris terpilih indeks 0
     await tick()
 
-    for (let i = 0; i < 11; i += 1) {
-      h.stdin.press("[B") // turun ke baris TERAKHIR (indeks 11 dari 12)
+    // Sepuluh langkah pertama tidak diperiksa -- bingkainya masih menumpuk
+    // riwayat SEBELUM baris terakhir terpilih, termasuk saat agent0 MEMANG
+    // masih terlihat. Bingkai yang diperiksa nanti harus hasil dari LANGKAH
+    // TERAKHIR saja, bukan gabungan seluruh riwayat penekanan.
+    for (let i = 0; i < 10; i += 1) {
+      h.stdin.press("[B")
       await tick(1)
     }
+
+    h.clear()
+    h.stdin.press("[B") // langkah TERAKHIR ke baris terakhir (indeks 11 dari 12)
     await tick()
 
     assert.match(h.frame(), /agent11/, "baris terpilih harus terlihat, bukan terdorong keluar jendela")
+    assert.doesNotMatch(
+      h.frame(),
+      /agent0\b/,
+      "baris PALING ATAS harus sudah terdorong keluar jendela -- tanpa windowing, ia masih tampil di sini",
+    )
   } finally {
     h.cleanup()
   }
@@ -1568,6 +1610,11 @@ test("berganti sesi menutup panel dan menjepit seleksi yang basi terhadap sesi b
     h.clear()
     h.stdin.press("")
     await tick()
+    // Dibuktikan LEBIH DULU bahwa bingkai ini nyata (leader benar-benar
+    // bersenjata) sebelum bergantung pada `doesNotMatch` -- render yang
+    // tidak pernah terjadi sama sekali akan lolos identik dari cek
+    // "tidak ada sub-agents" ini.
+    assert.match(h.frame(), /ctrl\+x/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(h.frame(), /sub-agents/, "panel harus tertutup otomatis oleh perpindahan sesi")
 
     h.stdin.press("[B") // buka lagi, setelah berganti sesi
