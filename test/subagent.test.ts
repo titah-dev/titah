@@ -36,6 +36,24 @@ test("permission yang benar-benar TIDAK ADA (bukan objek kosong) BUKAN pembaca",
   assert.equal(isReader(noPermissionAtAll), false)
 })
 
+test("agent ber-delegate SELALU penulis, meski izinnya serba-deny", () => {
+  // Temuan Kritis review akhir: `permission` tidak pernah ditegakkan pada CLI
+  // eksternal — cabang delegasi tidak pernah memanggil `ask()` sama sekali —
+  // jadi membacanya di sini membuat blok serba-deny mengubah agent yang BISA
+  // menulis menjadi "pembaca" yang jalan tanpa kunci tulis. User yang
+  // mengeraskan konfigurasinya justru mendapat snapshot campur aduk.
+  const hardened = Config.parse({
+    agent: {
+      reviewer: {
+        mode: "subagent",
+        delegate: "claude",
+        permission: { edit: "deny", write: "deny", bash: "deny" },
+      },
+    },
+  }).agent["reviewer"]!
+  assert.equal(isReader(hardened), false)
+})
+
 test("penulis diserialkan: yang kedua tidak mulai sebelum yang pertama selesai", async () => {
   const order: string[] = []
   const gate = Promise.withResolvers<void>()

@@ -1,5 +1,5 @@
 import path from "node:path"
-import { abort, prompt } from "./agent.ts"
+import { abort, prompt, registerCancel } from "./agent.ts"
 import { adapterFor } from "./delegate/index.ts"
 import { bus } from "./event.ts"
 import type { SubagentState } from "./event.ts"
@@ -24,6 +24,18 @@ import { createChildSession } from "./storage/session.ts"
  * kebijakan global, yang defaultnya "ask".
  */
 export function isReader(agent: Agent): boolean {
+  // Agent yang men-delegate SELALU penulis, apa pun isi `permission`-nya.
+  //
+  // Blok izin Titah tidak pernah sampai ke CLI eksternal: mesin itu punya
+  // kebijakannya sendiri dan menyunting berkas tanpa bertanya ke sini. Kalau
+  // blok itu tetap dibaca, "mengeraskan" agent dengan edit/write/bash serba
+  // deny justru MELEPASKANNYA dari kunci tulis — ia lalu jalan berbarengan
+  // dengan penulis lain di direktori yang sama sementara CLI-nya benar-benar
+  // mengubah pohon kerja, dan snapshot yang diambil di tengah itu membuat
+  // `/undo` mengembalikan campuran dua pekerjaan. Justru usaha user untuk
+  // lebih aman yang memicu kerusakannya.
+  if (agent.delegate !== undefined) return false
+
   const permission = agent.permission
   if (!permission) return false
   return permission.edit === "deny" && permission.write === "deny" && permission.bash === "deny"
@@ -112,13 +124,27 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   const reader = isReader(definition)
   publish(reader ? "running" : "queued", reader ? "starting" : "waiting for a turn")
 
+  /*
+   * Satu handle pembatalan milik ANAK ini, dipakai oleh SEMUA jalur.
+   *
+   * Ada dua cara membatalkan, dan sebelumnya keduanya berakhir berbeda:
+   * `Esc` membatalkan sinyal INDUK, sementara `x` di panel membatalkan sesi
+   * ANAK lewat server. Karena setiap cabang di bawah hanya membaca
+   * `options.signal`, pembatalan lewat panel tidak pernah terbaca sebagai
+   * pembatalan — hasilnya jatuh ke cabang error dan koordinator diberi tahu
+   * agent-nya GAGAL, lalu bisa saja mengulangi kerja yang baru saja
+   * dihentikan user. Handle ini membuat kedua jalur bertemu di satu tempat.
+   */
+  const control = new AbortController()
+  const cancelled = () => control.signal.aborted
+
   const work = async (): Promise<SubagentResult> => {
     // `withWriteLock` menunda `run`-nya lewat `.then()` bahkan saat antrean
     // kosong — itu SATU microtask, bukan nol. Kalau pembatalan datang tepat di
     // jendela itu, tanpa pengecekan ini giliran anak tetap mulai lewat
     // `prompt()` dan menghabiskan kerja yang seharusnya sudah dibatalkan,
     // padahal hasilnya toh akan dilabeli "stopped" juga di bawah.
-    if (options.signal.aborted) {
+    if (cancelled()) {
       publish("stopped", "stopped by user")
       return { answer: stoppedNote(startedAt), childSessionID: child.id, status: "stopped" }
     }
@@ -150,13 +176,15 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         const delegated = await adapter.prompt({
           prompt: options.instruction,
           cwd: options.cwd,
-          signal: options.signal,
+          // Sinyal milik ANAK, bukan milik induk: inilah yang membuat `x` di
+          // panel benar-benar membunuh subprocess-nya.
+          signal: control.signal,
           onUpdate: (update) => {
             if (update.kind === "tool") publish("running", `running ${update.name}`)
           },
         })
 
-        if (options.signal.aborted) {
+        if (cancelled()) {
           publish("stopped", "stopped by user")
           return { answer: stoppedNote(startedAt), childSessionID: child.id, status: "stopped" }
         }
@@ -178,7 +206,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         agent: options.agentID,
       })
 
-      if (options.signal.aborted) {
+      if (cancelled()) {
         publish("stopped", "stopped by user")
         return { answer: stoppedNote(startedAt), childSessionID: child.id, status: "stopped" }
       }
@@ -195,7 +223,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
       publish("done", "done")
       return { answer: textOf(message).trim(), childSessionID: child.id, status: "done" }
     } catch (error) {
-      if (options.signal.aborted) {
+      if (cancelled()) {
         publish("stopped", "stopped by user")
         return { answer: stoppedNote(startedAt), childSessionID: child.id, status: "stopped" }
       }
@@ -205,18 +233,30 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     }
   }
 
-  // Sinyal induk membatalkan giliran anak lewat controller milik sesi anak.
+  // Sinyal induk membatalkan giliran anak lewat handle milik sesi anak.
   // Didaftarkan SEBELUM `work` dipanggil, dan `prompt()` mendaftarkan
   // controller giliran anak secara sinkron sebelum await pertamanya — jadi
   // abort yang datang segera setelah fungsi ini dipanggil tidak pernah jatuh
   // di jendela kosong tanpa pendengar (lihat pengecekan di awal `work` untuk
   // jendela `withWriteLock` yang tersisa).
-  const stop = () => abort(child.id)
+  const stop = () => control.abort()
   options.signal.addEventListener("abort", stop, { once: true })
+
+  // Handle anak juga dipublikasikan lewat `registerCancel`, supaya
+  // `abort(childSessionID)` dari server (tombol `x` di panel) menemukannya —
+  // termasuk untuk sub-agent ber-delegate, yang tidak pernah masuk ke peta
+  // `running` milik `prompt()` sama sekali.
+  const release = registerCancel(child.id, control)
+
+  // Giliran internal berjalan di controller milik `prompt()` sendiri; ia harus
+  // ikut dihentikan begitu handle anak dibatalkan, dari arah mana pun.
+  control.signal.addEventListener("abort", () => abort(child.id), { once: true })
+
   try {
     return reader ? await work() : await withWriteLock(options.cwd, work)
   } finally {
     options.signal.removeEventListener("abort", stop)
+    release()
   }
 }
 

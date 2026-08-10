@@ -172,7 +172,7 @@
             ]
           },
           "delegate": {
-            "description": "Run this agent by spawning an external CLI from `externalAgent` instead of Titah's own loop. Mutually exclusive with `model`.",
+            "description": "Run this agent by spawning an external CLI from `externalAgent` instead of Titah's own loop. Mutually exclusive with `model`. Titah's `permission` block is NOT enforced on the external CLI, which applies its own policy — so a delegating agent always counts as a writer and is serialised with the other writers.",
             "type": "string"
           },
           "prompt": {

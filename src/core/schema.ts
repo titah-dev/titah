@@ -97,7 +97,9 @@ export const Agent = z
       .optional()
       .describe(
         'Run this agent by spawning an external CLI from `externalAgent` instead of Titah\'s ' +
-          "own loop. Mutually exclusive with `model`.",
+          "own loop. Mutually exclusive with `model`. Titah's `permission` block is NOT " +
+          "enforced on the external CLI, which applies its own policy — so a delegating " +
+          "agent always counts as a writer and is serialised with the other writers.",
       ),
     prompt: z.string().optional().describe("Appended to the system prompt"),
     model: z.string().optional().describe("Model override, in \"provider/model\" form"),
