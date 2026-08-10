@@ -46,8 +46,37 @@ import {
 } from "./storage/session.ts"
 import { allTools } from "./tool/index.ts"
 import type { TitahTool } from "./tool/index.ts"
+import { dispatchableAgents } from "./subagent.ts"
 
 const MAX_STEPS = 20
+
+/**
+ * Ditambahkan ke system prompt HANYA untuk /tim. Sengaja tidak menyebut nama
+ * agent satu per satu di sini — daftarnya berubah per config, dan menaruhnya
+ * di prompt statis berarti dua sumber kebenaran yang bisa saling menyimpang.
+ * `buildTeamPrompt` di bawah menempelkan roster sungguhan setelah teks ini.
+ */
+const TEAM_PROMPT = [
+  "For this turn you are coordinating a team. Split the work across these sub-agents and",
+  "dispatch them with the `task` tool; several calls in one step run at the same time.",
+  "Agents that may write files are serialised for you — do not try to order them yourself.",
+  "Do the work that is left over yourself rather than inventing an agent for it.",
+].join("\n")
+
+/** Ditunjukkan saat `/tim` dipanggil tanpa satu pun agent yang bisa dibawahi. */
+const NO_ROSTER_MESSAGE =
+  'No sub-agents are configured yet. Add `"mode": "subagent"` (or `"all"`) to an `agent` ' +
+  'block in titah.json — for example `"agent": { "explore": { "mode": "subagent" } }` — ' +
+  "then run /tim again."
+
+/** Roster + TEAM_PROMPT, dirakit sekali di sini supaya /tim sendiri tetap tanpa mesin. */
+function buildTeamPrompt(config: Config, roster: string[]): string {
+  const lines = roster.map((id) => {
+    const description = config.agent[id]?.description
+    return description ? `  ${id} — ${description}` : `  ${id}`
+  })
+  return [TEAM_PROMPT, "", "Sub-agents you can dispatch with `task`:", ...lines].join("\n")
+}
 
 export class AgentError extends Error {}
 
@@ -136,6 +165,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // yang dibaca pagar "sudah dimuat". Penanda itu harus ikut ke riwayat, jadi
   // pesannya dirakit di sini sekali dan dipakai untuk mengirim maupun menyimpan.
   let skillMessage: ModelMessage | undefined
+  // Ditambahkan ke system prompt HANYA oleh /tim — lihat cabangnya di bawah.
+  let teamPrompt: string | undefined
 
   const command = parseCommand(input.text)
   if (command) {
@@ -159,6 +190,21 @@ export async function prompt(input: PromptInput): Promise<Message> {
       }
       text = renderSkill(skill, command.args)
       skillMessage = skillCommandMessage(skill, command.args)
+    } else if (command.name === "tim") {
+      // /tim TIDAK lewat `builtinTurn`: builtinTurn selalu mengembalikan Message
+      // dan mengakhiri giliran di tempat, sedangkan /tim justru harus menempuh
+      // giliran LLM BIASA (streamText, tool task, dst) — cuma dengan tambahan
+      // di system prompt. Menyalin mesin giliran itu ke sini lagi persis jenis
+      // "mesin sendiri" yang titik desainnya melarang.
+      const roster = dispatchableAgents(config)
+      if (roster.length === 0) {
+        return infoTurn(session, input.text, NO_ROSTER_MESSAGE, true)
+      }
+      if (command.args === "") {
+        return infoTurn(session, input.text, "Usage: /tim <task>", true)
+      }
+      text = command.args
+      teamPrompt = buildTeamPrompt(config, roster)
     } else if (isBuiltin(command.name)) {
       return builtinTurn(session, config, command.name, command.args, input)
     } else {
@@ -200,7 +246,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
   }
 
   const model = resolver(config, agentDef?.model ?? modelOverride)
-  const { system } = buildSystemPrompt(config, session.directory, agentID)
+  const built = buildSystemPrompt(config, session.directory, agentID)
+  const system = teamPrompt ? `${built.system}\n\n${teamPrompt}` : built.system
 
   const userMessage = createMessage(session.id, "user", [{ type: "text", text: input.text }])
   bus.publish({ type: "message.updated", sessionID: session.id, message: userMessage })

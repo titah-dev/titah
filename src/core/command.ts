@@ -47,7 +47,7 @@ export interface ResolvedCommand {
 }
 
 /** Command bawaan tidak boleh ditimpa user — mereka mengubah alur, bukan prompt. */
-export const BUILTIN_COMMANDS = ["consensus", "compact", "agents", "skills", "commands"] as const
+export const BUILTIN_COMMANDS = ["consensus", "tim", "compact", "agents", "skills", "commands"] as const
 
 /** Ditangani sepenuhnya di TUI (mengubah keadaan klien), tidak dikirim ke server. */
 export const CLIENT_COMMANDS = ["model", "skill", "agent", "session", "new"] as const
@@ -97,6 +97,7 @@ export function listCommands(config: Config): { name: string; description: strin
     { name: "new", description: "Start a new session" },
     { name: "skill", description: "Insert a skill into your prompt" },
     { name: "consensus", description: "Fan one question out to every agent and compare" },
+    { name: "tim", description: "Split one task across your sub-agents" },
     { name: "compact", description: "Summarise the session so far to free up context" },
     { name: "agents", description: "List internal and external agents" },
     { name: "skills", description: "List detected skills" },

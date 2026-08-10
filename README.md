@@ -236,6 +236,7 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+X` `D` | Expand/collapse every tool block — works mid-turn, and a running tool shows its arguments |
 | `End` / `Ctrl+X` `B` | Jump to the newest message |
 | `Ctrl+X` `M` | Toggle mouse capture — turn it **off** to select and copy text |
+| `Ctrl+X` `↓` | Open the sub-agent panel — `↑`/`↓` selects, `x` cancels the selected sub-agent, `Esc` closes |
 | Click a tool line | Expand/collapse just that block |
 | Mouse wheel | Scroll the history |
 | `Ctrl+X` `U` | Undo the last turn's changes |
@@ -406,8 +407,8 @@ turn even though you were not watching it happen.
 
 The three modes above are ordinary agents — you can override them by id, or add
 your own. An agent is a **prompt + tool filter + permission override + model
-override** behind a name, with no subagent spawning, so there is no recursive
-concurrency.
+override** behind a name. `mode` and `delegate` give it a second role — being
+dispatched as a sub-agent by the coordinator's own model — covered next.
 
 ```jsonc
 {
@@ -444,6 +445,98 @@ see [Skills](#skills). A bare name such as `"project-analyzer"` never resolves;
 run `/skills` or `titah doctor` to see the ids you have and which configured
 ids were not found.
 
+## Sub-agents
+
+Titah's own model can run several of its own configured agents as sub-agents,
+in parallel, inside one turn — without leaving the process or spawning an
+external CLI.
+
+```jsonc
+{
+  "agent": {
+    "explore": {
+      "mode": "subagent",
+      "description": "Codebase explorer — read only",
+      "permission": { "edit": "deny", "write": "deny", "bash": "deny" }
+    },
+    "qc-developer": {
+      "mode": "all",
+      "permission": { "bash": "allow" }
+    }
+  }
+}
+```
+
+`mode` decides whether the coordinator's own model may hand an agent work:
+only `"subagent"` and `"all"` are ever offered to the `task` tool; a
+`"primary"` agent is refused outright if something tries to dispatch it
+anyway. The default is `"primary"`, **not** `"all"` — flipping that default
+would have quietly handed every agent already in your config, including ones
+with a wide-open `permission`, to the model the moment this feature shipped,
+without you writing a single line asking for it. `mode` does not otherwise
+change an agent: it is still selectable as your own top-level agent with `Tab`
+or `--agent`, exactly as before sub-agents existed.
+
+`delegate` routes a sub-agent through an external CLI listed in
+`externalAgent` (see [Delegation](#delegation)) instead of Titah's own loop —
+the same engine `@claude` uses, reached from `task`/`/tim` instead of a
+mention. It is **mutually exclusive with `model`**: an agent has one engine,
+and config setting both is rejected when it loads.
+
+### Readers run together, writers take turns
+
+Whether a sub-agent may run *at the same time* as others is read from its
+`permission`, never from `tools`: an agent counts as a reader only when
+`edit`, `write`, **and** `bash` are all explicitly `"deny"`. Everything else —
+including an agent whose config never mentions `permission` at all — is
+treated as a writer. `bash` counts as writing on purpose: an allowed shell can
+run `sed -i` just as well as the `edit` tool can, and treating it as read-only
+would open exactly the hole this rule exists to close.
+
+Readers run with no limit on how many are concurrent. Writers are serialised
+on a queue keyed by working directory, so two sub-agents editing the same
+project never race over the same shadow-git snapshot — one waits its turn
+while the panel below shows it "waiting for a turn". This is why `/tim` tells
+the model not to order writers itself: Titah already does.
+
+### `task` and `/tim`
+
+The coordinator hands work to a sub-agent with the `task` tool, one call per
+agent; several calls in the same step run concurrently. `/tim <task>` is not a
+separate orchestration engine — it is an **ordinary turn**, with one extra
+system-prompt section listing the current dispatchable roster and instructing
+the model to split the work and dispatch it with `task`, doing any leftover
+work itself rather than inventing an agent for it. The model does the actual
+coordinating; Titah only tells it who is on the roster.
+
+Running `/tim` with no dispatchable agent configured does not hang or guess —
+it answers directly with what to add: an `agent` block with `"mode":
+"subagent"` (or `"all"`) in `titah.json`.
+
+A sub-agent never gets the `task` tool itself, no matter its own `mode` —
+dispatch depth is capped at exactly one level, so nothing can spawn a tree of
+sub-agents that burns through your provider quota with no way to stop it.
+
+### Watching them work
+
+`Ctrl+X` then `↓` opens a panel listing every sub-agent from the current turn
+with its status (queued, running, done, failed, stopped) and a running clock.
+`↑` / `↓` selects a row, `x` cancels just that sub-agent — the coordinator
+sees it stop and carries on with the rest of the team — and `Esc` closes the
+panel without touching anything.
+
+### `/undo` is still per turn, not per sub-agent
+
+Sub-agents change nothing about what `/undo` means: it reverts everything
+written during **one turn of one session**, never a single tool call in
+isolation (see [Permissions & undo](#permissions--undo)). Each sub-agent runs
+its own turn in its own child session, so its snapshot belongs there, not to
+the coordinator's turn. `Ctrl+X` `U` and a bare `titah undo` both target the
+session you are looking at — the coordinator's — so if the coordinator only
+dispatched work and wrote nothing itself, there is nothing there to undo.
+There is no way to undo just one sub-agent's slice of a `/tim` run: a turn's
+worth of changes reverts together, or not at all.
+
 ## Custom commands
 
 ```jsonc
@@ -461,9 +554,9 @@ ids were not found.
 Call it with `/review src/core/agent.ts`. The `{{.Input}}` placeholder follows
 opencode; Claude Code's `$ARGUMENTS` is accepted too.
 
-Built-in commands — `/consensus`, `/compact`, `/model`, `/skill`, `/agents`,
-`/skills`, `/commands` — cannot be overridden, because they change the execution
-flow rather than merely expanding a prompt.
+Built-in commands — `/consensus`, `/tim`, `/compact`, `/model`, `/skill`,
+`/agents`, `/skills`, `/commands` — cannot be overridden, because they change
+the execution flow rather than merely expanding a prompt.
 
 ### Context management
 
