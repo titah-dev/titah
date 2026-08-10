@@ -19,6 +19,12 @@ export interface ToolResult {
   title: string
   /** Yang dikirim balik ke model. Blob besar dipotong di lapisan atas. */
   output: string
+  /**
+   * Diisi tool yang bisa selesai tanpa melempar namun tetap gagal atau
+   * dihentikan — `task` satu-satunya sejauh ini. Riwayat memakainya untuk
+   * memilih glyph, supaya sub-agent yang gagal tidak digambar sebagai sukses.
+   */
+  outcome?: "failed" | "stopped"
   metadata?: Record<string, unknown>
 }
 

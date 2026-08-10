@@ -226,3 +226,41 @@ test("logo disembunyikan hanya kalau versi TERKECIL pun tidak muat", () => {
   assert.equal(shouldShowLogo(lebar - 1, 50), false, "terlalu sempit untuk keduanya")
   assert.equal(shouldShowLogo(200, ringkas.length + 11), false, "terlalu pendek untuk keduanya")
 })
+
+test("task yang gagal atau dihentikan TIDAK digambar dengan glyph sukses", () => {
+  // `task` tidak pernah melempar: sub-agent yang gagal atau dihentikan tetap
+  // hasil sah yang harus dibaca koordinator, jadi part-nya berstatus
+  // "completed". Tanpa `outcome`, riwayat menuliskan `✓ task penulis (failed)`
+  // — centang di atas sub-agent yang jelas-jelas tidak berhasil.
+  const withOutcome = (outcome: "failed" | "stopped") =>
+    messageLines(
+      message("m", {
+        parts: [
+          {
+            type: "tool",
+            callID: "c",
+            tool: "task",
+            state: {
+              status: "completed",
+              input: {},
+              title: `task penulis (${outcome})`,
+              output: outcome === "failed" ? "FAILED: boom" : "STOPPED BY USER after 3s.",
+              truncated: false,
+              outcome,
+              started: 1,
+              ended: 2,
+            },
+          },
+        ],
+      }),
+      false,
+    ).filter((line) => line.kind !== "blank")
+
+  const gagal = withOutcome("failed")[0]
+  assert.match(gagal?.text ?? "", /✗ task penulis \(failed\)/)
+  assert.equal(gagal?.kind, "tool-bad")
+
+  const dihentikan = withOutcome("stopped")[0]
+  assert.match(dihentikan?.text ?? "", /⊘ task penulis \(stopped\)/)
+  assert.equal(dihentikan?.kind, "tool-bad")
+})

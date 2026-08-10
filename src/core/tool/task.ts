@@ -39,6 +39,11 @@ export const taskTool: TitahTool<typeof inputSchema> = {
     return {
       title: `task ${input.agent} (${result.status})`,
       output: result.answer,
+      // Tool ini memang tidak pernah melempar — sub-agent yang gagal atau
+      // dihentikan tetap hasil yang sah untuk dibaca koordinator. `outcome`
+      // yang membawa kabar itu ke riwayat, yang kalau tidak akan menandai
+      // setiap panggilan `task` dengan glyph sukses.
+      ...(result.status === "done" ? {} : { outcome: result.status }),
       metadata: { childSessionID: result.childSessionID, status: result.status },
     }
   },

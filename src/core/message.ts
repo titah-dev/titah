@@ -17,6 +17,15 @@ export type ToolState =
       status: "completed"
       input: unknown
       title: string
+      /**
+       * Tool yang SELESAI tanpa melempar, tapi hasilnya bukan keberhasilan.
+       *
+       * `task` tidak pernah melempar — pembatalan dan kegagalan sub-agent
+       * adalah informasi untuk koordinator, bukan error giliran. Tanpa
+       * penanda ini riwayat menggambar `✓ task penulis (failed)`: glyph
+       * sukses di atas sub-agent yang jelas-jelas tidak sukses.
+       */
+      outcome?: "failed" | "stopped"
       /** Ringkas. Kalau output aslinya besar, isinya dipotong dan `outputRef` diisi. */
       output: string
       /** Path ke blob penuh di tool-output/ (Q11). */

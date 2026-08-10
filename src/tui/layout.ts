@@ -95,9 +95,13 @@ function toolLines(part: Extract<Part, { type: "tool" }>, expansion: Expansion):
   }
   if (state.status === "completed") {
     const multiline = state.output.includes("\n")
+    // Selesai TANPA melempar bukan berarti berhasil: `task` mengembalikan
+    // sub-agent yang gagal atau dihentikan sebagai hasil biasa, dan glyph
+    // sukses di atasnya membuat riwayat berbohong tentang apa yang terjadi.
+    const glyph = state.outcome === "failed" ? "✗" : state.outcome === "stopped" ? "⊘" : "✓"
     const head: Line = {
-      kind: "tool-ok",
-      text: `  ✓ ${state.title}${!expanded && multiline ? " …" : ""}`,
+      kind: state.outcome ? "tool-bad" : "tool-ok",
+      text: `  ${glyph} ${state.title}${!expanded && multiline ? " …" : ""}`,
       key: `${base}:ok`,
       toolID: base,
     }
