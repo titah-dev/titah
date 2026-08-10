@@ -101,6 +101,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // membakar token provider user tanpa satu pun tempat untuk menghentikannya.
   const isChild = session.parentID !== undefined
 
+  // "always" harus menutup seluruh giliran INDUK, bukan hanya sub-agent yang
+  // bertanya — sama seperti `isChild`, ini dibaca dari state sesi tersimpan,
+  // bukan diteruskan lewat argumen `runSubagent`, supaya tidak ada jalur yang
+  // bisa lupa mengisinya.
+  const allowlistSessionID = session.parentID ?? session.id
+
   const { config } = loadConfig(session.directory)
 
   // Delegasi diperiksa SEBELUM model di-resolve: `@claude ...` tidak butuh
@@ -241,6 +247,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
         upsert: upsertTool,
         permission: effectivePermission(config, agentID, agentDef),
         isChild,
+        allowlistSessionID,
+        ...(agentID ? { agentID } : {}),
         ...(agentDef ? { toolFilter: agentDef.tools } : {}),
         onSnapshot: (commit) => {
           assistant.snapshot = commit
@@ -879,6 +887,10 @@ interface BuildToolsOptions {
   toolFilter?: Record<string, boolean>
   /** Sesi anak tidak pernah mendapat `task` — lihat komentar di `prompt()`. */
   isChild: boolean
+  /** Nama agent yang menjalankan giliran ini, untuk dialog izin. */
+  agentID?: string
+  /** Sesi yang dipakai allowlist "always" — lihat komentar di `prompt()`. */
+  allowlistSessionID: string
 }
 
 /**
@@ -932,6 +944,8 @@ function buildTools(options: BuildToolsOptions): ToolSet {
               pattern: need.pattern,
               listeners: bus.listenerCount(sessionID),
               signal,
+              agent: options.agentID,
+              allowlistSessionID: options.allowlistSessionID,
             })
 
             if (!verdict.granted) {

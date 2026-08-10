@@ -30,6 +30,8 @@ export interface PermissionRequest {
    */
   pattern: string
   created: number
+  /** Nama agent yang meminta, agar dialog bisa membedakan sub-agent mana yang bertanya. */
+  agent?: string
 }
 
 export interface PermissionResult {
@@ -39,6 +41,14 @@ export interface PermissionResult {
 
 interface Pending {
   request: PermissionRequest
+  /**
+   * Sesi yang dipakai allowlist "always" — id INDUK kalau permintaan ini
+   * datang dari giliran sub-agent, supaya satu jawaban menutup seluruh
+   * giliran dan bukan cuma anak yang bertanya. Disimpan terpisah dari
+   * `request.sessionID`, yang tetap id ANAK supaya dialog terkirim ke
+   * pendengar yang benar.
+   */
+  allowlistSessionID: string
   resolve: (result: PermissionResult) => void
 }
 
@@ -130,6 +140,18 @@ export interface AskOptions {
   /** Jumlah klien yang sedang mendengarkan sesi ini. 0 berarti tolak. */
   listeners: number
   signal?: AbortSignal
+  /** Nama agent yang meminta, untuk dialog saat beberapa sub-agent berjalan. */
+  agent?: string
+  /**
+   * Sesi yang dipakai allowlist "always". Default `sessionID`.
+   *
+   * `prompt()` mengirim id sesi INDUK di sini untuk giliran sub-agent —
+   * turunan yang sama seperti `isChild`, dibaca dari state sesi tersimpan,
+   * bukan diteruskan lewat `runSubagent`. Nilai yang harus diingat pemanggil
+   * adalah nilai yang akan terlupa, dan di sini lupa berarti user ditanya
+   * pertanyaan yang sama sekali per sub-agent.
+   */
+  allowlistSessionID?: string
 }
 
 export async function ask(options: AskOptions): Promise<PermissionResult> {
@@ -143,8 +165,9 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
     return { granted: true, reason: `Allowed by ${from}: ${options.kind} = "allow".` }
   }
 
+  const allowlistSessionID = options.allowlistSessionID ?? options.sessionID
   const configAllowlist = options.permission.allowlist
-  const matched = [...configAllowlist, ...allowlistFor(options.sessionID)].find((pattern) =>
+  const matched = [...configAllowlist, ...allowlistFor(allowlistSessionID)].find((pattern) =>
     matchesPattern(pattern, options.pattern),
   )
   if (matched) return { granted: true, reason: `Matched allowlist: "${matched}".` }
@@ -172,6 +195,7 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
     detail: options.detail,
     pattern: options.pattern,
     created: Date.now(),
+    ...(options.agent ? { agent: options.agent } : {}),
   }
 
   return new Promise<PermissionResult>((resolve) => {
@@ -186,7 +210,7 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
       resolve(result)
     }
 
-    pending.set(request.id, { request, resolve: settle })
+    pending.set(request.id, { request, allowlistSessionID, resolve: settle })
     options.signal?.addEventListener(
       "abort",
       () => {
@@ -207,7 +231,7 @@ export function respond(permissionID: string, decision: PermissionDecision): boo
     entry.resolve({ granted: false, reason: "Refused by user." })
     return true
   }
-  if (decision === "always") remember(entry.request.sessionID, entry.request.pattern)
+  if (decision === "always") remember(entry.allowlistSessionID, entry.request.pattern)
   entry.resolve({ granted: true, reason: decision === "always" ? "Allowed for the rest of this session." : "Allowed once." })
   return true
 }

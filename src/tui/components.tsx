@@ -175,6 +175,7 @@ export function PermissionDialog({ request }: { request: PermissionRequest }) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} flexShrink={0}>
       <Text color="yellow" bold>
+        {request.agent ? `${request.agent} · ` : ""}
         Permission requested ({request.kind}): {request.title}
       </Text>
       {request.detail

@@ -130,6 +130,71 @@ test('jawaban "always" mengingat polanya untuk sesi itu saja', async () => {
   assert.equal((await asing).granted, false)
 })
 
+test("permintaan izin membawa nama agent yang meminta", async () => {
+  // Tanpa nama ini, user menjawab pertanyaan tanpa tahu siapa yang bertanya —
+  // dan dengan lima sub-agent berjalan, itu satu-satunya cara membedakannya.
+  const id = nextSession()
+  const asking = ask({
+    sessionID: id,
+    permission: base(),
+    kind: "write",
+    title: "write src/auth.ts",
+    detail: "…",
+    pattern: "write",
+    agent: "qc-developer",
+    listeners: 1,
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const [request] = listPending(id)
+  assert.equal(request?.agent, "qc-developer")
+
+  respond(request!.id, "reject")
+  await asking
+})
+
+test('jawaban "always" dari satu sub-agent menutup seluruh giliran induk, bukan hanya dirinya', async () => {
+  // Lima agent menanyakan hal yang sama lima kali adalah cara tercepat membuat
+  // user berhenti membaca dialog izin. `allowlistSessionID` adalah bagaimana
+  // `prompt()` mengirim id sesi INDUK untuk giliran sub-agent — lihat komentar
+  // di `ask()` pada src/core/permission.ts.
+  const induk = nextSession()
+  const anak1 = nextSession()
+  const anak2 = nextSession()
+
+  const pending = ask({
+    sessionID: anak1,
+    permission: base(),
+    kind: "bash",
+    title: "bash: git status",
+    detail: "git status",
+    pattern: "git *",
+    listeners: 1,
+    allowlistSessionID: induk,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  respond(listPending(anak1)[0]?.id as string, "always")
+  assert.equal((await pending).granted, true)
+
+  // anak2 adalah sub-agent LAIN dari giliran yang sama. Sesinya sendiri tidak
+  // pernah dapat entri allowlist — hanya `induk` yang dapat — dan tanpa klien
+  // (`listeners: 0`) permintaan yang tidak lolos allowlist otomatis ditolak.
+  // Jadi kalau kode keliru mengingat pola di bawah id anak1 sendiri, ask ini
+  // akan gagal karena "no client is connected", bukan lolos lewat allowlist.
+  const kedua = await ask({
+    sessionID: anak2,
+    permission: base(),
+    kind: "bash",
+    title: "bash: git diff",
+    detail: "git diff",
+    pattern: "git *",
+    listeners: 0,
+    allowlistSessionID: induk,
+  })
+  assert.equal(kedua.granted, true, "jawaban 'always' anak1 harus menutup seluruh giliran induk")
+  assert.match(kedua.reason, /allowlist/)
+})
+
 test("respond untuk id yang tidak ada mengembalikan false", () => {
   assert.equal(respond("perm_hantu", "once"), false)
 })
