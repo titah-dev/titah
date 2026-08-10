@@ -52,8 +52,17 @@ export function createSubprocessAdapter(id: string, config: ExternalAgent): Dele
       return new Promise<DelegationResult>((resolve, reject) => {
         const child = spawn(executable, args, {
           cwd: request.cwd,
-          // Agent eksternal memakai kredensialnya sendiri; jangan bocorkan
-          // kunci provider Titah ke dalam prosesnya.
+          // Environment diwariskan UTUH, dan itu disengaja: agent eksternal
+          // memakai kredensialnya sendiri, yang pada banyak mesin memang hidup
+          // di env (`ANTHROPIC_API_KEY` dan sejenisnya). Menyaringnya justru
+          // merusak CLI yang mengandalkan itu.
+          //
+          // Konsekuensinya jujur disebut di sini: kunci provider Titah yang
+          // kebetulan ada di env ikut terwariskan. Itu sama seperti menjalankan
+          // CLI-nya sendiri dari shell yang sama — bukan pelonggaran batas.
+          //
+          // `TITAH_DELEGATED` supaya agent yang peduli bisa tahu ia dipanggil
+          // Titah, bukan manusia.
           env: { ...process.env, TITAH_DELEGATED: "1" },
           stdio: ["ignore", "pipe", "pipe"],
         })
