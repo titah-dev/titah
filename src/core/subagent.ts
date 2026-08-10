@@ -38,11 +38,16 @@ export function withWriteLock<T>(cwd: string, run: () => Promise<T>): Promise<T>
   const key = path.resolve(cwd)
   const previous = tail.get(key) ?? Promise.resolve()
 
-  // `then(run, run)`: penulis berikutnya tetap jalan walau pendahulunya gagal.
-  // Kalau kegagalan menahan kunci, satu error mengunci antrean selamanya.
-  const result = previous.then(run, run)
+  // `previous` sendiri TIDAK PERNAH reject — nilai yang tersimpan di `tail`
+  // selalu sudah lewat `.catch()` di bawah sebelum disimpan. Jadi cukup satu
+  // handler; onRejected di sini tidak akan pernah terpanggil.
+  const result = previous.then(run)
   tail.set(
     key,
+    // Ini jaring pengamannya: menyerap rejection SEBELUM masuk `tail` supaya
+    // giliran berikutnya tetap melihat ekor yang resolve. Kalau kegagalan
+    // menahan kunci, satu sub-agent yang error membuat setiap penulis
+    // berikutnya di direktori itu menggantung sampai sesi ditutup.
     result.catch(() => undefined),
   )
   return result

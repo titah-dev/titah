@@ -24,6 +24,18 @@ test("izin yang tidak disebut BUKAN deny", () => {
   assert.equal(isReader(agent({})), false)
 })
 
+test("permission yang benar-benar TIDAK ADA (bukan objek kosong) BUKAN pembaca", () => {
+  // Sengaja tidak pakai helper `agent()` di atas — helper itu selalu mengirim
+  // `permission: {}`, key yang ADA tapi kosong. Config tulisan tangan asli
+  // biasanya tidak menyebut `permission` sama sekali, jadi `agent.permission`
+  // benar-benar `undefined` dan lewat cabang early-return, bukan cabang
+  // perbandingan field. Menukar early-return itu jadi `return true` adalah
+  // pintu belakang yang persis diperingatkan brief — dan tanpa tes ini, tak
+  // ada yang gagal kalau itu terjadi.
+  const noPermissionAtAll = Config.parse({ agent: { a: { mode: "subagent" } } }).agent["a"]!
+  assert.equal(isReader(noPermissionAtAll), false)
+})
+
 test("penulis diserialkan: yang kedua tidak mulai sebelum yang pertama selesai", async () => {
   const order: string[] = []
   const gate = Promise.withResolvers<void>()
@@ -74,6 +86,33 @@ test("direktori berbeda tidak saling mengunci", async () => {
   assert.deepEqual(order, ["a", "b"], "b tidak menunggu a")
   gate.resolve()
   await a
+})
+
+test("ejaan path berbeda untuk direktori yang sama tetap saling mengunci", async () => {
+  // "/proyek" dan "/proyek/lain/.." menunjuk direktori yang SAMA setelah
+  // dinormalkan, tapi berbeda sebagai string mentah. Kalau kunci dipasang
+  // dari `cwd` mentah (bukan hasil `path.resolve`), dua ejaan ini akan
+  // dianggap direktori berbeda dan berjalan serentak — membuka kembali
+  // persoalan snapshot campur yang task ini mencegah, tanpa satu tes pun
+  // yang gagal untuk memperingatkan.
+  const order: string[] = []
+  const gate = Promise.withResolvers<void>()
+
+  const first = withWriteLock("/proyek", async () => {
+    order.push("mulai-1")
+    await gate.promise
+    order.push("selesai-1")
+  })
+  const second = withWriteLock("/proyek/lain/..", async () => {
+    order.push("mulai-2")
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(order, ["mulai-1"], "ejaan berbeda, direktori sama — yang kedua BELUM boleh mulai")
+
+  gate.resolve()
+  await Promise.all([first, second])
+  assert.deepEqual(order, ["mulai-1", "selesai-1", "mulai-2"])
 })
 
 test("hanya agent ber-mode subagent atau all yang bisa didispatch", () => {
