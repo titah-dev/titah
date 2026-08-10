@@ -223,3 +223,43 @@ test("berganti sesi mengosongkan daftar sub-agent", () => {
   })
   assert.deepEqual(switched.subagents, [])
 })
+
+test("giliran BARU mengosongkan daftar sub-agent", () => {
+  // Daftar ini hidup di memori TUI dan sebelumnya tidak pernah dikosongkan
+  // kecuali saat berpindah sesi, jadi ia tumbuh sepanjang umur sesi sampai
+  // baris dari giliran setengah jam lalu ikut mengantre di panel setinggi
+  // delapan baris. Dikosongkan saat `session.idle` juga salah: itu menghapus
+  // hasilnya tepat pada detik user akhirnya bisa membacanya. Batas yang benar
+  // adalah pesan user berikutnya.
+  const withChild = reduce(initialState, {
+    type: "subagent.updated",
+    sessionID: "induk",
+    child: { sessionID: "anak", agent: "explore", status: "done", startedAt: 1, note: "selesai" },
+  })
+  assert.equal(withChild.subagents.length, 1)
+
+  const idle = reduce(withChild, { type: "session.idle", sessionID: "induk" })
+  assert.equal(idle.subagents.length, 1, "giliran selesai TIDAK menghapus hasil yang baru saja terbaca")
+
+  const nextTurn = reduce(idle, {
+    type: "message.updated",
+    sessionID: "induk",
+    message: {
+      id: "m2",
+      sessionID: "induk",
+      role: "user",
+      created: 2,
+      parts: [{ type: "text", text: "berikutnya" }],
+    },
+  })
+  assert.deepEqual(nextTurn.subagents, [], "pesan user berikutnya memulai daftar dari nol")
+
+  // Pesan asisten TIDAK boleh mengosongkannya — setiap sub-agent yang berjalan
+  // akan lenyap dari panel begitu koordinator menulis satu huruf.
+  const assistant = reduce(withChild, {
+    type: "message.updated",
+    sessionID: "induk",
+    message: { id: "m3", sessionID: "induk", role: "assistant", created: 3, parts: [] },
+  })
+  assert.equal(assistant.subagents.length, 1)
+})

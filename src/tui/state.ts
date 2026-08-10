@@ -102,6 +102,13 @@ export function reduce(state: TuiState, event: TuiAction): TuiState {
         ...state,
         messages: upsertMessage(state.messages, event.message),
         status: event.message.role === "user" ? "working" : state.status,
+        // Pesan user menandai giliran BARU, dan daftar sub-agent dikosongkan di
+        // situ — bukan di `session.idle`. Dikosongkan saat idle akan menghapus
+        // hasilnya tepat pada detik user akhirnya bisa membacanya; tidak
+        // dikosongkan sama sekali (perilaku sebelumnya) membuat daftar tumbuh
+        // sepanjang umur sesi, sampai baris dari giliran setengah jam lalu
+        // ikut antre di panel yang tingginya delapan baris.
+        subagents: event.message.role === "user" ? [] : state.subagents,
       }
 
     case "text.delta":
