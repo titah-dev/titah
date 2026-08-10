@@ -14,6 +14,24 @@ interface SessionRow {
 }
 
 /**
+ * Merakit `Session` dari `SessionRow` dengan menyebut tiap field satu-satu.
+ *
+ * Sengaja BUKAN spread (`{ ...row, parentID: ... }`): spread mempertahankan
+ * `parent_id` mentah di objek hasil, dan itu bocor keluar lewat endpoint HTTP
+ * yang men-JSON.stringify hasil `getSession` tanpa allow-list field.
+ */
+function toSession(row: SessionRow): Session {
+  return {
+    id: row.id,
+    title: row.title,
+    directory: row.directory,
+    created: row.created,
+    updated: row.updated,
+    parentID: row.parent_id ?? undefined,
+  }
+}
+
+/**
  * Path proyek dibakukan sebelum disimpan maupun dicari.
  *
  * Tanpa ini `/home/a/proyek` dan `/home/a/proyek/` menjadi dua proyek berbeda,
@@ -43,7 +61,7 @@ export function getSession(id: string): Session | undefined {
     | SessionRow
     | undefined
   if (!row) return undefined
-  return { ...row, parentID: row.parent_id ?? undefined }
+  return toSession(row)
 }
 
 /**
@@ -76,7 +94,7 @@ export function listChildSessions(parentID: string): Session[] {
   const rows = database()
     .prepare("SELECT * FROM session WHERE parent_id = ? ORDER BY created ASC")
     .all(parentID) as unknown as SessionRow[]
-  return rows.map((row) => ({ ...row, parentID: row.parent_id ?? undefined }))
+  return rows.map(toSession)
 }
 
 /**
@@ -121,20 +139,22 @@ export function listSessions(limit = 50, directory?: string): Session[] {
   const filled = "EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id)"
 
   if (directory === undefined) {
-    return db
+    const rows = db
       .prepare(
         `SELECT s.* FROM session s WHERE ${filled} AND s.parent_id IS NULL ORDER BY s.updated DESC LIMIT ?`,
       )
       .all(limit) as unknown as SessionRow[]
+    return rows.map(toSession)
   }
 
-  return db
+  const rows = db
     .prepare(
       `SELECT s.* FROM session s
         WHERE s.directory = ? AND ${filled} AND s.parent_id IS NULL
         ORDER BY s.updated DESC LIMIT ?`,
     )
     .all(projectKey(directory), limit) as unknown as SessionRow[]
+  return rows.map(toSession)
 }
 
 export function touchSession(id: string, patch: { title?: string } = {}): Session | undefined {

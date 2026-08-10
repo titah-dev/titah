@@ -233,9 +233,37 @@ test("sesi anak tertaut ke induknya dan TIDAK muncul di daftar", () => {
   assert.ok(listed.includes(parent.id))
   assert.ok(!listed.includes(child.id), "anak tidak pernah didaftar")
 
+  // Branch TANPA directory dipakai `titah sessions list --all` — kalau
+  // filternya cuma dicopy ke satu cabang, anak muncul lagi di sini.
+  const listedSemua = listSessions(50).map((s) => s.id)
+  assert.ok(!listedSemua.includes(child.id), "anak juga tidak boleh muncul tanpa filter direktori")
+
   assert.deepEqual(
     listChildSessions(parent.id).map((s) => s.id),
     [child.id],
+  )
+})
+
+test("anak tetap bisa dibuka lewat getSession selagi induknya masih hidup", () => {
+  // Panel sub-agent dan `task` membuka anak lewat id-nya secara langsung —
+  // kalau getSession ikut menyaring parent_id IS NULL, anak jadi TAK
+  // TERJANGKAU bahkan selagi masih berjalan, bukan cuma "tidak terdaftar".
+  const parent = createSession("/proyek/reachable")
+  const child = createChildSession(parent.id, "/proyek/reachable", "explore")
+
+  const found = getSession(child.id)
+  assert.ok(found, "anak harus tetap terjangkau lewat id-nya")
+  assert.equal(found?.id, child.id)
+  assert.equal(found?.parentID, parent.id)
+
+  // Bukan cuma parentID yang benar — objeknya juga tidak boleh membawa
+  // kolom mentah `parent_id`. Kalau mapper diam-diam kembali ke spread,
+  // itu bocor ke luar lewat GET /session/:id yang men-JSON.stringify apa
+  // adanya tanpa allow-list field.
+  assert.ok(!Object.hasOwn(found as object, "parent_id"), "tidak boleh ada kolom mentah di objek")
+  assert.deepEqual(
+    Object.keys(found as object).sort(),
+    ["created", "directory", "id", "parentID", "title", "updated"],
   )
 })
 
