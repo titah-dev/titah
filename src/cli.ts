@@ -391,7 +391,7 @@ async function cmdServe(port: number, hostname: string): Promise<void> {
 async function askPermission(request: PermissionRequest): Promise<PermissionDecision> {
   if (!process.stdin.isTTY) {
     process.stderr.write(
-      `\n  ⚠ ${request.title} — denied: stdin is not a terminal, nobody can answer.\n` +
+      `\n  ⚠ ${request.agent ? `${request.agent} · ` : ""}${request.title} — denied: stdin is not a terminal, nobody can answer.\n` +
         "    Use --auto, or add a pattern to permission.allowlist.\n",
     )
     return "reject"
@@ -400,7 +400,11 @@ async function askPermission(request: PermissionRequest): Promise<PermissionDeci
   const readline = await import("node:readline/promises")
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
   try {
-    process.stderr.write(`\n  ⚠ Permission requested (${request.kind}): ${request.title}\n`)
+    // Nama peminta ikut dicetak: satu giliran `/tim` bisa memunculkan tiga
+    // dialog `bash` yang identik dari tiga sub-agent berbeda, dan tanpa nama
+    // itu user menjawab pertanyaan tanpa tahu siapa yang bertanya.
+    const who = request.agent ? `${request.agent} · ` : ""
+    process.stderr.write(`\n  ⚠ ${who}Permission requested (${request.kind}): ${request.title}\n`)
     for (const line of request.detail.split("\n").slice(0, 20)) {
       process.stderr.write(`    │ ${line}\n`)
     }
@@ -455,7 +459,14 @@ async function cmdRun(
           const key = `${part.callID}:${part.state.status}`
           if (printedToolStates.has(key)) continue
           printedToolStates.add(key)
-          if (part.state.status === "completed") process.stderr.write(`  ✓ ${part.state.title}\n`)
+          if (part.state.status === "completed") {
+            // Sama seperti riwayat TUI: `task` yang gagal atau dihentikan
+            // selesai tanpa melempar, jadi glyph-nya tidak boleh diambil dari
+            // status "completed" saja.
+            const glyph =
+              part.state.outcome === "failed" ? "✗" : part.state.outcome === "stopped" ? "⊘" : "✓"
+            process.stderr.write(`  ${glyph} ${part.state.title}\n`)
+          }
           if (part.state.status === "error")
             process.stderr.write(`  ✗ ${part.tool}: ${part.state.error}\n`)
           if (part.state.status === "denied")
