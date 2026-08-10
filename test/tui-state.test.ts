@@ -189,3 +189,37 @@ test("token agent eksternal TIDAK dijumlahkan ke token Titah", () => {
   assert.equal(totals.output, 2)
   assert.deepEqual(totals.external, { input: 1000, output: 45, cost: 0.12, used: true })
 })
+
+test("subagent.updated menyisipkan lalu memperbarui berdasarkan sesi anak", () => {
+  // Panel harus menampilkan satu baris per sub-agent, bukan satu baris per
+  // pembaruan — kalau tidak, agent yang berjalan 48 detik memenuhi layar.
+  const running = reduce(initialState, {
+    type: "subagent.updated",
+    sessionID: "induk",
+    child: { sessionID: "anak", agent: "explore", status: "running", startedAt: 1, note: "membaca" },
+  })
+  assert.equal(running.subagents.length, 1)
+
+  const done = reduce(running, {
+    type: "subagent.updated",
+    sessionID: "induk",
+    child: { sessionID: "anak", agent: "explore", status: "done", startedAt: 1, note: "selesai" },
+  })
+  assert.equal(done.subagents.length, 1, "diperbarui, bukan ditambah")
+  assert.equal(done.subagents[0]?.status, "done")
+})
+
+test("berganti sesi mengosongkan daftar sub-agent", () => {
+  // Sub-agent milik satu giliran di satu sesi. Membiarkannya terlihat setelah
+  // berpindah sesi menampilkan pekerjaan yang bukan milik layar itu lagi.
+  const withChild = reduce(initialState, {
+    type: "subagent.updated",
+    sessionID: "induk",
+    child: { sessionID: "anak", agent: "explore", status: "running", startedAt: 1, note: "" },
+  })
+  const switched = reduce(withChild, {
+    type: "session.switch",
+    session: { id: "lain", title: "", directory: "/p", created: 1, updated: 1 },
+  })
+  assert.deepEqual(switched.subagents, [])
+})

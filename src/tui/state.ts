@@ -1,4 +1,4 @@
-import type { Event } from "../core/event.ts"
+import type { Event, SubagentState } from "../core/event.ts"
 import type { Message, Session } from "../core/message.ts"
 import type { PermissionRequest } from "../core/permission.ts"
 
@@ -15,12 +15,14 @@ export interface TuiState {
   permission?: PermissionRequest
   /** Antrean izin, kalau satu giliran meminta beberapa sekaligus. */
   permissionQueue: PermissionRequest[]
+  subagents: SubagentState[]
 }
 
 export const initialState: TuiState = {
   messages: [],
   status: "idle",
   permissionQueue: [],
+  subagents: [],
 }
 
 function upsertMessage(messages: Message[], next: Message): Message[] {
@@ -134,6 +136,16 @@ export function reduce(state: TuiState, event: TuiAction): TuiState {
       // Dialog izin yang masih tergantung saat giliran selesai sudah tidak
       // relevan — membiarkannya di layar akan mengunci input user.
       return { ...state, status: "idle", permission: undefined, permissionQueue: [] }
+
+    case "subagent.updated": {
+      // Diperbarui berdasarkan sessionID anak, bukan ditambahkan: panel
+      // menampilkan satu baris per sub-agent, bukan satu baris per pembaruan.
+      const index = state.subagents.findIndex((entry) => entry.sessionID === event.child.sessionID)
+      if (index === -1) return { ...state, subagents: [...state.subagents, event.child] }
+      const copy = state.subagents.slice()
+      copy[index] = event.child
+      return { ...state, subagents: copy }
+    }
   }
 }
 

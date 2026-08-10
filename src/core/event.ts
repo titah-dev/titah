@@ -9,6 +9,16 @@ import type { PermissionRequest } from "./permission.ts"
  * Snapshot untuk status tool sengaja dipilih meski boros: sinkronisasi state
  * inkremental adalah sumber utama TUI yang "nyangkut" setelah reconnect.
  */
+
+export interface SubagentState {
+  sessionID: string
+  agent: string
+  status: "queued" | "running" | "done" | "failed" | "stopped"
+  startedAt: number
+  /** Satu baris aktivitas untuk panel, mis. "menulis src/auth.ts". */
+  note: string
+}
+
 export type Event =
   | { type: "session.updated"; sessionID: string; session: Session }
   | { type: "message.updated"; sessionID: string; message: Message }
@@ -17,6 +27,7 @@ export type Event =
   | { type: "session.error"; sessionID: string; message: string }
   | { type: "permission.request"; sessionID: string; request: PermissionRequest }
   | { type: "permission.resolved"; sessionID: string; permissionID: string; granted: boolean }
+  | { type: "subagent.updated"; sessionID: string; child: SubagentState }
 
 type Queue = {
   push: (event: Event) => void
