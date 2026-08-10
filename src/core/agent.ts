@@ -39,6 +39,7 @@ import {
   touchSession,
 } from "./storage/session.ts"
 import { TOOLS } from "./tool/index.ts"
+import type { TitahTool } from "./tool/index.ts"
 
 const MAX_STEPS = 20
 
@@ -94,6 +95,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
   if (running.has(session.id)) {
     throw new AgentError("This session is already processing another turn.")
   }
+
+  // Sesi anak tidak pernah mendapat `task`. Kedalaman tepat satu tingkat —
+  // tanpa ini, satu sub-agent bisa memanggil sub-agent lagi, dan seterusnya,
+  // membakar token provider user tanpa satu pun tempat untuk menghentikannya.
+  const isChild = session.parentID !== undefined
 
   const { config } = loadConfig(session.directory)
 
@@ -234,6 +240,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
         signal: controller.signal,
         upsert: upsertTool,
         permission: effectivePermission(config, agentID, agentDef),
+        isChild,
+        ...(session.parentID ? { parentSessionID: session.parentID } : {}),
         ...(agentDef ? { toolFilter: agentDef.tools } : {}),
         onSnapshot: (commit) => {
           assistant.snapshot = commit
@@ -870,21 +878,55 @@ interface BuildToolsOptions {
   hasSnapshot: () => boolean
   /** Filter tool per agent (Q21). Tool yang tidak disebut tetap aktif. */
   toolFilter?: Record<string, boolean>
+  /** Sesi anak tidak pernah mendapat `task` — lihat komentar di `prompt()`. */
+  isChild: boolean
+  /** Terisi kalau `sessionID` sendiri adalah sesi anak. Diteruskan ke `ToolContext`. */
+  parentSessionID?: string
+}
+
+/**
+ * Daftar tool aktif untuk satu giliran, SEBELUM dibungkus jadi `ToolSet` AI SDK.
+ *
+ * Dipisah dari `buildTools` supaya penjaga kedalaman (`task` tidak diwariskan
+ * ke anak) bisa diuji lewat `buildToolNames` tanpa menjalankan giliran
+ * sungguhan — dan supaya test itu memeriksa jalur yang SAMA dengan yang
+ * dipakai `buildTools`, bukan salinan yang bisa diam-diam menyimpang darinya.
+ */
+function activeTools(options: {
+  isChild: boolean
+  toolFilter?: Record<string, boolean>
+}): TitahTool[] {
+  return TOOLS.filter((definition) => {
+    if (definition.name === "task" && options.isChild) return false
+    if (options.toolFilter?.[definition.name] === false) return false
+    return true
+  })
+}
+
+/** Nama tool yang aktif untuk bentuk options tertentu — lihat `activeTools`. */
+export function buildToolNames(options: { isChild: boolean }): string[] {
+  return activeTools(options).map((definition) => definition.name)
 }
 
 function buildTools(options: BuildToolsOptions): ToolSet {
-  const { sessionID, cwd, signal, upsert } = options
+  const { sessionID, cwd, signal, upsert, parentSessionID } = options
   const set: ToolSet = {}
 
-  for (const definition of TOOLS) {
-    if (options.toolFilter?.[definition.name] === false) continue
+  for (const definition of activeTools(options)) {
     set[definition.name] = tool({
       description: definition.description,
       inputSchema: definition.inputSchema,
       async execute(input: unknown, options2: { toolCallId: string }) {
         const callID = options2.toolCallId
         const started = Date.now()
-        const ctx = { cwd, sessionID, callID, signal, config: options.config }
+        const ctx = {
+          cwd,
+          sessionID,
+          callID,
+          signal,
+          config: options.config,
+          ...(parentSessionID ? { parentSessionID } : {}),
+        }
         upsert(callID, definition.name, { status: "running", input, started })
 
         try {

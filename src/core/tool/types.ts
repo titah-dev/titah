@@ -10,6 +10,8 @@ export interface ToolContext {
   signal: AbortSignal
   /** Dibutuhkan tool yang membaca konfigurasi, mis. `skill`. */
   config: Config
+  /** Terisi kalau sesi ini sendiri adalah sesi anak — lihat `Session.parentID`. */
+  parentSessionID?: string
 }
 
 export interface ToolResult {
