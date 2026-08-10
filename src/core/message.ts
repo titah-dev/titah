@@ -6,6 +6,8 @@ export interface Session {
   directory: string
   created: number
   updated: number
+  /** Sesi induk yang melahirkan sub-agent ini lewat `task`. Kosong untuk sesi biasa. */
+  parentID?: string
 }
 
 export type ToolState =

@@ -66,6 +66,16 @@ const MIGRATIONS: string[] = [
      created    INTEGER NOT NULL,
      PRIMARY KEY (session_id, seq)
    );`,
+
+  /*
+   * Sesi anak: satu sub-agent, satu sesi, tertaut ke giliran yang melahirkannya.
+   *
+   * Kolom terpisah, bukan tabel baru: anak ADALAH sesi seutuhnya — ia punya
+   * pesan, snapshot, dan pembatalannya sendiri. Memisahkannya ke tabel lain
+   * berarti menduplikasi semuanya.
+   */
+  `ALTER TABLE session ADD COLUMN parent_id TEXT REFERENCES session(id) ON DELETE CASCADE;
+   CREATE INDEX session_parent ON session(parent_id);`,
 ]
 
 export function database(): DatabaseSync {

@@ -12,10 +12,12 @@ process.env.TITAH_DB = path.join(root, "test.db")
 const { storeOutput, readOutput, INLINE_LIMIT } = await import("../src/core/storage/blob.ts")
 const {
   appendModelMessages,
+  createChildSession,
   createMessage,
   createSession,
   deleteSession,
   getSession,
+  listChildSessions,
   listMessages,
   listModelMessages,
   listSessions,
@@ -215,6 +217,43 @@ test("path relatif dibakukan terhadap direktori kerja", () => {
 
   assert.equal(session.directory, process.cwd(), "disimpan sudah mutlak")
   assert.ok(listSessions(50, ".").some((entry) => entry.id === session.id))
+})
+
+test("sesi anak tertaut ke induknya dan TIDAK muncul di daftar", () => {
+  // Daftar /session adalah "percakapan yang bisa kamu lanjutkan". Sesi anak
+  // bukan salah satunya — ia milik satu giliran, dan menampilkannya membuat
+  // daftar itu penuh entri yang tidak berarti apa-apa bagi user.
+  const parent = createSession("/proyek/x", "induk")
+  createMessage(parent.id, "user", [{ type: "text", text: "halo" }])
+
+  const child = createChildSession(parent.id, "/proyek/x", "explore")
+  createMessage(child.id, "user", [{ type: "text", text: "telusuri" }])
+
+  const listed = listSessions(50, "/proyek/x").map((s) => s.id)
+  assert.ok(listed.includes(parent.id))
+  assert.ok(!listed.includes(child.id), "anak tidak pernah didaftar")
+
+  assert.deepEqual(
+    listChildSessions(parent.id).map((s) => s.id),
+    [child.id],
+  )
+})
+
+test("anak mewarisi direktori kerja induknya", () => {
+  const parent = createSession("/proyek/y")
+  const child = createChildSession(parent.id, "/proyek/y", "qc")
+  assert.equal(child.directory, parent.directory)
+})
+
+test("menghapus induk ikut menghapus anaknya", () => {
+  // ON DELETE CASCADE: sesi anak tanpa induk tidak punya arti apa pun, dan
+  // membiarkannya berarti prune tidak pernah membersihkannya.
+  const parent = createSession("/proyek/z")
+  createMessage(parent.id, "user", [{ type: "text", text: "a" }])
+  const child = createChildSession(parent.id, "/proyek/z", "explore")
+
+  deleteSession(parent.id)
+  assert.equal(getSession(child.id), undefined)
 })
 
 test("subfolder BUKAN proyek yang sama — aturannya cocok persis", () => {

@@ -10,6 +10,7 @@ interface SessionRow {
   directory: string
   created: number
   updated: number
+  parent_id?: string | null
 }
 
 /**
@@ -41,7 +42,41 @@ export function getSession(id: string): Session | undefined {
   const row = database().prepare("SELECT * FROM session WHERE id = ?").get(id) as
     | SessionRow
     | undefined
-  return row
+  if (!row) return undefined
+  return { ...row, parentID: row.parent_id ?? undefined }
+}
+
+/**
+ * Sesi anak: satu sub-agent yang Titah jalankan sendiri, direkam sebagai sesi
+ * penuh tertaut ke giliran yang melahirkannya lewat `task`.
+ *
+ * Direktori kerja diwariskan dari parameter, bukan dibaca dari induk, supaya
+ * pemanggil (Task 6) bebas memberi sub-agent direktori berbeda kalau perlu.
+ */
+export function createChildSession(parentID: string, directory: string, title: string): Session {
+  const now = Date.now()
+  const session: Session = {
+    id: `ses_${crypto.randomUUID()}`,
+    title,
+    directory: projectKey(directory),
+    created: now,
+    updated: now,
+    parentID,
+  }
+  database()
+    .prepare(
+      "INSERT INTO session (id, title, directory, created, updated, parent_id) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .run(session.id, session.title, session.directory, session.created, session.updated, parentID)
+  return session
+}
+
+/** Anak-anak satu giliran, urut lahir — dipakai panel sub-agent dan `task`. */
+export function listChildSessions(parentID: string): Session[] {
+  const rows = database()
+    .prepare("SELECT * FROM session WHERE parent_id = ? ORDER BY created ASC")
+    .all(parentID) as unknown as SessionRow[]
+  return rows.map((row) => ({ ...row, parentID: row.parent_id ?? undefined }))
 }
 
 /**
@@ -87,14 +122,16 @@ export function listSessions(limit = 50, directory?: string): Session[] {
 
   if (directory === undefined) {
     return db
-      .prepare(`SELECT s.* FROM session s WHERE ${filled} ORDER BY s.updated DESC LIMIT ?`)
+      .prepare(
+        `SELECT s.* FROM session s WHERE ${filled} AND s.parent_id IS NULL ORDER BY s.updated DESC LIMIT ?`,
+      )
       .all(limit) as unknown as SessionRow[]
   }
 
   return db
     .prepare(
       `SELECT s.* FROM session s
-        WHERE s.directory = ? AND ${filled}
+        WHERE s.directory = ? AND ${filled} AND s.parent_id IS NULL
         ORDER BY s.updated DESC LIMIT ?`,
     )
     .all(projectKey(directory), limit) as unknown as SessionRow[]
