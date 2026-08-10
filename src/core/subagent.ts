@@ -240,7 +240,11 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   // di jendela kosong tanpa pendengar (lihat pengecekan di awal `work` untuk
   // jendela `withWriteLock` yang tersisa).
   const stop = () => control.abort()
-  options.signal.addEventListener("abort", stop, { once: true })
+  // Sinyal yang SUDAH aborted tidak pernah memanggil listener barunya, jadi
+  // giliran yang dibatalkan sebelum `task` sempat dijalankan akan berjalan
+  // penuh kalau hanya listener yang dipasang. Diteruskan langsung di sini.
+  if (options.signal.aborted) stop()
+  else options.signal.addEventListener("abort", stop, { once: true })
 
   // Handle anak juga dipublikasikan lewat `registerCancel`, supaya
   // `abort(childSessionID)` dari server (tombol `x` di panel) menemukannya —

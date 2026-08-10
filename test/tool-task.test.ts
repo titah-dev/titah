@@ -78,6 +78,21 @@ function stubModel(answer: string): MockLanguageModelV4 {
   })
 }
 
+/**
+ * Model yang meledak di tengah stream — giliran anak gagal tanpa dibatalkan.
+ *
+ * `prompt()` menangkap sendiri kegagalan seperti ini dan mengembalikan pesan
+ * dengan `.error` terisi, jadi `task` tetap SELESAI: itulah kenapa glyph
+ * riwayat butuh `outcome` alih-alih membaca status part-nya.
+ */
+function failingStubModel(): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      throw new Error("provider meledak")
+    },
+  })
+}
+
 /** Config in-memory untuk pengecekan dispatch — isinya harus sama dengan titah.json di atas. */
 function configWithExplore() {
   return Config.parse({
@@ -122,6 +137,7 @@ test("task menjalankan sub-agent dan mengembalikan jawabannya, TANPA tool task d
       ctx(session.id, configWithExplore()),
     )
     assert.match(result.output, /HASIL SUB-AGENT/)
+    assert.equal(result.outcome, undefined, "sub-agent yang berhasil tidak menandai apa pun")
 
     const sent = model.doStreamCalls[0]?.tools?.map((tool) => tool.name) ?? []
     assert.ok(
@@ -130,6 +146,40 @@ test("task menjalankan sub-agent dan mengembalikan jawabannya, TANPA tool task d
     )
   } finally {
     restore()
+  }
+})
+
+test("sub-agent yang gagal atau dihentikan diteruskan lewat `outcome`", async () => {
+  // `task` selalu SELESAI, tidak pernah melempar: kegagalan dan pembatalan
+  // adalah informasi untuk koordinator. Tanpa `outcome` yang diteruskan ke
+  // part tool-nya, riwayat menggambar centang di atas keduanya — dan yang
+  // memutus jalur itu bukan renderer, melainkan baris ini.
+  const session = createSession(project)
+  const restore = setModelResolver(() => failingStubModel())
+  try {
+    const gagal = await taskTool.execute(
+      { agent: "explore", instruction: "telusuri" },
+      ctx(session.id, configWithExplore()),
+    )
+    assert.equal(gagal.outcome, "failed")
+    assert.match(gagal.title, /\(failed\)/)
+  } finally {
+    restore()
+  }
+
+  const dibatalkan = createSession(project)
+  const controller = new AbortController()
+  const restoreSlow = setModelResolver(() => stubModel("terlambat"))
+  try {
+    controller.abort()
+    const stopped = await taskTool.execute(
+      { agent: "explore", instruction: "telusuri" },
+      { ...ctx(dibatalkan.id, configWithExplore()), signal: controller.signal },
+    )
+    assert.equal(stopped.outcome, "stopped")
+    assert.match(stopped.title, /\(stopped\)/)
+  } finally {
+    restoreSlow()
   }
 })
 
