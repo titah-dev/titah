@@ -27,3 +27,19 @@ test("sub-agent selesai tetap terlihat, dengan durasinya", () => {
   )
   assert.match(lines[0] ?? "", /✓ analyst\s+31s/)
 })
+
+test("glyph gagal dan dihentikan tercetak benar — belum ada test untuk keduanya", () => {
+  // Regresi review: hanya running/queued/done pernah diuji. ✗ dan ⊘ baru
+  // ketahuan salah lewat pembacaan kode, bukan lewat suite yang "hijau".
+  const now = Date.now()
+  const lines = panelLines(
+    [
+      { sessionID: "a", agent: "builder", status: "failed", startedAt: now - 5_000, note: "build error" },
+      { sessionID: "b", agent: "reviewer", status: "stopped", startedAt: now - 3_000, note: "cancelled by user" },
+    ],
+    now,
+  )
+
+  assert.match(lines[0] ?? "", /✗ builder\s+5s\s+build error/)
+  assert.match(lines[1] ?? "", /⊘ reviewer\s+3s\s+cancelled by user/)
+})

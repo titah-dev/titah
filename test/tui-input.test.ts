@@ -1351,3 +1351,238 @@ test("x di panel membatalkan satu sub-agent lewat klien", async () => {
     h.cleanup()
   }
 })
+
+// ---------- regresi review round 1: ctrl+x saat panel terbuka ----------
+
+test("ctrl+x saat panel terbuka mempersenjatai leader, BUKAN membatalkan sub-agent", async () => {
+  // Kritis dari review: toKeyPress mengembalikan { key: "x", ctrl: true } untuk
+  // ctrl+x — bentuk yang SAMA dengan tombol "x" polos yang membatalkan baris
+  // terpilih. Tanpa penjaga modifier, ctrl+x saat panel terbuka salah dibaca
+  // sebagai pembatalan, dan leader (ctrl+x q/d/m/?) jadi mati total selama
+  // panel terbuka.
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak", agent: "explore", status: "running", startedAt: Date.now(), note: "reading" },
+    })
+    await tick()
+
+    h.stdin.press("") // ctrl+x
+    await tick(1)
+    h.stdin.press("[B") // panah bawah — buka panel
+    await tick()
+    assert.match(h.frame(), /sub-agents/, "panel harus terbuka dulu")
+
+    h.clear()
+    h.stdin.press("") // ctrl+x LAGI, panel masih terbuka
+    await tick()
+    assert.match(h.frame(), /ctrl\+x/, "harus mempersenjatai leader, BUKAN dibaca sebagai 'x' pembatal")
+    assert.deepEqual(h.recorded.aborted, [], "ctrl+x sendirian tidak boleh membatalkan apa pun")
+
+    h.clear()
+    h.stdin.press("[B") // panah bawah menyelesaikan chord leader yang sama — menutup panel
+    await tick()
+    assert.doesNotMatch(
+      h.frame(),
+      /sub-agents/,
+      "chord leader (ctrl+x lalu panah bawah) harus MENUTUP panel, bukan menavigasi baris di dalamnya",
+    )
+    assert.deepEqual(h.recorded.aborted, [], "menutup panel tidak boleh membatalkan apa pun")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("panah atas dan bawah di panel berputar di kedua ujung, tidak berhenti di sana", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "a", agent: "explore", status: "running", startedAt: Date.now(), note: "x" },
+    })
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "b", agent: "qc", status: "running", startedAt: Date.now(), note: "y" },
+    })
+    await tick()
+
+    h.stdin.press("")
+    await tick(1)
+    h.stdin.press("[B") // buka panel — baris terpilih default indeks 0 ("a")
+    await tick()
+
+    // Dari baris PERTAMA, panah ATAS harus berputar ke baris TERAKHIR.
+    h.stdin.press("[A")
+    await tick()
+    h.stdin.press("x")
+    await tick()
+    assert.deepEqual(h.recorded.aborted, ["b"], "panah atas dari baris pertama harus berputar ke baris terakhir")
+
+    // Dan dari baris TERAKHIR (masih terpilih — membatalkan tidak memindah
+    // seleksi), panah BAWAH harus berputar balik ke baris PERTAMA.
+    h.stdin.press("[B")
+    await tick()
+    h.stdin.press("x")
+    await tick()
+    assert.deepEqual(
+      h.recorded.aborted,
+      ["b", "a"],
+      "panah bawah dari baris terakhir harus berputar balik ke baris pertama",
+    )
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("esc menutup panel sub-agent tanpa membatalkan apa pun", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak", agent: "explore", status: "running", startedAt: Date.now(), note: "reading" },
+    })
+    await tick()
+
+    h.stdin.press("")
+    await tick(1)
+    h.stdin.press("[B")
+    await tick()
+    assert.match(h.frame(), /sub-agents/)
+
+    h.clear()
+    h.stdin.press("") // esc polos
+    await tick()
+
+    assert.doesNotMatch(h.frame(), /sub-agents/, "panel harus tertutup")
+    assert.deepEqual(h.recorded.aborted, [], "esc tidak membatalkan apa pun")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("panel tanpa sub-agent menampilkan pesan kosong, bukan kotak hampa", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.clear()
+    h.stdin.press("")
+    await tick(1)
+    h.stdin.press("[B")
+    await tick()
+
+    assert.match(h.frame(), /no sub-agents running/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("panel menjendela baris — seleksi selalu ada di dalam jendela yang tampil", async () => {
+  // Important 2 dari review: reservasi tinggi mengasumsikan maksimal ~10
+  // baris, tapi komponennya dulu merender SEMUANYA tanpa batas. Dengan lebih
+  // dari satu jendela penuh sub-agent, baris yang disorot harus tetap
+  // terlihat — bukan terdorong keluar seperti riwayat percakapan yang lama.
+  const h = mount()
+  try {
+    await tick()
+    for (let i = 0; i < 12; i += 1) {
+      h.push({
+        type: "subagent.updated",
+        sessionID: session.id,
+        child: { sessionID: `s${i}`, agent: `agent${i}`, status: "running", startedAt: Date.now(), note: "n" },
+      })
+    }
+    await tick()
+
+    h.stdin.press("")
+    await tick(1)
+    h.stdin.press("[B") // buka panel, baris terpilih indeks 0
+    await tick()
+
+    for (let i = 0; i < 11; i += 1) {
+      h.stdin.press("[B") // turun ke baris TERAKHIR (indeks 11 dari 12)
+      await tick(1)
+    }
+    await tick()
+
+    assert.match(h.frame(), /agent11/, "baris terpilih harus terlihat, bukan terdorong keluar jendela")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("berganti sesi menutup panel dan menjepit seleksi yang basi terhadap sesi baru", async () => {
+  // Important 3 dari review: reducer mengosongkan `subagents` pada
+  // session.switch, tapi `subagentPanelOpen`/`subagentSelected` hidup di
+  // state App, bukan reducer — tanpa reset eksplisit, baris terpilih dari
+  // sesi LAMA (indeks 2 dari 3 baris) tetap tersimpan sementara sesi BARU
+  // cuma punya satu sub-agent, dan `x` akan membaca di luar array.
+  const h = mount()
+  try {
+    await tick()
+    for (const id of ["a", "b", "c"]) {
+      h.push({
+        type: "subagent.updated",
+        sessionID: session.id,
+        child: { sessionID: id, agent: `agent-${id}`, status: "running", startedAt: Date.now(), note: "n" },
+      })
+    }
+    await tick()
+
+    h.stdin.press("")
+    await tick(1)
+    h.stdin.press("[B") // buka panel — indeks 0
+    await tick()
+    h.stdin.press("[B") // indeks 1
+    await tick()
+    h.stdin.press("[B") // indeks 2 — baris TERAKHIR dari sesi lama
+    await tick()
+
+    // Panel dibiarkan TERBUKA saat berpindah — ini skenario konkret dari
+    // review: lima (di sini tiga) sub-agent, baris terakhir terpilih, sesi
+    // diganti SAMBIL panel masih terbuka.
+    for (const ch of "/new") h.stdin.press(ch)
+    await tick()
+    h.stdin.press("\r")
+    await tick(6)
+
+    // Sesi baru cuma melahirkan SATU sub-agent — indeks basi (2) sudah di luar array ini.
+    h.push({
+      type: "subagent.updated",
+      sessionID: "ses_baru_1",
+      child: { sessionID: "d", agent: "agent-d", status: "running", startedAt: Date.now(), note: "n" },
+    })
+    await tick()
+
+    // Buffer Ink menumpuk bingkai lama — bingkai dari SEBELUM perpindahan
+    // masih menyebut "sub-agents", jadi buffer dibuang lebih dulu; ctrl+x
+    // dipakai SEKALIGUS untuk memaksa satu render baru (frame() butuh sesuatu
+    // ditulis lagi setelah `clear`) dan untuk memulai membuka kembali panelnya.
+    h.clear()
+    h.stdin.press("")
+    await tick()
+    assert.doesNotMatch(h.frame(), /sub-agents/, "panel harus tertutup otomatis oleh perpindahan sesi")
+
+    h.stdin.press("[B") // buka lagi, setelah berganti sesi
+    await tick()
+
+    assert.match(h.frame(), /›/, "marker seleksi harus ada di satu baris, tidak menghilang karena indeks basi")
+
+    h.stdin.press("x")
+    await tick()
+    assert.deepEqual(
+      h.recorded.aborted,
+      ["d"],
+      "yang dibatalkan sub-agent sesi BARU — indeks basi tidak boleh membaca di luar array",
+    )
+  } finally {
+    h.cleanup()
+  }
+})

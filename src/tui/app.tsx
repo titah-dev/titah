@@ -22,7 +22,7 @@ import {
   Splash,
   Working,
 } from "./components.tsx"
-import { SubagentPanel } from "./subagent-panel.tsx"
+import { SubagentPanel, SUBAGENT_PANEL_ROWS } from "./subagent-panel.tsx"
 import {
   agentPickerItems,
   applySuggestion,
@@ -134,6 +134,12 @@ export function App({
   // membuka lagi tidak melompat balik ke baris nol tanpa alasan.
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false)
   const [subagentSelected, setSubagentSelected] = useState(0)
+  // Dijepit di SATU tempat, dipakai baik oleh handler `x` maupun render: indeks
+  // yang tersimpan bisa basi kalau daftar menyusut (berganti sesi sambil panel
+  // terbuka), dan tanpa penjepitan ini keduanya bisa membaca baris yang sudah
+  // tidak ada di array.
+  const clampedSubagentSelected =
+    state.subagents.length === 0 ? 0 : Math.min(subagentSelected, state.subagents.length - 1)
   const [scroll, setScroll] = useState(0)
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [model, setModel] = useState(initialModel)
@@ -357,6 +363,12 @@ export function App({
       setDraft("")
       setCursor(0)
       setScroll(0)
+      // Reducer sudah mengosongkan `subagents` pada session.switch, tapi panel
+      // buka/pilihannya hidup di state App, bukan reducer — tanpa ini, panel
+      // yang terbuka saat berpindah sesi menampilkan baris sesi BARU sementara
+      // sorotan `›` masih menunjuk indeks dari sesi LAMA.
+      setSubagentPanelOpen(false)
+      setSubagentSelected(0)
       flash(`session: ${next.title || next.id.slice(0, 12)}`)
 
       // Pembersihan dilakukan SESUDAH berpindah, dan tidak pernah menggagalkan
@@ -569,22 +581,37 @@ export function App({
 
     // Panel sub-agent memakan navigasi SEBELUM popup — kalau tidak, keduanya
     // berebut panah yang sama begitu keduanya sama-sama terbuka.
-    if (subagentPanelOpen && !state.permission) {
-      if (press.key === "escape") return setSubagentPanelOpen(false)
-      if (press.key === "up") {
+    //
+    // DUA penjaga tambahan, keduanya bug yang sama: menganggap tombol tanpa
+    // melihat modifier-nya.
+    //
+    // 1. `!leaderActive` — begitu ctrl+x menyalakan leader, tombol BERIKUTNYA
+    //    (mis. panah bawah untuk menutup panel lewat menu leader yang sama)
+    //    harus sampai ke penyelesaian chord leader di bawah, bukan ditelan
+    //    sebagai navigasi baris.
+    // 2. `plainKey` pada tiap cabang — tanpa ini, `x` polos DAN ctrl+x
+    //    (bentuk tombol leader) terlihat identik ke `press.key === "x"`, jadi
+    //    ctrl+x saat panel terbuka salah dibaca sebagai "batalkan baris ini"
+    //    padahal seharusnya mempersenjatai menu leader. Cabang panah kena
+    //    lubang yang sama: ctrl+↑/shift+↑ (utk gulir riwayat) akan tertelan
+    //    jadi navigasi baris kalau modifier-nya tidak diperiksa.
+    if (subagentPanelOpen && !state.permission && !leaderActive) {
+      const plainKey = press.ctrl !== true && press.alt !== true && press.shift !== true
+      if (press.key === "escape" && plainKey) return setSubagentPanelOpen(false)
+      if (press.key === "up" && plainKey) {
         return setSubagentSelected((current) => {
           const total = state.subagents.length
           return total === 0 ? 0 : (current - 1 + total) % total
         })
       }
-      if (press.key === "down") {
+      if (press.key === "down" && plainKey) {
         return setSubagentSelected((current) => {
           const total = state.subagents.length
           return total === 0 ? 0 : (current + 1) % total
         })
       }
-      if (press.key === "x") {
-        const target = state.subagents[subagentSelected]
+      if (press.key === "x" && plainKey) {
+        const target = state.subagents[clampedSubagentSelected]
         if (target) {
           // Sengaja sessionID ANAK, bukan `session.id` induk: membatalkan induk
           // akan menghentikan seluruh giliran koordinator, padahal tujuan panel
@@ -594,7 +621,9 @@ export function App({
         }
         return
       }
-      // Tombol lain jatuh ke bawah, sama seperti popup di bawahnya.
+      // Tombol lain (termasuk ctrl+x, ctrl+↑, shift+↑) jatuh ke bawah, sama
+      // seperti popup di bawahnya — supaya panel tidak mengunci keybinding
+      // yang independen dari navigasinya sendiri.
     }
 
     // Popup memakan navigasi lebih dulu. Tanpa ini, panah bawah menggulir
@@ -680,7 +709,9 @@ export function App({
           })
           return
         case "subagents_panel":
-          setSubagentSelected(0)
+          // TIDAK mereset `subagentSelected`: komentar di deklarasinya bilang
+          // pilihan sengaja dipertahankan lewat tutup/buka, jadi kodenya harus
+          // benar-benar begitu, bukan diam-diam melompat balik ke baris nol.
           setSubagentPanelOpen((value) => !value)
           return
         case "session_undo":
@@ -869,7 +900,7 @@ export function App({
     <Popup title={popup.title} items={popup.items} selected={popup.selected} />
   ) : null
   const subagentPanelBox = subagentPanelOpen ? (
-    <SubagentPanel subagents={state.subagents} selected={subagentSelected} />
+    <SubagentPanel subagents={state.subagents} selected={clampedSubagentSelected} />
   ) : null
   const workingBox =
     state.status === "working" ? (
@@ -881,8 +912,13 @@ export function App({
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   const popupHeight = popup ? Math.min(10, Math.max(1, popup.items.length)) + 3 : 0
   const workingHeight = state.status === "working" ? 1 : 0
+  // Angka `SUBAGENT_PANEL_ROWS` di sini HARUS sama dengan yang dipakai
+  // SubagentPanel untuk mem-windowing barisnya — sebelumnya reservasi ini
+  // (dulu `min(10, ...)`) menyimpang diam-diam dari render (dulu tanpa batas
+  // sama sekali), dan begitu satu giliran menghasilkan sebelas-plus sub-agent,
+  // baris riwayat terbaru terdorong keluar layar tanpa satu pun error.
   const subagentPanelHeight = subagentPanelOpen
-    ? Math.min(10, Math.max(1, state.subagents.length)) + 3
+    ? Math.min(SUBAGENT_PANEL_ROWS, Math.max(1, state.subagents.length)) + 3
     : 0
   const withMark = shouldShowMark(size.columns, size.rows)
   const headerHeight = withMark ? markLines().length + 2 : 4
