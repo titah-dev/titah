@@ -44,18 +44,32 @@ interface Pending {
   /**
    * Sesi yang dipakai allowlist "always" — id INDUK kalau permintaan ini
    * datang dari giliran sub-agent, supaya satu jawaban menutup seluruh
-   * giliran dan bukan cuma anak yang bertanya. Disimpan terpisah dari
-   * `request.sessionID`, yang tetap id ANAK supaya dialog terkirim ke
-   * pendengar yang benar.
+   * giliran dan bukan cuma anak yang bertanya.
    */
   allowlistSessionID: string
+  /**
+   * True kalau permintaan ini datang dari giliran sub-agent. Menentukan gudang
+   * mana yang ditulis jawaban "always" — lihat komentar di `respond()`.
+   */
+  turnScoped: boolean
   resolve: (result: PermissionResult) => void
 }
 
 const pending = new Map<string, Pending>()
 
-/** Allowlist yang tumbuh selama sesi berjalan, dari jawaban "always". */
+/** Allowlist PERMANEN milik satu sesi TOP-LEVEL, dari jawaban "always" user sendiri. */
 const sessionAllowlist = new Map<string, Set<string>>()
+
+/**
+ * Allowlist yang HANYA berlaku sepanjang satu giliran induk, keyed by id
+ * sesi INDUK. Jawaban "always" dari sub-agent masuk ke sini, bukan ke
+ * `sessionAllowlist` — kalau tidak, grant sekali-pakai yang dimaksudkan untuk
+ * satu sub-agent akan hidup selamanya di proses dan diwarisi setiap sub-agent
+ * berikutnya di giliran-giliran lain, termasuk yang tidak pernah diberi izin
+ * apa pun oleh user. Dibersihkan oleh `clearTurn()`, dipanggil dari `finally`
+ * `prompt()` saat giliran TOP-LEVEL (bukan tiap sub-agent) selesai.
+ */
+const turnAllowlist = new Map<string, Set<string>>()
 
 /** Sesi yang berjalan dengan --auto. */
 const autoSessions = new Set<string>()
@@ -75,6 +89,7 @@ export function allowlistFor(sessionID: string): string[] {
 
 export function clearSession(sessionID: string): void {
   sessionAllowlist.delete(sessionID)
+  turnAllowlist.delete(sessionID)
   autoSessions.delete(sessionID)
   for (const [id, entry] of pending) {
     if (entry.request.sessionID !== sessionID) continue
@@ -83,10 +98,33 @@ export function clearSession(sessionID: string): void {
   }
 }
 
+/**
+ * Mengakhiri satu giliran TOP-LEVEL: menghapus allowlist turun-temurun yang
+ * lahir dari sub-agent selama giliran itu. Dipanggil dari `finally` `prompt()`
+ * supaya giliran yang gagal atau dibatalkan tetap membersihkannya — grant
+ * yang bertahan lewat giliran yang memberikannya adalah persis bug-nya.
+ *
+ * TIDAK menyentuh `sessionAllowlist`: grant permanen milik user sendiri untuk
+ * sesi top-level-nya sendiri harus tetap hidup lintas giliran, seperti semula.
+ */
+export function clearTurn(sessionID: string): void {
+  turnAllowlist.delete(sessionID)
+}
+
 function remember(sessionID: string, pattern: string): void {
   const set = sessionAllowlist.get(sessionID) ?? new Set<string>()
   set.add(pattern)
   sessionAllowlist.set(sessionID, set)
+}
+
+function rememberForTurn(sessionID: string, pattern: string): void {
+  const set = turnAllowlist.get(sessionID) ?? new Set<string>()
+  set.add(pattern)
+  turnAllowlist.set(sessionID, set)
+}
+
+function turnAllowlistFor(sessionID: string): string[] {
+  return [...(turnAllowlist.get(sessionID) ?? [])]
 }
 
 /**
@@ -152,6 +190,27 @@ export interface AskOptions {
    * pertanyaan yang sama sekali per sub-agent.
    */
   allowlistSessionID?: string
+  /**
+   * True kalau permintaan ini datang dari giliran sub-agent. Membuat jawaban
+   * "always" masuk ke allowlist KHUSUS GILIRAN (lihat `turnAllowlist`) alih-alih
+   * allowlist permanen sesi — tanpa ini, izin sekali-pakai untuk satu
+   * sub-agent akan hidup selamanya dan diwarisi sub-agent lain di masa depan.
+   */
+  turnScoped?: boolean
+  /**
+   * Sesi yang stream event-nya harus menerima permintaan ini. Default
+   * `sessionID`.
+   *
+   * Ini KONSEP YANG BERBEDA dari `allowlistSessionID`, meski nilainya sama di
+   * kedalaman satu tingkat yang diizinkan sistem sekarang: yang itu menjawab
+   * "izin ini milik giliran siapa", ini menjawab "klien mana yang benar-benar
+   * mendengarkan". TUI/CLI/server hanya berlangganan stream sesi PALING ATAS
+   * (lihat `client.events(session.id, …)` di `src/tui/app.tsx`) — event yang
+   * disiarkan ke id sesi ANAK sendiri tidak akan pernah punya pendengar, dan
+   * `listeners` yang dihitung dari sana selalu nol, sehingga `ask()` auto-deny
+   * sebelum dialognya sempat dibuat.
+   */
+  streamSessionID?: string
 }
 
 export async function ask(options: AskOptions): Promise<PermissionResult> {
@@ -167,14 +226,27 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
 
   const allowlistSessionID = options.allowlistSessionID ?? options.sessionID
   const configAllowlist = options.permission.allowlist
-  const matched = [...configAllowlist, ...allowlistFor(allowlistSessionID)].find((pattern) =>
-    matchesPattern(pattern, options.pattern),
-  )
+  const matched = [
+    ...configAllowlist,
+    ...allowlistFor(allowlistSessionID),
+    ...turnAllowlistFor(allowlistSessionID),
+  ].find((pattern) => matchesPattern(pattern, options.pattern))
   if (matched) return { granted: true, reason: `Matched allowlist: "${matched}".` }
 
-  if (autoSessions.has(options.sessionID)) {
+  // Sama seperti allowlist: sub-agent memeriksa --auto INDUKNYA, bukan
+  // dirinya sendiri — `setAutoApprove` hanya pernah dipanggil untuk sesi
+  // top-level yang membawa `--auto`, dan tanpa ini setiap tulisan pertama
+  // sub-agent jatuh ke pengecekan listener di bawah lalu ditolak, meski user
+  // sudah mengaktifkan --auto.
+  if (autoSessions.has(allowlistSessionID)) {
     return { granted: true, reason: "--auto mode is on." }
   }
+
+  // Sesi yang stream event-nya benar-benar didengarkan klien — lihat komentar
+  // `streamSessionID` di atas. `listeners` di bawah SUDAH dihitung pemanggil
+  // berdasarkan target ini (`bus.listenerCount(streamSessionID)`), bukan
+  // sesi yang secara harfiah bertanya.
+  const streamSessionID = options.streamSessionID ?? options.sessionID
 
   // Inti Q17. Tanpa klien, tidak ada yang bisa menjawab dialog — jadi jangan
   // menggantung, dan jangan mengizinkan.
@@ -189,7 +261,11 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
 
   const request: PermissionRequest = {
     id: `perm_${crypto.randomUUID()}`,
-    sessionID: options.sessionID,
+    // Disiarkan ke `streamSessionID`, BUKAN `options.sessionID`: itulah satu
+    // -satunya id yang klien (TUI/CLI/server) benar-benar berlangganan. Sama
+    // dengan bagaimana `subagent.updated` menyiarkan ke sesi INDUK di
+    // `src/core/subagent.ts` — pola yang sama, alasan yang sama.
+    sessionID: streamSessionID,
     kind: options.kind,
     title: options.title,
     detail: options.detail,
@@ -210,7 +286,12 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
       resolve(result)
     }
 
-    pending.set(request.id, { request, allowlistSessionID, resolve: settle })
+    pending.set(request.id, {
+      request,
+      allowlistSessionID,
+      turnScoped: options.turnScoped ?? false,
+      resolve: settle,
+    })
     options.signal?.addEventListener(
       "abort",
       () => {
@@ -231,8 +312,22 @@ export function respond(permissionID: string, decision: PermissionDecision): boo
     entry.resolve({ granted: false, reason: "Refused by user." })
     return true
   }
-  if (decision === "always") remember(entry.allowlistSessionID, entry.request.pattern)
-  entry.resolve({ granted: true, reason: decision === "always" ? "Allowed for the rest of this session." : "Allowed once." })
+  if (decision === "always") {
+    // Sub-agent menulis ke gudang KHUSUS GILIRAN, bukan allowlist permanen —
+    // lihat komentar `turnAllowlist`. Grant top-level tetap permanen, seperti
+    // sebelum fitur sub-agent ada.
+    if (entry.turnScoped) rememberForTurn(entry.allowlistSessionID, entry.request.pattern)
+    else remember(entry.allowlistSessionID, entry.request.pattern)
+  }
+  entry.resolve({
+    granted: true,
+    reason:
+      decision === "always"
+        ? entry.turnScoped
+          ? "Allowed for the rest of this turn."
+          : "Allowed for the rest of this session."
+        : "Allowed once.",
+  })
   return true
 }
 

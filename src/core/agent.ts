@@ -23,7 +23,13 @@ import {
   skillById,
   skillCommandMessage,
 } from "./skill.ts"
-import { ask, effectivePermission, setAutoApprove, type EffectivePermission } from "./permission.ts"
+import {
+  ask,
+  clearTurn,
+  effectivePermission,
+  setAutoApprove,
+  type EffectivePermission,
+} from "./permission.ts"
 import { externalSessionFor, rememberExternalSession } from "./storage/external.ts"
 import { take } from "./snapshot.ts"
 import { storeOutput } from "./storage/blob.ts"
@@ -106,6 +112,13 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // bukan diteruskan lewat argumen `runSubagent`, supaya tidak ada jalur yang
   // bisa lupa mengisinya.
   const allowlistSessionID = session.parentID ?? session.id
+
+  // Konsep BEDA dari `allowlistSessionID` di atas, meski rumusnya sama pada
+  // kedalaman satu tingkat yang diizinkan sistem: ini menjawab "klien mana
+  // yang benar-benar mendengarkan", bukan "izin ini milik giliran siapa".
+  // TUI/CLI/server hanya berlangganan stream sesi PALING ATAS — lihat
+  // komentar `streamSessionID` di `AskOptions`, src/core/permission.ts.
+  const streamSessionID = session.parentID ?? session.id
 
   const { config } = loadConfig(session.directory)
 
@@ -248,6 +261,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         permission: effectivePermission(config, agentID, agentDef),
         isChild,
         allowlistSessionID,
+        streamSessionID,
         ...(agentID ? { agentID } : {}),
         ...(agentDef ? { toolFilter: agentDef.tools } : {}),
         onSnapshot: (commit) => {
@@ -350,6 +364,13 @@ export async function prompt(input: PromptInput): Promise<Message> {
     bus.publish({ type: "session.error", sessionID: session.id, message })
   } finally {
     running.delete(session.id)
+    // Hanya giliran TOP-LEVEL yang membersihkan — sub-agent yang selesai lebih
+    // dulu tidak boleh menghapus allowlist giliran yang masih dipakai sub-agent
+    // LAIN di giliran INDUK yang sama. Ini pasangan `finally` untuk komentar
+    // `turnAllowlist` di permission.ts: grant yang bertahan lewat gilirannya
+    // sendiri adalah bug yang dipatok di sini, jadi harus jalan meski giliran
+    // gagal atau dibatalkan — bukan cuma pada jalur sukses.
+    if (!isChild) clearTurn(session.id)
     const updated = touchSession(session.id)
     if (updated) bus.publish({ type: "session.updated", sessionID: session.id, session: updated })
     bus.publish({ type: "session.idle", sessionID: session.id })
@@ -891,6 +912,8 @@ interface BuildToolsOptions {
   agentID?: string
   /** Sesi yang dipakai allowlist "always" — lihat komentar di `prompt()`. */
   allowlistSessionID: string
+  /** Sesi yang stream event-nya benar-benar didengarkan klien — lihat komentar di `prompt()`. */
+  streamSessionID: string
 }
 
 /**
@@ -942,10 +965,18 @@ function buildTools(options: BuildToolsOptions): ToolSet {
               title: need.title,
               detail: need.detail,
               pattern: need.pattern,
-              listeners: bus.listenerCount(sessionID),
+              // Dihitung dari `streamSessionID`, BUKAN `sessionID` milik anak
+              // sendiri: klien (TUI/CLI/server) hanya berlangganan stream sesi
+              // PALING ATAS, jadi `listenerCount(sessionID)` untuk giliran
+              // sub-agent selalu nol dan setiap tulisannya auto-deny sebelum
+              // dialognya sempat terbentuk — lihat komentar `streamSessionID`
+              // di `AskOptions`, src/core/permission.ts.
+              listeners: bus.listenerCount(options.streamSessionID),
               signal,
               agent: options.agentID,
               allowlistSessionID: options.allowlistSessionID,
+              streamSessionID: options.streamSessionID,
+              turnScoped: options.isChild,
             })
 
             if (!verdict.granted) {
