@@ -43,6 +43,10 @@ before(() => {
           mode: "subagent",
           permission: { edit: "deny", write: "deny", bash: "deny" },
         },
+        // Penulis (tanpa blok permission serba-deny) — dipakai test antrean
+        // `withWriteLock`. `scribe` sendiri tidak pernah benar-benar menulis
+        // apa pun di test ini; namanya cukup untuk lolos `isReader() === false`.
+        scribe: { mode: "subagent" },
       },
     }),
   )
@@ -278,6 +282,119 @@ test("penulis yang dibatalkan sebelum antrean-nya sempat mulai tidak pernah mema
     0,
     "prompt() tidak boleh pernah dipanggil — kalau dipanggil, setidaknya satu pesan tersimpan",
   )
+})
+
+test("penulis QUEUED yang dibatalkan lewat sesi ANAK disiarkan 'stopped' SEGERA, tanpa menunggu antrean — defect 2 followup-1", async () => {
+  /*
+   * Sebelum diperbaiki, SETIAP publish "stopped" hidup di dalam `work()`, dan
+   * `work()` penulis hanya jalan setelah `withWriteLock` membuka antreannya.
+   * Direproduksi di terminal sungguhan: menekan `x` pada baris QUEUED tidak
+   * mengubah apa pun sampai antreannya akhirnya dibuka — bisa belasan detik.
+   * Semantiknya benar (anak itu memang batal, dan MELAPORKAN stopped begitu
+   * gilirannya tiba), tapi tidak bisa dibedakan dari "x tidak melakukan
+   * apa-apa".
+   *
+   * Test ini mengunci penulis PERTAMA selamanya (lewat model yang baru
+   * resolve setelah `releaseFirst()` dipanggil), mendaftarkan penulis KEDUA
+   * di belakangnya (otomatis QUEUED oleh `withWriteLock`, kunci per cwd yang
+   * sama), lalu membatalkannya lewat `abort(childSessionID)` — jalur sungguhan
+   * tombol `x` di panel, BUKAN sinyal induk. Status "stopped" untuk anak
+   * kedua harus sudah tersiar SEBELUM penulis pertama dilepas, yang membuktikan
+   * publish itu datang dari handle abort, bukan dari `work()` yang menunggu
+   * antrean.
+   */
+  const parent = createSession(project)
+  const config = Config.parse({ agent: { scribe: { mode: "subagent" } } })
+  const onParent = subscribeTo(parent.id)
+
+  let calls = 0
+  let releaseFirst: (() => void) | undefined
+  const restore = setModelResolver(() => {
+    calls += 1
+    if (calls === 1) {
+      // Blocker: memegang write lock sampai `releaseFirst()` dipanggil manual.
+      return new MockLanguageModelV4({
+        doStream: async () =>
+          new Promise((resolve) => {
+            releaseFirst = () =>
+              resolve({ stream: simulateReadableStream({ chunks: textChunks("A selesai") }) })
+          }),
+      })
+    }
+    return stubModel("B tidak boleh sampai sini secara normal")
+  })
+
+  try {
+    const first = runSubagent({
+      parentSessionID: parent.id,
+      agentID: "scribe",
+      instruction: "penulis pertama, memegang kunci",
+      cwd: project,
+      config,
+      signal: new AbortController().signal,
+    })
+
+    const second = runSubagent({
+      parentSessionID: parent.id,
+      agentID: "scribe",
+      instruction: "penulis kedua, masih menunggu antrean",
+      cwd: project,
+      config,
+      signal: new AbortController().signal,
+    })
+
+    const secondChild = listChildSessions(parent.id).at(-1)
+    assert.ok(secondChild, "sesi anak kedua harus sudah ada begitu runSubagent kedua dipanggil")
+    assert.equal(
+      abort(secondChild.id),
+      true,
+      "sesi anak kedua harus punya handle pembatalan sendiri, sama seperti tombol x di panel",
+    )
+
+    // Kosongkan microtask/macrotask supaya event yang baru dipublish oleh
+    // listener abort sempat dikonsumsi `subscribeTo`, TANPA melepas blocker
+    // penulis pertama — kalau `first` sudah selesai duluan, test ini tidak
+    // lagi membuktikan apa-apa soal antrean.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const stoppedForSecondBeforeQueueOpens = onParent.events.some(
+      (event) =>
+        event.type === "subagent.updated" &&
+        event.child.sessionID === secondChild.id &&
+        event.child.status === "stopped",
+    )
+    assert.ok(
+      stoppedForSecondBeforeQueueOpens,
+      "'stopped' untuk anak kedua harus tersiar SEBELUM antreannya dibuka, bukan menunggu penulis pertama",
+    )
+
+    // Baru sekarang lepas blocker, supaya kedua promise bisa resolve dan
+    // hasil akhirnya diperiksa.
+    releaseFirst?.()
+    const firstResult = await first
+    const secondResult = await second
+
+    assert.equal(firstResult.status, "done")
+    assert.equal(secondResult.status, "stopped", "hasil akhir tetap 'stopped', bukan berubah jadi failed")
+
+    // Publish dobel terjadi (satu dari listener abort segera, satu lagi dari
+    // cabang `cancelled()` di dalam `work()` begitu antreannya akhirnya
+    // dibuka) — tapi keduanya berlabel "stopped" untuk `sessionID` anak yang
+    // SAMA, jadi reducer di `state.ts` (yang upsert berdasarkan `sessionID`,
+    // bukan menumpuk) akan menampilkannya sebagai satu baris, bukan dua.
+    const secondEvents = onParent.events.filter(
+      (event): event is Extract<Event, { type: "subagent.updated" }> =>
+        event.type === "subagent.updated" && event.child.sessionID === secondChild.id,
+    )
+    assert.ok(secondEvents.length >= 2, "harus ada publish 'queued' awal dan publish 'stopped' setelahnya")
+    assert.equal(secondEvents.at(-1)?.child.status, "stopped", "publish TERAKHIR untuk anak kedua harus stopped")
+    for (const event of secondEvents.slice(1)) {
+      assert.equal(event.child.status, "stopped", "setiap publish SETELAH 'queued' awal harus tetap stopped")
+    }
+  } finally {
+    await onParent.stop()
+    restore()
+  }
 })
 
 test("progres sub-agent disiarkan ke stream sesi INDUK, bukan sesi anak", async () => {

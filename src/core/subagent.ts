@@ -138,6 +138,18 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   const control = new AbortController()
   const cancelled = () => control.signal.aborted
 
+  // Disiarkan SEGERA begitu handle ini dibatalkan, dari arah mana pun — bukan
+  // menunggu `work()` mendapat gilirannya lewat `withWriteLock`. Sub-agent
+  // yang masih QUEUED bisa menunggu lama sebelum antreannya mulai; tanpa ini,
+  // baris di panel terlihat mati sampai antrean itu akhirnya jalan, padahal
+  // pembatalannya sudah terjadi detik itu juga. Publish dobel untuk
+  // `sessionID` yang sama tidak berbahaya — reducer di `state.ts` menimpa
+  // baris berdasarkan `sessionID`, jadi cabang `stopped` di dalam `work()`
+  // (yang tetap harus ada, untuk kasus tanpa antrean) tidak membuat baris ganda.
+  control.signal.addEventListener("abort", () => publish("stopped", "stopped by user"), {
+    once: true,
+  })
+
   const work = async (): Promise<SubagentResult> => {
     // `withWriteLock` menunda `run`-nya lewat `.then()` bahkan saat antrean
     // kosong — itu SATU microtask, bukan nol. Kalau pembatalan datang tepat di
