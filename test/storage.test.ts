@@ -20,11 +20,13 @@ const {
   listChildSessions,
   listMessages,
   listModelMessages,
+  listModelRows,
   listSessions,
   isEmptySession,
   discardIfEmpty,
   pruneEmptySessions,
   pruneSessions,
+  replaceModelMessage,
   saveMessage,
   touchSession,
 } = await import("../src/core/storage/session.ts")
@@ -282,6 +284,28 @@ test("menghapus induk ikut menghapus anaknya", () => {
 
   deleteSession(parent.id)
   assert.equal(getSession(child.id), undefined)
+})
+
+test("replaceModelMessage menimpa satu baris tanpa menyentuh urutannya", () => {
+  const session = createSession("/proyek/ganti")
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    { role: "assistant", content: "dua" },
+  ])
+  const rows = listModelRows(session.id)
+  const target = rows[1]
+  assert.ok(target)
+
+  replaceModelMessage(session.id, target.seq, { role: "assistant", content: "diganti" })
+
+  const after = listModelRows(session.id)
+  assert.equal(after.length, 2)
+  assert.deepEqual(
+    after.map((row) => row.seq),
+    rows.map((row) => row.seq),
+  )
+  assert.equal(after[1]?.message.content, "diganti")
+  assert.equal(after[0]?.message.content, "satu")
 })
 
 test("subfolder BUKAN proyek yang sama — aturannya cocok persis", () => {

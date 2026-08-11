@@ -47,6 +47,91 @@ export function tailStart(messages: ModelMessage[], keepTurns = KEEP_TURNS): num
   return 0
 }
 
+/**
+ * Rasio byte→token yang SENGAJA meremehkan.
+ *
+ * Teks nyata kira-kira 4 byte per token. Angka 8 di sini membuat penghematan
+ * hasil prune selalu ditaksir lebih kecil dari sebenarnya, sehingga keputusan
+ * "masih perlu diringkas?" condong ke arah meringkas. Dua arah kesalahannya
+ * tidak setara: menaksir terlalu rendah cuma menambah satu panggilan
+ * smallModel; menaksir terlalu tinggi berarti melewatkan peringkasan yang
+ * dibutuhkan lalu mengirim permintaan kebesaran.
+ */
+export const BYTES_PER_TOKEN = 8
+
+export function estimateTokens(bytes: number): number {
+  return Math.floor(bytes / BYTES_PER_TOKEN)
+}
+
+/** Penanda yang menggantikan output tool yang dibuang. */
+const PRUNED = "[output was dropped to free context — re-run the tool if you need it]"
+
+/**
+ * Membuang output hasil tool SEBELUM `upTo`, tanpa menghapus satu pesan pun.
+ *
+ * Pesan `tool` yang dihapus akan meninggalkan tool-call tanpa hasilnya, dan
+ * provider menolak riwayat semacam itu. Karena itu yang diganti hanya ISI-nya.
+ *
+ * Ini mekanisme yang murah: tidak ada panggilan model sama sekali, sementara di
+ * giliran agentic output tool memang bagian terbesar konteks. Risikonya model
+ * membaca ulang berkas — itu bisa dipulihkan, beda dari ringkasan yang
+ * diam-diam menjatuhkan sebuah keputusan.
+ */
+export function pruneToolOutputs(
+  messages: ModelMessage[],
+  upTo: number,
+): { messages: ModelMessage[]; bytesFreed: number } {
+  let bytesFreed = 0
+
+  const out = messages.map((message, index) => {
+    if (index >= upTo) return message
+    if (message.role !== "tool" || typeof message.content === "string") return message
+
+    const parts = message.content as { type: string; [key: string]: unknown }[]
+    let changed = false
+    const next = parts.map((part) => {
+      if (part["type"] !== "tool-result") return part
+      const output = part["output"]
+      const rendered = JSON.stringify(output ?? "")
+      if (rendered === JSON.stringify({ type: "text", value: PRUNED })) return part
+      bytesFreed += Buffer.byteLength(rendered)
+      changed = true
+      return { ...part, output: { type: "text", value: PRUNED } }
+    })
+
+    return changed ? ({ ...message, content: next } as ModelMessage) : message
+  })
+
+  return { messages: out, bytesFreed }
+}
+
+/**
+ * Berapa pesan terakhir yang dipertahankan saat memadatkan DI TENGAH giliran.
+ *
+ * Bukan giliran, karena di tengah giliran tidak ada batas giliran untuk
+ * dihitung. Enam cukup untuk menyisakan beberapa hasil tool terakhir, yang
+ * biasanya persis yang sedang dipakai model untuk memutuskan langkah berikutnya.
+ */
+export const MID_TURN_KEEP = 6
+
+/**
+ * Batas potong untuk pemadatan di tengah giliran.
+ *
+ * Aturannya satu: JANGAN memotong di pesan `tool`. Pesan itu memuat hasil dari
+ * tool-call di pesan sebelumnya; memotong di situ meninggalkan hasil tanpa
+ * panggilannya, dan provider menolak riwayat seperti itu dengan error yang
+ * tidak menyebut pemadatan sama sekali. Memotong di pesan `assistant` yang
+ * berisi tool-call justru aman, karena hasilnya menyusul dan ikut disimpan.
+ *
+ * Selalu MUNDUR ke indeks aman, tidak pernah maju: maju berarti membuang lebih
+ * banyak dari yang diminta.
+ */
+export function midTurnCut(messages: ModelMessage[], keepMessages: number): number {
+  let cut = Math.max(0, messages.length - keepMessages)
+  while (cut > 0 && messages[cut]?.role === "tool") cut -= 1
+  return cut
+}
+
 export interface CompactionPlan {
   /** Pesan yang akan diringkas. Kosong berarti tidak ada yang perlu dipadatkan. */
   dropped: ModelMessage[]
@@ -57,6 +142,24 @@ export interface CompactionPlan {
 }
 
 /**
+ * `planCompaction` dengan batas potong yang sudah ditentukan pemanggil.
+ *
+ * Dipakai jalur mid-turn, yang batas amannya dihitung `midTurnCut` dan bukan
+ * dari giliran user. Aturan batas air hidup DI SINI SAJA — dua salinan akan
+ * menandai titik berbeda sebagai "sudah diringkas", dan sebagian riwayat lalu
+ * terkirim dua kali atau hilang sama sekali.
+ */
+export function planAtCut(rows: ModelRow[], cut: number): CompactionPlan {
+  const dropped = rows.slice(0, cut).map((row) => row.message)
+  // Batas air = seq terakhir yang diringkas. Kalau semuanya diringkas, itu seq
+  // baris terakhir; kalau tidak, satu di bawah baris pertama yang dipertahankan.
+  const firstKept = rows[cut]
+  const lastRow = rows.at(-1)
+  const watermark = firstKept ? firstKept.seq - 1 : (lastRow?.seq ?? -1)
+  return { dropped, watermark, kept: rows.length - cut }
+}
+
+/**
  * Menyusun rencana pemadatan dari baris yang BELUM dipadatkan.
  *
  * `rows` harus sudah disaring ke atas batas air sebelumnya, sehingga pemadatan
@@ -64,16 +167,7 @@ export interface CompactionPlan {
  */
 export function planCompaction(rows: ModelRow[], keepTurns = KEEP_TURNS): CompactionPlan {
   const messages = rows.map((row) => row.message)
-  const cut = tailStart(messages, keepTurns)
-  const dropped = messages.slice(0, cut)
-
-  // Batas air = seq terakhir yang diringkas. Kalau semuanya diringkas, itu seq
-  // baris terakhir; kalau tidak, satu di bawah baris pertama yang dipertahankan.
-  const firstKept = rows[cut]
-  const lastRow = rows.at(-1)
-  const watermark = firstKept ? firstKept.seq - 1 : (lastRow?.seq ?? -1)
-
-  return { dropped, watermark, kept: rows.length - cut }
+  return planAtCut(rows, tailStart(messages, keepTurns))
 }
 
 /** Menjadikan satu pesan model teks datar yang bisa dibaca peringkas. */

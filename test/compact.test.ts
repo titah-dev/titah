@@ -4,9 +4,13 @@ import type { ModelMessage } from "ai"
 import {
   COMPACT_SYSTEM,
   compactPrompt,
+  estimateTokens,
   KEEP_TURNS,
+  midTurnCut,
   overBudget,
+  planAtCut,
   planCompaction,
+  pruneToolOutputs,
   renderMessage,
   renderTranscript,
   tailStart,
@@ -236,4 +240,101 @@ test("reserved lebih besar dari window memicu segera, bukan diam-diam mati", () 
   // Config yang keliru harus terlihat sebagai pemadatan agresif, bukan sebagai
   // fitur yang seolah-olah mati.
   assert.equal(overBudget(1, 8192, 16384), true)
+})
+
+// ---------- pruner ----------
+
+test("pruner mengganti output tool dengan penanda, TIDAK menghapus pesannya", () => {
+  // Menghapus pesan `tool` akan meninggalkan tool-call tanpa hasilnya, dan
+  // provider menolak riwayat seperti itu. Penanda menjaga strukturnya utuh.
+  const messages = [
+    user("satu"),
+    toolCall("a"),
+    toolResult("a"),
+    user("dua"),
+    toolCall("b"),
+    toolResult("b"),
+  ]
+  const { messages: pruned, bytesFreed } = pruneToolOutputs(messages, 3)
+
+  assert.equal(pruned.length, messages.length)
+  assert.equal(pruned[2]?.role, "tool")
+  assert.ok(bytesFreed > 0)
+
+  const first = JSON.stringify(pruned[2])
+  assert.match(first, /output was dropped/)
+  assert.doesNotMatch(first, /isi/)
+
+  // Di luar batas potong tidak disentuh sama sekali.
+  const last = JSON.stringify(pruned[5])
+  assert.match(last, /isi/)
+})
+
+test("pruner tidak mengubah array aslinya", () => {
+  const messages = [toolCall("a"), toolResult("a")]
+  const before = JSON.stringify(messages)
+  pruneToolOutputs(messages, 2)
+  assert.equal(JSON.stringify(messages), before)
+})
+
+test("prune kedua atas hasil yang sama tidak membebaskan byte lagi", () => {
+  // Tanpa ini, pemicu akan mengira prune selalu menolong dan tidak pernah
+  // naik ke peringkasan — sesinya lalu mati persis seperti sebelum fitur ada.
+  const messages = [toolCall("a"), toolResult("a")]
+  const once = pruneToolOutputs(messages, 2)
+  const twice = pruneToolOutputs(once.messages, 2)
+  assert.equal(twice.bytesFreed, 0)
+})
+
+test("estimateTokens MEREMEHKAN penghematan, tidak melebih-lebihkannya", () => {
+  // Dua arah kesalahan tidak setara: meremehkan berarti satu panggilan
+  // smallModel yang mubazir; melebih-lebihkan berarti melewatkan peringkasan
+  // yang dibutuhkan lalu mengirim permintaan kebesaran — kegagalan yang jadi
+  // alasan seluruh fitur ini dibangun.
+  const realistic = 4 // byte per token pada teks nyata
+  const bytes = 40_000
+  assert.ok(estimateTokens(bytes) < bytes / realistic)
+})
+
+test("potong mid-turn tidak pernah jatuh di pesan tool", () => {
+  // Di tengah giliran tidak ada pesan user setelah giliran dimulai, jadi aturan
+  // tailStart tidak berlaku. Memotong di pesan `tool` meninggalkan hasil tanpa
+  // panggilannya, dan provider menolaknya dengan error yang tidak menyebut
+  // pemadatan sama sekali.
+  const messages = [
+    user("kerjakan"),
+    toolCall("a"),
+    toolResult("a"),
+    toolCall("b"),
+    toolResult("b"),
+    toolCall("c"),
+    toolResult("c"),
+  ]
+  for (let keep = 1; keep <= messages.length; keep += 1) {
+    const cut = midTurnCut(messages, keep)
+    assert.notEqual(messages[cut]?.role, "tool", `keep=${keep} memotong di pesan tool`)
+  }
+})
+
+test("potong mid-turn mundur ke indeks aman terdekat, tidak maju", () => {
+  // Maju berarti membuang lebih banyak dari yang diminta — termasuk hasil tool
+  // terbaru yang justru paling dibutuhkan model untuk melanjutkan.
+  const messages = [user("kerjakan"), toolCall("a"), toolResult("a"), toolCall("b"), toolResult("b")]
+  const cut = midTurnCut(messages, 2)
+  assert.equal(cut, 3)
+  assert.equal(messages[cut]?.role, "assistant")
+})
+
+test("potong mid-turn nol saat tidak ada indeks aman", () => {
+  const messages = [toolResult("a"), toolResult("b")]
+  assert.equal(midTurnCut(messages, 1), 0)
+})
+
+test("planAtCut dan planCompaction sepakat soal batas air", () => {
+  // Satu aturan batas air, bukan dua. Kalau keduanya menyimpang, jalur
+  // mid-turn dan antar-giliran akan menandai titik berbeda sebagai "sudah
+  // diringkas", dan sebagian riwayat terkirim dua kali atau hilang.
+  const messages = [user("satu"), assistant("a"), user("dua"), assistant("b")]
+  const list = rows(messages, 10)
+  assert.deepEqual(planCompaction(list, 1), planAtCut(list, tailStart(messages, 1)))
 })

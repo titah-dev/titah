@@ -265,6 +265,23 @@ export function appendModelMessages(sessionID: string, messages: ModelMessage[])
   }
 }
 
+/**
+ * Menimpa satu baris riwayat di tempat.
+ *
+ * Dipakai pruner: nomor urut WAJIB tidak berubah, karena batas air pemadatan
+ * menunjuk ke `seq`. Menulis ulang sebagai baris baru akan memindahkan pesan ke
+ * sisi lain batas air dan membuatnya dikirim dua kali.
+ */
+export function replaceModelMessage(
+  sessionID: string,
+  seq: number,
+  message: ModelMessage,
+): void {
+  database()
+    .prepare("UPDATE model_message SET data = ? WHERE session_id = ? AND seq = ?")
+    .run(JSON.stringify(message), sessionID, seq)
+}
+
 export interface ModelRow {
   seq: number
   message: ModelMessage
