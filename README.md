@@ -570,7 +570,8 @@ empty even though the sub-agents' own child sessions are still on disk.
 
 While the panel is open it **owns the keyboard** — `↑` / `↓` select a row,
 `Esc` closes it, and everything else is swallowed rather than typed into your
-prompt behind it. `Ctrl+X` chords and `Ctrl+C` still reach through.
+prompt behind it. `Ctrl+X` chords, `Ctrl+C`, and `Ctrl+D` still reach through —
+the last one quits, same as everywhere else in the TUI.
 
 `x` cancels the selected sub-agent, and asks first: the first press arms that
 row and says so in the panel's title, a second `x` on the same row does it,
