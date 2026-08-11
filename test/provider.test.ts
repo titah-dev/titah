@@ -134,6 +134,24 @@ test("contextWindowFor memakai config.model saat argumennya kosong", () => {
   assert.equal(contextWindowFor(config), 32768)
 })
 
+test("contextWindowFor memenangkan argumen `full` di atas config.model, bukan sebaliknya", () => {
+  // Tugas berikutnya memanggil contextWindowFor(config, agentDef?.model ?? modelOverride)
+  // di jalur panas — kalau precedence-nya terbalik, override model sub-agent
+  // akan diam-diam memakai jendela konteks model DEFAULT, salah tanpa terlihat.
+  const config = Config.parse({
+    model: "ollama/qwen3:14b",
+    provider: {
+      ollama: {
+        models: {
+          "qwen3:14b": { contextWindow: 32768 },
+          "llama3:8b": { contextWindow: 8192 },
+        },
+      },
+    },
+  })
+  assert.equal(contextWindowFor(config, "ollama/llama3:8b"), 8192)
+})
+
 test("model tanpa contextWindow mengembalikan undefined, BUKAN angka tebakan", () => {
   // Angka yang salah lebih berbahaya daripada tidak ada angka: memadatkan
   // terlalu telat tidak bisa dibedakan dari tidak memadatkan sama sekali,
