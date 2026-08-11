@@ -212,6 +212,10 @@ test("overBudget menyala saat langkah terakhir mencapai window dikurangi reserve
 })
 
 test("contextWindow yang tidak dideklarasikan TIDAK PERNAH memicu", () => {
+  // Positif dulu: token yang sama SUNGGUH memicu begitu window dinyatakan —
+  // tanpa ini, `false` di bawah bisa saja lolos karena guard-nya hilang dan
+  // `999_999 >= undefined - 8192` sudah `false` lewat NaN, bukan lewat guard.
+  assert.equal(overBudget(999_999, 32768, 8192), true)
   // Tanpa batas yang dinyatakan, tidak ada ambang yang bisa dihitung. Menebak
   // di sini berarti memadatkan pada waktu yang salah dan menyembunyikan bahwa
   // fitur ini sebenarnya tidak aktif untuk model tersebut.
@@ -219,6 +223,10 @@ test("contextWindow yang tidak dideklarasikan TIDAK PERNAH memicu", () => {
 })
 
 test("token yang belum terukur TIDAK memicu", () => {
+  // Positif dulu: window yang sama SUNGGUH memicu begitu token diketahui —
+  // tanpa ini, `false` di bawah bisa saja lolos karena guard-nya hilang dan
+  // `undefined >= 32768 - 8192` sudah `false` lewat NaN, bukan lewat guard.
+  assert.equal(overBudget(999_999, 32768, 8192), true)
   // Sebelum langkah pertama selesai, tidak ada angka dari provider. Memadatkan
   // di titik itu berarti meringkas riwayat yang belum tentu terlalu besar.
   assert.equal(overBudget(undefined, 32768, 8192), false)

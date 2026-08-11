@@ -402,8 +402,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
         default:
           // Sisa event stream (tool-call, start-step, reasoning, ...) tidak perlu
-          // dilaporkan sendiri selain finish-step: state tool sudah dipublikasikan
-          // dari dalam execute.
+          // dilaporkan sendiri: state tool sudah dipublikasikan dari dalam execute.
+          // `finish-step` ditangani di atas — direkam ke `lastStepTokens`, bukan
+          // dipublikasikan — jadi ia tidak pernah sampai ke sini.
           break
       }
     }

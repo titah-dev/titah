@@ -71,12 +71,18 @@ function usageWith(inputTotal: number) {
 }
 
 /**
- * Seperti `mockStreaming`, tapi MENGEMBALIKAN model-nya sehingga
- * `doStreamCalls` bisa diperiksa.
+ * MENGEMBALIKAN model-nya sehingga `doStreamCalls` bisa diperiksa.
  *
  * Yang diperiksa lewat `doStreamCalls[n].prompt` adalah apa yang BENAR-BENAR
  * diterima provider. Test yang cuma membuktikan sebuah fungsi terpanggil tidak
  * membuktikan apa pun tentang isi permintaannya.
+ *
+ * `restore?.()` dipanggil DULU, sebelum menimpa `restore` dengan resolver yang
+ * baru. Tanpa ini, mock kedua dalam satu test menimpa variabel `restore` milik
+ * mock pertama begitu saja — `setModelResolver` hanya tahu cara balik ke
+ * resolver yang aktif tepat sebelum panggilannya sendiri, jadi mock pertama
+ * hilang dari rantai restore dan tetap terpasang untuk test-test berikutnya
+ * di file ini, yang lalu lolos hijau karena dilayani mock yang salah.
  */
 function recordingModel(chunks: LanguageModelV4StreamPart[][]): MockLanguageModelV4 {
   let call = 0
@@ -87,8 +93,14 @@ function recordingModel(chunks: LanguageModelV4StreamPart[][]): MockLanguageMode
       return { stream: simulateReadableStream({ chunks: parts }) }
     },
   })
+  restore?.()
   restore = setModelResolver(() => model)
   return model
+}
+
+/** Alias tanpa nilai balik, untuk test yang tidak perlu memeriksa doStreamCalls. */
+function mockStreaming(chunks: LanguageModelV4StreamPart[][]): void {
+  recordingModel(chunks)
 }
 
 /** Proyek sementara dengan titah.json sendiri — `prompt()` memuat config dari direktori sesi. */
@@ -109,18 +121,6 @@ function windowConfig(contextWindow: number, extra: Record<string, unknown> = {}
     provider: { mock: { models: { m: { contextWindow } } } },
     ...extra,
   }
-}
-
-function mockStreaming(chunks: LanguageModelV4StreamPart[][]): void {
-  let call = 0
-  const model = new MockLanguageModelV4({
-    doStream: async () => {
-      const parts = chunks[Math.min(call, chunks.length - 1)] as LanguageModelV4StreamPart[]
-      call += 1
-      return { stream: simulateReadableStream({ chunks: parts }) }
-    },
-  })
-  restore = setModelResolver(() => model)
 }
 
 function text(...deltas: string[]): LanguageModelV4StreamPart[] {
@@ -147,6 +147,58 @@ function collect(sessionID: string): { events: Event[]; done: Promise<void> } {
   })()
   return { events, done }
 }
+
+/** Isi teks giliran, untuk test yang cuma peduli kata dalam jawabannya. */
+function bodyOf(message: { parts: { type: string; text?: string }[] }): string {
+  return message.parts.find((part): part is { type: "text"; text: string } => part.type === "text")
+    ?.text ?? ""
+}
+
+// ---------- harness: rantai restore mock ----------
+
+test("mock kedua dalam satu test tidak membuat mock pertama bocor ke test lain", async () => {
+  // Pola turn → compaction → turn (dipakai Task 5-8) memasang mock lebih dari
+  // sekali dalam satu test. Tanpa `restore?.()` SEBELUM menimpa `restore` di
+  // `recordingModel`, panggilan kedua kehilangan jejak ke resolver yang aktif
+  // SEBELUM mock pertama terpasang — jadi begitu test ini "beres" (restore
+  // disimulasikan di bawah), resolver yang tersisa adalah mock PERTAMA, bukan
+  // resolver asal. Test lain yang sama sekali tidak memasang mock lalu diam-
+  // diam dilayani mock pertama itu, dan lolos hijau karena alasan yang salah.
+  //
+  // canary berdiri untuk "resolver yang aktif sebelum test ini dimulai" —
+  // dipasang langsung lewat setModelResolver (bukan lewat recordingModel),
+  // supaya test ini tidak menyentuh resolver default sungguhan (yang akan
+  // mencoba provider nyata).
+  const canary = new MockLanguageModelV4({
+    doStream: async () => ({ stream: simulateReadableStream({ chunks: text("respons-canary") }) }),
+  })
+  const restoreCanary = setModelResolver(() => canary)
+  restore = undefined
+
+  const session = createSession(project)
+
+  recordingModel([text("respons-satu")])
+  const satu = await prompt({ sessionID: session.id, text: "a" })
+  // Positif dulu: mock pertama sungguh melayani, sebelum mock kedua dipasang.
+  assert.match(bodyOf(satu), /respons-satu/)
+
+  recordingModel([text("respons-dua")])
+  const dua = await prompt({ sessionID: session.id, text: "b" })
+  // Positif: mock kedua sungguh melayani setelah dipasang di atas mock pertama.
+  assert.match(bodyOf(dua), /respons-dua/)
+
+  // Simulasikan afterEach test INI (lihat definisi afterEach di bawah).
+  restore?.()
+  restore = undefined
+
+  // Probe test LAIN yang tidak memasang mock sama sekali. Kalau rantai restore
+  // di atas bocor, resolver yang tersisa adalah mock pertama ("respons-satu"),
+  // bukan canary — itulah kegagalan yang mutasi di bawah harus menunjukkan.
+  const probe = await prompt({ sessionID: session.id, text: "c" })
+  assert.match(bodyOf(probe), /respons-canary/)
+
+  restoreCanary()
+})
 
 test("teks dikirim sebagai delta, dan pesan akhir tersimpan utuh", async () => {
   mockStreaming([text("Halo", " dunia", "!")])
