@@ -18,7 +18,7 @@ process.env.TITAH_DB = path.join(root, "agent.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver, abort } = await import("../src/core/agent.ts")
-const { createSession, listMessages, listModelMessages } = await import(
+const { createSession, latestCompaction, listMessages, listModelMessages } = await import(
   "../src/core/storage/session.ts"
 )
 const { bus } = await import("../src/core/event.ts")
@@ -560,4 +560,69 @@ test("usage.context adalah input langkah TERAKHIR, bukan jumlah seluruh langkah"
   assert.equal(message.usage?.context, 180)
   assert.equal(message.usage?.input, 280)
   assert.notEqual(message.usage?.context, message.usage?.input)
+})
+
+// `tailTurns: 0` DISENGAJA di kedua test di bawah, bukan default (2). Dengan
+// default, `tailStart` menolak memotong apa pun selama giliran yang tersimpan
+// lebih sedikit dari `tailTurns` — dan kedua test ini cuma menumpuk SATU
+// giliran sebelum giliran yang diharapkan memadatkan. `reserved` juga
+// diturunkan dari default (8192, PERSIS sama dengan contextWindow di sini):
+// itu membuat ambangnya nol dan overBudget SELALU true untuk usage berapa pun,
+// termasuk usage kecil giliran susulan yang justru harus lolos di bawah
+// ambang. Sengaja dipisah jauh dari usage besar/kecil di bawah supaya kedua
+// test tetap benar walau angkanya sedikit bergeser.
+const COMPACTING_CONFIG = { auto: true, reserved: 1000, tailTurns: 0, prune: true }
+
+/** Chunk teks lengkap dengan `text-start`/`text-end` — tanpanya AI SDK menolak `text-delta` dengan "text part … not found", dan giliran itu tersimpan sebagai error tanpa baris riwayat sama sekali. */
+function textChunk(delta: string, usage: ReturnType<typeof usageWith>): LanguageModelV4StreamPart[] {
+  return [
+    { type: "stream-start", warnings: [] },
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta },
+    { type: "text-end", id: "t" },
+    { type: "finish", finishReason: "stop", usage },
+  ]
+}
+
+test("giliran berikutnya memadatkan sendiri saat giliran sebelumnya mengisi konteks", async () => {
+  const dir = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
+  const session = createSession(dir)
+
+  // Satu entri saja: mock mengulang entri terakhirnya, jadi giliran kedua DAN
+  // panggilan peringkas sama-sama dilayani bentuk yang sama. `synthesizerFor`
+  // memakai streamText, sehingga ia menghabiskan mock yang SAMA.
+  recordingModel([textChunk("jawaban", usageWith(7800))])
+  await prompt({ sessionID: session.id, text: "giliran satu" })
+
+  await prompt({ sessionID: session.id, text: "giliran dua" })
+
+  const history = listModelMessages(session.id)
+  // Positif dulu: pemadatan memang menghasilkan ringkasan yang terpasang.
+  assert.match(JSON.stringify(history), /context-summary/)
+  // Baru negatif: teks giliran pertama sudah tidak dikirim apa adanya.
+  assert.doesNotMatch(JSON.stringify(history.slice(2)), /giliran satu/)
+})
+
+test("giliran ketiga TIDAK meringkas lagi setelah giliran kedua memadatkan", async () => {
+  // Kalau angka pra-pemadatan disimpan alih-alih dibaca ulang tiap giliran,
+  // sesi akan memadatkan berulang-ulang tanpa kemajuan — terlihat seperti model
+  // yang lambat, bukan seperti bug.
+  const dir = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
+  const session = createSession(dir)
+
+  recordingModel([
+    textChunk("besar", usageWith(7800)),
+    textChunk("ringkasan", usageWith(50)),
+    textChunk("kecil", usageWith(50)),
+  ])
+
+  await prompt({ sessionID: session.id, text: "giliran satu" })
+  await prompt({ sessionID: session.id, text: "giliran dua" })
+  const before = latestCompaction(session.id)?.created
+
+  await prompt({ sessionID: session.id, text: "giliran tiga" })
+  const after = latestCompaction(session.id)?.created
+
+  assert.ok(before !== undefined, "giliran dua seharusnya sudah memadatkan")
+  assert.equal(after, before, "giliran tiga tidak boleh memadatkan lagi")
 })

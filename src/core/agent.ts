@@ -5,7 +5,8 @@ import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { resolveModel } from "./provider.ts"
+import { contextWindowFor, resolveModel } from "./provider.ts"
+import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
 import { runConsensus, synthesizerFor } from "./consensus.ts"
@@ -36,6 +37,7 @@ import { storeOutput } from "./storage/blob.ts"
 import {
   appendModelMessages,
   latestCompaction,
+  listMessages,
   listModelRows,
   saveCompaction,
   createMessage,
@@ -312,6 +314,23 @@ export async function prompt(input: PromptInput): Promise<Message> {
     else assistant.parts.push({ type: "tool", callID, tool: name, state })
     publishSnapshot()
   }
+
+  // Ambang dibaca dari giliran SEBELUMNYA: `usage.context` pesan assistant
+  // terakhir yang PUNYA angka itu. Bukan sekadar yang terakhir — giliran yang
+  // gagal atau dibatalkan tidak pernah sempat mengukur apa pun, dan memakainya
+  // akan mematikan pemadatan otomatis sampai ada giliran yang sukses.
+  const lastMeasured = listMessages(session.id)
+    .filter((message) => message.role === "assistant" && message.usage?.context !== undefined)
+    .at(-1)
+  const contextWindow = contextWindowFor(config, agentDef?.model ?? modelOverride)
+  await autoCompact({
+    sessionID: session.id,
+    compaction: config.compaction,
+    contextWindow,
+    lastStepTokens: lastMeasured?.usage?.context,
+    summarise: synthesizerFor(resolver(config, config.smallModel ?? input.model)),
+    focus: text,
+  })
 
   const history = listModelMessages(session.id)
   const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
