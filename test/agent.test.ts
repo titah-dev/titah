@@ -18,9 +18,8 @@ process.env.TITAH_DB = path.join(root, "agent.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver, abort } = await import("../src/core/agent.ts")
-const { createSession, latestCompaction, listMessages, listModelMessages } = await import(
-  "../src/core/storage/session.ts"
-)
+const { createSession, latestCompaction, listMessages, listModelMessages, listModelRows } =
+  await import("../src/core/storage/session.ts")
 const { bus } = await import("../src/core/event.ts")
 const { loadedSkillIds } = await import("../src/core/tool/skill.ts")
 
@@ -747,4 +746,110 @@ test("smallModel yang salah tidak menjatuhkan giliran, dan sesi tetap menerima p
   // `finally` di giliran dua tidak pernah tercapai.
   const third = await prompt({ sessionID: session.id, text: "giliran tiga" })
   assert.equal(third.error, undefined)
+})
+
+test("giliran multi-langkah memadatkan DI TENGAH, dan konteks yang dikirim menyusut", async () => {
+  // Ini kegagalan utama yang jadi alasan fitur ini ada: satu giliran agentic
+  // yang membaca banyak berkas, tanpa satu pun pesan user di tengahnya tempat
+  // pemeriksaan antar-giliran bisa menyala.
+  //
+  // EMPAT baca, bukan dua — dan ini bukan pilihan sembarang. `midTurnCut`
+  // (`MID_TURN_KEEP` = 6) SELALU menyisakan sekurang-kurangnya enam pesan
+  // terakhir apa adanya: potongnya cuma boleh mundur, tidak pernah maju
+  // (lihat komentarnya di compact.ts). Dengan satu atau dua baca saja, total
+  // pesan yang terkumpul sebelum ambang tersentuh (≤5: user + 2×[panggilan,
+  // hasil]) masih di bawah 6, jadi `midTurnCut` mengembalikan 0 dan TIDAK ADA
+  // yang dipadatkan — persis jebakan "fixture disenyapkan ambang" dari Task
+  // 10, hanya pindah lokasi. Diverifikasi dengan menjalankan test ini secara
+  // manual pada draf dua-baca sebelum ditulis ulang: `last` tidak pernah
+  // memuat "context-summary" sama sekali.
+  //
+  // Dengan empat baca, totalnya sembilan pesan (user + 4×[panggilan, hasil]).
+  // Memotong menyisakan tepat ENAM pesan terakhir (tiga pasangan), membuang
+  // pesan user PLUS baca paling awal (halo.txt). Tiga baca susulan sengaja
+  // menyasar filler.txt, yang isinya tidak memuat "baris satu" — kalau tidak,
+  // ekor yang "dipertahankan apa adanya" akan diam-diam masih membawa isi
+  // lama, dan assertion negatif di bawah lolos untuk alasan yang salah
+  // (string itu memang tidak pernah ada, bukan karena sungguh dibuang).
+  const model = recordingModel([
+    // Baca pertama (halo.txt, "baris satu") — INI yang harus lenyap dari
+    // `last`. Usage 2000: jauh di bawah ambang 6144 (= 8192 −
+    // effectiveReserved(8192, 8192) = 8192 − min(8192, floor(8192/4)) =
+    // 8192 − 2048), supaya belum memicu apa pun.
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+    ],
+    // Dua baca filler.txt berikutnya, usage-nya juga di bawah 6144 — giliran
+    // ini masih menumpuk pesan, belum memicu pemadatan.
+    [
+      { type: "tool-call", toolCallId: "c2", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2500) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "c3", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(3000) },
+    ],
+    // Baca keempat: 7900 ≥ 6144, inilah yang menyalakan pemadatan SEBELUM
+    // langkah teks akhir dimulai.
+    [
+      { type: "tool-call", toolCallId: "c4", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+    ],
+    // Entri ini dikonsumsi DUA kali: sekali oleh peringkas (`synthesizerFor`
+    // memakai `streamText` yang sama, jadi memakai penghitung panggilan yang
+    // sama), sekali oleh langkah teks akhir sungguhan — mock mengulang entri
+    // terakhirnya begitu kehabisan, jadi satu entri ini cukup untuk keduanya.
+    textChunk("selesai", usageWith(130)),
+  ])
+
+  const dir = projectWith(windowConfig(8192))
+  // filler.txt SENGAJA tidak memuat "baris satu" — lihat komentar panjang di
+  // atas soal kenapa itu penting untuk assertion negatif di bawah.
+  fs.writeFileSync(path.join(dir, "filler.txt"), "konten aman\ntanpa jejak lama\n")
+  const session = createSession(dir)
+  await prompt({ sessionID: session.id, text: "baca berulang" })
+
+  // Positif dulu: giliran ini memang menempuh beberapa langkah, DAN
+  // pemadatan sungguh terpicu (bukan cuma "boleh saja tidak pernah tercapai
+  // dan test tetap lolos"). Enam, bukan tiga: empat baca + satu panggilan
+  // peringkas + satu langkah teks akhir.
+  assert.ok(model.doStreamCalls.length >= 6)
+
+  const first = JSON.stringify(model.doStreamCalls[0]?.prompt)
+  const last = JSON.stringify(model.doStreamCalls.at(-1)?.prompt)
+
+  // Yang membuktikan fiturnya bekerja: yang DIKIRIM ke provider memuat
+  // ringkasan, bukan sekadar bahwa sebuah fungsi terpanggil.
+  assert.match(last, /context-summary/)
+  assert.doesNotMatch(last, /baris satu/)
+  assert.match(first, /baca berulang/)
+})
+
+test("tidak ada pesan tool yatim, dan tidak ada baris ganda, setelah pemadatan mid-turn", async () => {
+  // Dua invarian sekaligus. Yatim: hasil tool tanpa panggilannya ditolak
+  // provider dengan error yang tidak menyebut pemadatan. Ganda: offset flush
+  // yang salah menuliskan giliran dua kali, dan riwayatnya membengkak
+  // diam-diam alih-alih menyusut.
+  const model = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+    ],
+    // `textChunk`, bukan `text-delta` telanjang — lihat komentar di test di atas.
+    textChunk("selesai", usageWith(120)),
+  ])
+
+  const dir = projectWith(windowConfig(8192))
+  const session = createSession(dir)
+  await prompt({ sessionID: session.id, text: "sekali baca" })
+
+  assert.ok(model.doStreamCalls.length >= 2)
+
+  const messages = listModelMessages(session.id)
+  assert.ok(messages.length > 0)
+  assert.notEqual(messages[0]?.role, "tool")
+
+  const seen = listModelRows(session.id).map((row) => JSON.stringify(row.message))
+  assert.equal(new Set(seen).size, seen.length, "ada baris riwayat yang tertulis dua kali")
 })

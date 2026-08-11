@@ -13,6 +13,8 @@ import { runConsensus, synthesizerFor } from "./consensus.ts"
 import {
   COMPACT_SYSTEM,
   compactPrompt,
+  MID_TURN_KEEP,
+  overBudget,
   planCompaction,
   renderTranscript,
   wrapSummary,
@@ -356,6 +358,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
   const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
   const messages: ModelMessage[] = [...history, userTurn]
 
+  // Berapa pesan giliran ini yang SUDAH tertulis jadi baris. Pemadatan mid-turn
+  // harus menuliskannya lebih dulu supaya mesin pemadatan berbasis baris bisa
+  // dipakai apa adanya; tanpa penghitung ini, penulisan di akhir giliran akan
+  // menduplikasi apa yang sudah tersimpan.
+  let flushed = 0
+
   try {
     const result = streamText({
       model,
@@ -378,6 +386,30 @@ export async function prompt(input: PromptInput): Promise<Message> {
         },
         hasSnapshot: () => assistant.snapshot !== undefined,
       }),
+      prepareStep: async ({ steps }) => {
+        const used = steps.at(-1)?.usage?.inputTokens
+        if (!overBudget(used, contextWindow, config.compaction.reserved)) return {}
+
+        const soFar: ModelMessage[] = [
+          userTurn,
+          ...steps.flatMap((step) => step.response.messages),
+        ]
+        appendModelMessages(session.id, soFar.slice(flushed))
+        flushed = soFar.length
+
+        const result = await autoCompact({
+          sessionID: session.id,
+          compaction: config.compaction,
+          contextWindow,
+          lastStepTokens: used,
+          summarise: synthesizerFor(resolver(config, config.smallModel ?? input.model)),
+          focus: text,
+          midTurnKeep: MID_TURN_KEEP,
+        })
+        if (!result.ran) return {}
+
+        return { messages: listModelMessages(session.id) }
+      },
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: controller.signal,
     })
@@ -468,10 +500,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     const steps = await result.steps
-    appendModelMessages(session.id, [
-      userTurn,
-      ...steps.flatMap((step) => step.response.messages),
-    ])
+    const all: ModelMessage[] = [userTurn, ...steps.flatMap((step) => step.response.messages)]
+    appendModelMessages(session.id, all.slice(flushed))
+    flushed = all.length
     publishSnapshot()
   } catch (error) {
     const message =
