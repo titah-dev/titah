@@ -715,6 +715,12 @@ export function App({
 
     // Dialog izin memakan tombol lebih dulu — user harus menjawabnya.
     if (state.permission) {
+      // Aturan panel adalah "tombol apa pun selain `x` di baris yang sama
+      // melucuti konfirmasi" — tapi cabang itu (di atas) dilewati SELURUHNYA
+      // begitu `state.permission` terisi, jadi `x` yang sudah dipersenjatai
+      // sebelum dialog muncul tetap bersenjata sepanjang dialog dijawab.
+      // Menjawab dialog jelas termasuk "tombol lain", jadi dilucuti di sini juga.
+      if (cancelArmed !== undefined) setCancelArmed(undefined)
       const answer = resolve(keymap, press, false, [
         "permission_allow_once",
         "permission_allow_always",
