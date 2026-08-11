@@ -826,30 +826,200 @@ test("giliran multi-langkah memadatkan DI TENGAH, dan konteks yang dikirim menyu
   assert.match(first, /baca berulang/)
 })
 
-test("tidak ada pesan tool yatim, dan tidak ada baris ganda, setelah pemadatan mid-turn", async () => {
-  // Dua invarian sekaligus. Yatim: hasil tool tanpa panggilannya ditolak
-  // provider dengan error yang tidak menyebut pemadatan. Ganda: offset flush
-  // yang salah menuliskan giliran dua kali, dan riwayatnya membengkak
-  // diam-diam alih-alih menyusut.
-  const model = recordingModel([
+test("pemadatan mid-turn memotong MUNDUR dari pesan tool, bukan lewat begitu saja, dan tidak ada baris ganda", async () => {
+  // Regresi Finding 2 (review ronde 1, task-6-report.md): fixture SEBELUMNYA
+  // di test ini (satu baca, usage 7900 lalu 120) memberi `midTurnCut(3, 6)
+  // = 0` — TIDAK ADA yang dipotong, TIDAK ADA ringkasan tersimpan. Assertion
+  // `messages[0]?.role !== "tool"` lolos, tapi bukan karena jalan-mundur
+  // `midTurnCut` bekerja — riwayat memang SELALU dimulai dari "user" apa pun
+  // yang terjadi. Dibuktikan lewat mutasi: menghapus SELURUH
+  // `while (... role === "tool") cut -= 1` di `midTurnCut` (src/core/compact.ts)
+  // tetap membuat seluruh file test ini 24/24 hijau — assertion itu tidak
+  // bisa mati karena alasan yang diklaim namanya.
+  //
+  // Fixture ini memaksa `midTurnCut` SUNGGUH menabrak pesan tool, supaya
+  // jalan-mundurnya sungguh teruji:
+  //
+  // Giliran 1 SENGAJA diakhiri error provider setelah satu baca, sehingga
+  // HANYA tiga baris tersimpan — user, assistant(panggil), tool(hasil) —
+  // TANPA teks penutup (lihat catatan ledger reviewer: giliran yang error
+  // setelah flush mid-turn meninggalkan baris ganjil begitu, dan itu aman,
+  // giliran berikutnya tetap pulih). Backlog GANJIL (3) ini penting: giliran
+  // yang selesai NORMAL selalu genap (user + pasangan panggilan/hasil +
+  // teks penutup), dan pada backlog genap `midTurnCut` tidak akan PERNAH
+  // menabrak tool — potongnya selalu jatuh persis di batas pasangan.
+  //
+  // Giliran 2 menambah SATU pesan user baru + dua baca (empat pesan). Total
+  // gabungan = 3 + 1 + 4 = 8 pesan. `midTurnCut(8, MID_TURN_KEEP=6) = 2`, dan
+  // pesan indeks 2 dalam gabungan itu PERSIS hasil tool dari giliran 1 —
+  // posisi tidak aman. Jalan-mundur WAJIB menggesernya ke indeks 1 (pesan
+  // assistant pemanggilnya), yang aman karena hasilnya menyusul tepat
+  // sesudahnya. Diverifikasi dengan menjalankan gabungan ini secara manual
+  // (lihat task-6-report.md, ronde 1): tanpa jalan-mundur, ringkasan
+  // tersimpan dengan batas air satu lebih jauh, dan pesan tail PERTAMA
+  // (setelah pasangan ringkasan) adalah "tool" — yatim.
+  const dir = projectWith(windowConfig(8192))
+  const session = createSession(dir)
+
+  // Giliran 1: satu baca, lalu panggilan kedua model MELEMPAR — mensimulasikan
+  // gangguan provider di tengah giliran. `prompt()` tidak boleh macet karena
+  // ini (lihat catatan ledger); ia berakhir dengan `error` terisi dan tiga
+  // baris yang SUDAH terflush oleh trigger mid-turn tetap tersimpan.
+  let calls1 = 0
+  const model1 = new MockLanguageModelV4({
+    doStream: async () => {
+      calls1 += 1
+      if (calls1 === 1) {
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              {
+                type: "tool-call",
+                toolCallId: "t1a",
+                toolName: "read",
+                input: '{"path":"halo.txt"}',
+              },
+              // 7900 ≥ 6144 (ambang windowConfig(8192) — lihat aritmetika di
+              // test "giliran multi-langkah..." di atas): memicu flush
+              // mid-turn SEBELUM langkah kedua giliran ini, menuliskan tiga
+              // baris ke storage sebelum provider "mati".
+              { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+            ] as LanguageModelV4StreamPart[],
+          }),
+        }
+      }
+      throw new Error("provider hiccup simulasi")
+    },
+  })
+  restore?.()
+  restore = setModelResolver(() => model1)
+  const turn1 = await prompt({ sessionID: session.id, text: "baca sekali" })
+  // Positif dulu: giliran 1 memang berakhir lewat jalur error yang
+  // dimaksud, bukan diam-diam sukses (yang akan mengubah backlognya jadi
+  // genap dan meniadakan seluruh premis fixture ini).
+  assert.match(turn1.error ?? "", /provider hiccup simulasi/)
+  assert.equal(
+    listModelRows(session.id).length,
+    3,
+    "giliran 1 harus berhenti di tiga baris (user, panggilan, hasil), tanpa teks penutup",
+  )
+
+  // Giliran 2: user baru + dua baca. Baca kedua yang menyalakan pemadatan.
+  const model2 = recordingModel([
     [
-      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "tool-call", toolCallId: "t2a", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "t2b", toolName: "read", input: '{"path":"halo.txt"}' },
       { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
     ],
     // `textChunk`, bukan `text-delta` telanjang — lihat komentar di test di atas.
-    textChunk("selesai", usageWith(120)),
+    textChunk("selesai", usageWith(130)),
   ])
+  await prompt({ sessionID: session.id, text: "baca lagi" })
+  assert.ok(model2.doStreamCalls.length >= 2)
 
-  const dir = projectWith(windowConfig(8192))
-  const session = createSession(dir)
-  await prompt({ sessionID: session.id, text: "sekali baca" })
+  // Positif: pemadatan SUNGGUH menyimpan ringkasan kali ini (cut=1, bukan
+  // 0) — beda dari fixture lama yang tidak pernah mencapai titik ini sama
+  // sekali.
+  const compaction = latestCompaction(session.id)
+  assert.ok(compaction, "gabungan delapan pesan ini harus melewati ambang dan benar-benar memadatkan")
 
-  assert.ok(model.doStreamCalls.length >= 2)
-
-  const messages = listModelMessages(session.id)
-  assert.ok(messages.length > 0)
-  assert.notEqual(messages[0]?.role, "tool")
+  // Baru negatif, dan BUKAN lewat `listModelMessages()[0]` — itu SELALU
+  // "user" begitu ada ringkasan tersimpan (pasangan user+assistant yang
+  // dipasang `listModelMessages`, storage/session.ts), jadi memeriksanya
+  // tidak pernah bisa membuktikan apa pun soal jalan-mundur `midTurnCut`.
+  // Yang membuktikannya adalah baris MENTAH persis di atas batas air —
+  // itulah yang `cut` dan jalan-mundurnya benar-benar tentukan.
+  const tail = listModelRows(session.id).filter((row) => row.seq > compaction.seq)
+  assert.ok(tail.length > 0, "harus ada baris SETELAH batas air untuk diperiksa")
+  assert.notEqual(tail[0]?.message.role, "tool", "baris pertama ekor tidak boleh hasil tool yatim")
 
   const seen = listModelRows(session.id).map((row) => JSON.stringify(row.message))
   assert.equal(new Set(seen).size, seen.length, "ada baris riwayat yang tertulis dua kali")
+})
+
+test("smallModel yang salah tidak menjatuhkan giliran walau pemicunya di TENGAH giliran", async () => {
+  // Regresi Finding 1 (review ronde 1, task-6-report.md, CRITICAL): sebelum
+  // perbaikan, `summarise` di `prepareStep` diresolusi EAGER sebagai
+  // argumen ke `autoCompact({...})`, dan `prepareStep` tidak punya
+  // try/catch sama sekali. Bandingkan dengan jalur ANTAR-giliran tepat di
+  // atas (komentar ":335-336" dan tangkapan ":346-355" di kode) — closure
+  // LAMBAT plus `catch {}`, persis bug yang Task 5 sudah perbaiki di sana.
+  // Task 6 mewarisi kode SEBELUM perbaikan itu ada untuk jalur mid-turn.
+  //
+  // EMPAT baca dipakai, bukan satu atau dua. Dengan cut=0 (backlog < enam
+  // pesan, seperti fixture "smallModel yang salah..." antar-giliran di
+  // atas kalau ditempatkan mid-turn), `autoCompact` pulang lebih dulu lewat
+  // `if (plan.dropped.length === 0) return {...}` SEBELUM pernah memanggil
+  // `summarise` — closure LAMBAT saja sudah cukup melindungi, dan blok
+  // try/catch tidak pernah tersentuh sama sekali. Itu tidak membuktikan
+  // apa-apa soal catch itu sendiri. Dengan empat baca (persis fixture
+  // "giliran multi-langkah..." di atas: cut=3, ada yang benar-benar
+  // dibuang), `summarise` SUNGGUH terpanggil — resolver smallModel yang
+  // rusak SUNGGUH dicoba dan SUNGGUH melempar, dan hanya `catch` di
+  // `prepareStep` yang mencegah itu menjatuhkan giliran.
+  const dir = projectWith(windowConfig(8192, { smallModel: "rusak/kecil" }))
+  fs.writeFileSync(path.join(dir, "filler.txt"), "konten lain, bukan baris satu\n")
+  const session = createSession(dir)
+
+  let calls = 0
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      const sequences: LanguageModelV4StreamPart[][] = [
+        [
+          { type: "tool-call", toolCallId: "e1", toolName: "read", input: '{"path":"halo.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+        ],
+        [
+          { type: "tool-call", toolCallId: "e2", toolName: "read", input: '{"path":"filler.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(2500) },
+        ],
+        [
+          { type: "tool-call", toolCallId: "e3", toolName: "read", input: '{"path":"filler.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(3000) },
+        ],
+        [
+          { type: "tool-call", toolCallId: "e4", toolName: "read", input: '{"path":"filler.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+        ],
+        textChunk("jawaban", usageWith(130)),
+      ]
+      const parts = sequences[Math.min(calls, sequences.length - 1)] as LanguageModelV4StreamPart[]
+      calls += 1
+      return { stream: simulateReadableStream({ chunks: parts }) }
+    },
+  })
+
+  // TIDAK lewat `recordingModel`: resolver di sini harus melempar UNTUK
+  // smallModel secara khusus, sementara model utama tetap dilayani mock —
+  // pola yang sama dengan "smallModel yang salah..." antar-giliran di atas.
+  let smallCalls = 0
+  restore?.()
+  restore = setModelResolver((_config, full) => {
+    if (full === "rusak/kecil") {
+      smallCalls += 1
+      throw new Error('Unknown provider "rusak".')
+    }
+    return model
+  })
+
+  const result = await prompt({ sessionID: session.id, text: "baca berulang lagi" })
+
+  // Positif dulu: resolver smallModel SUNGGUH dicoba tepat sekali — bukan
+  // diam-diam tidak pernah tercapai (yang akan membuat assertion di bawah
+  // lolos tanpa membuktikan apa pun soal try/catch).
+  assert.equal(smallCalls, 1, "pemadatan mid-turn seharusnya sungguh mencoba meringkas dan gagal")
+
+  // Ini yang dulu gagal: giliran berakhir error dan jawabannya kosong,
+  // padahal empat tool sudah berhasil jalan sebelum peringkas melempar.
+  assert.equal(result.error, undefined)
+  assert.match(bodyOf(result), /jawaban/)
+  assert.equal(
+    latestCompaction(session.id),
+    undefined,
+    "peringkas yang gagal tidak boleh tersimpan sebagai pemadatan",
+  )
 })

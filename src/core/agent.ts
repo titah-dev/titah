@@ -387,28 +387,49 @@ export async function prompt(input: PromptInput): Promise<Message> {
         hasSnapshot: () => assistant.snapshot !== undefined,
       }),
       prepareStep: async ({ steps }) => {
-        const used = steps.at(-1)?.usage?.inputTokens
-        if (!overBudget(used, contextWindow, config.compaction.reserved)) return {}
+        try {
+          // `config.compaction.auto` dicek DI SINI, bukan diserahkan ke
+          // `autoCompact` saja: tanpa ini, flush di bawah masih jalan walau
+          // auto-compaction dimatikan user — kerja mubazir yang murah untuk
+          // dihindari lebih dulu.
+          const used = steps.at(-1)?.usage?.inputTokens
+          if (!config.compaction.auto || !overBudget(used, contextWindow, config.compaction.reserved)) {
+            return {}
+          }
 
-        const soFar: ModelMessage[] = [
-          userTurn,
-          ...steps.flatMap((step) => step.response.messages),
-        ]
-        appendModelMessages(session.id, soFar.slice(flushed))
-        flushed = soFar.length
+          const soFar: ModelMessage[] = [
+            userTurn,
+            ...steps.flatMap((step) => step.response.messages),
+          ]
+          appendModelMessages(session.id, soFar.slice(flushed))
+          flushed = soFar.length
 
-        const result = await autoCompact({
-          sessionID: session.id,
-          compaction: config.compaction,
-          contextWindow,
-          lastStepTokens: used,
-          summarise: synthesizerFor(resolver(config, config.smallModel ?? input.model)),
-          focus: text,
-          midTurnKeep: MID_TURN_KEEP,
-        })
-        if (!result.ran) return {}
+          // `summarise` yang SAMA dengan jalur antar-giliran di atas — LAMBAT,
+          // bukan diresolusi di sini sebagai argumen. Resolusi eager persis
+          // bug yang Task 5 perbaiki untuk jalur antar-giliran: smallModel
+          // yang salah akan melempar SEBELUM `autoCompact` sempat memutuskan
+          // apakah ada sesuatu untuk dipadatkan sama sekali.
+          const compacted = await autoCompact({
+            sessionID: session.id,
+            compaction: config.compaction,
+            contextWindow,
+            lastStepTokens: used,
+            summarise,
+            focus: text,
+            midTurnKeep: MID_TURN_KEEP,
+          })
+          if (!compacted.ran) return {}
 
-        return { messages: listModelMessages(session.id) }
+          return { messages: listModelMessages(session.id) }
+        } catch {
+          // Gagal memadatkan DI TENGAH giliran berarti "lewati pemadatan
+          // langkah ini", bukan "jatuhkan seluruh giliran yang sudah
+          // menempuh beberapa tool". Tanpa tangkapan ini, resolver smallModel
+          // yang salah melempar DI SINI dan giliran berakhir dengan error
+          // serta jawaban kosong, padahal beberapa tool sudah berhasil jalan
+          // — pasangan persis `catch {}` di jalur antar-giliran di atas.
+          return {}
+        }
       },
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal: controller.signal,
