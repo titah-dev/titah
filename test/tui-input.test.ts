@@ -1724,3 +1724,156 @@ test("berganti sesi menutup panel dan menjepit seleksi yang basi terhadap sesi b
     h.cleanup()
   }
 })
+
+// ---------- followup-1: pesan sekejap tersembunyi selama turn berjalan ----------
+
+/** Menyetel status ke "working", cara yang sama dipakai test Esc di atas. */
+function pushWorking(h: Harness): void {
+  h.push({
+    type: "message.updated",
+    sessionID: session.id,
+    message: { id: "u_working", sessionID: session.id, role: "user", created: 1, parts: [] },
+  })
+}
+
+test("flash panel tetap terlihat walau turn sedang bekerja — defect 1 followup-1", async () => {
+  // Precedence lama: status === "working" menang di atas segalanya, jadi
+  // `hint` (flash aktif) tidak pernah dirender selama status bekerja. Ini
+  // persis kondisi panel sub-agent: dibuka justru SAAT turn berjalan. Tanpa
+  // perbaikan, tombol yang ditelan panel (mis. huruf biasa) tidak
+  // menghasilkan umpan balik APA PUN — comment app.tsx:683-686 mengklaim
+  // ini dicegah, padahal tidak, selama status bekerja.
+  const h = mount()
+  try {
+    await tick()
+    pushWorking(h)
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak", agent: "reviewer", status: "running", startedAt: Date.now(), note: "n" },
+    })
+    await tick()
+
+    h.stdin.press("") // ctrl+x
+    await tick(1)
+    h.stdin.press("[B") // panah bawah — buka panel
+    await tick()
+    assert.match(h.frame(), /sub-agents/, "panel harus terbuka dulu")
+
+    h.clear()
+    h.stdin.press("z") // tombol yang tidak dikenal panel — memicu flash penuntun
+    await tick()
+
+    assert.match(
+      h.frame(),
+      /sub-agent panel has the keyboard/,
+      "flash panel harus terlihat walau status sedang bekerja",
+    )
+    // Marker kerja harus tetap ada — bukan hilang begitu flash menang, hanya
+    // berubah bentuk jadi penanda singkat di depan flash.
+    assert.match(h.frame(), /●\s*sub-agent panel has the keyboard/, "marker '● ' harus mendahului flash")
+    assert.doesNotMatch(
+      h.frame(),
+      /● working — esc to cancel/,
+      "frasa panjang 'working' harus digantikan flash, bukan tampil berdampingan",
+    )
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("leader ctrl+x tetap terlihat walau turn sedang bekerja — defect 1 followup-1", async () => {
+  // Konsekuensi kedua dari precedence lama: `leaderActive` juga kalah dari
+  // status bekerja, jadi menekan ctrl+x SELAMA turn berjalan (justru saat
+  // `ctrl+x d` paling berguna) tidak memberi konfirmasi bahwa leader
+  // bersenjata — user mengira keybinding-nya mati.
+  const h = mount()
+  try {
+    await tick()
+    pushWorking(h)
+    await tick()
+
+    h.clear()
+    h.stdin.press("") // ctrl+x
+    await tick()
+
+    assert.match(h.frame(), /ctrl\+x/, "leader harus terlihat walau status sedang bekerja")
+    assert.match(h.frame(), /●\s*ctrl\+x/, "marker '● ' harus mendahului indikator leader")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("dialog izin di tengah konfirmasi x melucutinya — defect 3 followup-1", async () => {
+  // Sebelum diperbaiki: cabang panel (app.tsx:606) dilewati SELURUHNYA
+  // selama `state.permission` terisi, dan tidak ada yang melucuti
+  // `cancelArmed`. Urutan followup-1: persenjatai `x` pada satu baris,
+  // sebuah sub-agent memunculkan dialog bash, dijawab, lalu `x` TUNGGAL
+  // berikutnya membatalkan langsung — padahal aturan panel bilang "tombol
+  // lain apa pun melucuti", dan menjawab dialog jelas termasuk itu.
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "subagent.updated",
+      sessionID: session.id,
+      child: { sessionID: "anak", agent: "reviewer", status: "running", startedAt: Date.now(), note: "n" },
+    })
+    await tick()
+
+    h.stdin.press("") // ctrl+x
+    await tick(1)
+    h.stdin.press("[B") // panah bawah — buka panel
+    await tick()
+    assert.match(h.frame(), /sub-agents/, "panel harus terbuka dulu")
+
+    h.stdin.press("x") // persenjatai konfirmasi pada baris "reviewer"
+    await tick()
+    assert.match(h.frame(), /press x again to cancel reviewer/)
+
+    // Sub-agent memicu dialog izin (mis. bash) DI TENGAH konfirmasi.
+    h.push({
+      type: "permission.request",
+      sessionID: session.id,
+      request: {
+        id: "perm_mid",
+        sessionID: session.id,
+        kind: "bash",
+        title: "bash: rm -rf tmp",
+        detail: "rm -rf tmp",
+        pattern: "rm *",
+        created: 1,
+      },
+    })
+    await tick()
+    assert.match(h.frame(), /Permission requested \(bash\)/, "dialog harus muncul")
+
+    h.stdin.press("y") // jawab: allow once
+    await tick()
+    assert.deepEqual(h.recorded.permissions, [{ id: "perm_mid", decision: "once" }])
+
+    // Dialog selesai di sisi server — disiarkan balik supaya klien tahu
+    // sudah terjawab, sama seperti aliran sungguhan.
+    h.push({ type: "permission.resolved", sessionID: session.id, permissionID: "perm_mid", granted: true })
+    await tick()
+
+    // `x` TUNGGAL berikutnya HARUS mempersenjatai lagi, bukan langsung
+    // membatalkan — menjawab dialog termasuk "tombol lain" yang melucuti.
+    h.stdin.press("x")
+    await tick()
+
+    assert.deepEqual(
+      h.recorded.aborted,
+      [],
+      "x tunggal setelah dialog TIDAK BOLEH langsung membatalkan",
+    )
+    assert.match(
+      h.frame(),
+      /press x again to cancel reviewer/,
+      "harus kembali mempersenjatai dari awal, bukan mengeksekusi pembatalan lama",
+    )
+  } finally {
+    h.cleanup()
+  }
+})
