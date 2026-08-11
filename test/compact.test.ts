@@ -5,6 +5,7 @@ import {
   COMPACT_SYSTEM,
   compactPrompt,
   KEEP_TURNS,
+  overBudget,
   planCompaction,
   renderMessage,
   renderTranscript,
@@ -201,4 +202,30 @@ test("ringkasan dibungkus supaya tidak terbaca sebagai permintaan baru user", ()
   assert.match(wrapped, /not a new request/)
   assert.match(wrapped, /ask — do not assume/)
   assert.match(wrapped, /Goal: bikin X/)
+})
+
+// ---------- overBudget ----------
+
+test("overBudget menyala saat langkah terakhir mencapai window dikurangi reserved", () => {
+  assert.equal(overBudget(24576, 32768, 8192), true)
+  assert.equal(overBudget(24575, 32768, 8192), false)
+})
+
+test("contextWindow yang tidak dideklarasikan TIDAK PERNAH memicu", () => {
+  // Tanpa batas yang dinyatakan, tidak ada ambang yang bisa dihitung. Menebak
+  // di sini berarti memadatkan pada waktu yang salah dan menyembunyikan bahwa
+  // fitur ini sebenarnya tidak aktif untuk model tersebut.
+  assert.equal(overBudget(999_999, undefined, 8192), false)
+})
+
+test("token yang belum terukur TIDAK memicu", () => {
+  // Sebelum langkah pertama selesai, tidak ada angka dari provider. Memadatkan
+  // di titik itu berarti meringkas riwayat yang belum tentu terlalu besar.
+  assert.equal(overBudget(undefined, 32768, 8192), false)
+})
+
+test("reserved lebih besar dari window memicu segera, bukan diam-diam mati", () => {
+  // Config yang keliru harus terlihat sebagai pemadatan agresif, bukan sebagai
+  // fitur yang seolah-olah mati.
+  assert.equal(overBudget(1, 8192, 16384), true)
 })

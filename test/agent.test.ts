@@ -62,6 +62,55 @@ const USAGE = {
   outputTokens: { total: 7, text: undefined, reasoning: undefined },
 }
 
+/** Bentuk usage LanguageModelV4 dengan input token tertentu. */
+function usageWith(inputTotal: number) {
+  return {
+    inputTokens: { total: inputTotal, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 7, text: undefined, reasoning: undefined },
+  }
+}
+
+/**
+ * Seperti `mockStreaming`, tapi MENGEMBALIKAN model-nya sehingga
+ * `doStreamCalls` bisa diperiksa.
+ *
+ * Yang diperiksa lewat `doStreamCalls[n].prompt` adalah apa yang BENAR-BENAR
+ * diterima provider. Test yang cuma membuktikan sebuah fungsi terpanggil tidak
+ * membuktikan apa pun tentang isi permintaannya.
+ */
+function recordingModel(chunks: LanguageModelV4StreamPart[][]): MockLanguageModelV4 {
+  let call = 0
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      const parts = chunks[Math.min(call, chunks.length - 1)] as LanguageModelV4StreamPart[]
+      call += 1
+      return { stream: simulateReadableStream({ chunks: parts }) }
+    },
+  })
+  restore = setModelResolver(() => model)
+  return model
+}
+
+/** Proyek sementara dengan titah.json sendiri — `prompt()` memuat config dari direktori sesi. */
+function projectWith(titahJson: Record<string, unknown>): string {
+  const dir = fs.mkdtempSync(path.join(root, "proyek-"))
+  fs.writeFileSync(path.join(dir, "halo.txt"), "baris satu\nbaris dua\n")
+  fs.writeFileSync(
+    path.join(dir, "titah.json"),
+    JSON.stringify({ skills: { discover: [], paths: [] }, ...titahJson }),
+  )
+  return dir
+}
+
+/** Config yang menyatakan jendela konteks untuk model yang dipakai test. */
+function windowConfig(contextWindow: number, extra: Record<string, unknown> = {}) {
+  return {
+    model: "mock/m",
+    provider: { mock: { models: { m: { contextWindow } } } },
+    ...extra,
+  }
+}
+
 function mockStreaming(chunks: LanguageModelV4StreamPart[][]): void {
   let call = 0
   const model = new MockLanguageModelV4({
@@ -116,7 +165,10 @@ test("teks dikirim sebagai delta, dan pesan akhir tersimpan utuh", async () => {
 
   assert.equal(assistant.parts.length, 1)
   assert.equal(assistant.parts[0]?.type === "text" && assistant.parts[0].text, "Halo dunia!")
-  assert.deepEqual(assistant.usage, { input: 11, output: 7 })
+  // Giliran satu langkah: context (input langkah terakhir) sama dengan input
+  // (total penagihan), sengaja dipatok terpisah supaya perbedaannya kelak
+  // kentara kalau salah satunya tidak terisi.
+  assert.deepEqual(assistant.usage, { input: 11, output: 7, context: 11 })
 
   const stored = listMessages(session.id)
   assert.deepEqual(stored.map((message) => message.role), ["user", "assistant"])
@@ -433,4 +485,27 @@ test("skill dengan namespace yang tidak dikenal sama sekali diarahkan ke /skills
   const body = assistant.parts.find((part) => part.type === "text")
   assert.ok(body?.type === "text")
   assert.match(body.text, /Run \/skills to see what is available/)
+})
+
+test("usage.context adalah input langkah TERAKHIR, bukan jumlah seluruh langkah", async () => {
+  // totalUsage MENJUMLAHKAN tiap langkah. Giliran 20 langkah dengan konteks
+  // tetap 15k melaporkan input ~300k — memakainya sebagai ambang berarti
+  // memadatkan terus-menerus sambil terlihat seperti fitur yang bekerja.
+  mockStreaming([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(100) },
+    ],
+    [
+      { type: "text-delta", id: "t", delta: "selesai" },
+      { type: "finish", finishReason: "stop", usage: usageWith(180) },
+    ],
+  ])
+
+  const session = createSession(project)
+  const message = await prompt({ sessionID: session.id, text: "baca halo.txt" })
+
+  assert.equal(message.usage?.context, 180)
+  assert.equal(message.usage?.input, 280)
+  assert.notEqual(message.usage?.context, message.usage?.input)
 })

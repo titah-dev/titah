@@ -343,6 +343,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
       abortSignal: controller.signal,
     })
 
+    // Input token langkah TERAKHIR — ukuran konteks, bukan total penagihan.
+    let lastStepTokens: number | undefined
+
     for await (const part of result.fullStream) {
       switch (part.type) {
         case "text-delta": {
@@ -378,6 +381,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
           break
         }
 
+        case "finish-step": {
+          const input = part.usage?.inputTokens
+          if (input !== undefined) lastStepTokens = input
+          break
+        }
+
         case "finish": {
           assistant.usage = {
             ...(part.totalUsage.inputTokens !== undefined
@@ -386,13 +395,15 @@ export async function prompt(input: PromptInput): Promise<Message> {
             ...(part.totalUsage.outputTokens !== undefined
               ? { output: part.totalUsage.outputTokens }
               : {}),
+            ...(lastStepTokens !== undefined ? { context: lastStepTokens } : {}),
           }
           break
         }
 
         default:
           // Sisa event stream (tool-call, start-step, reasoning, ...) tidak perlu
-          // dilaporkan sendiri: state tool sudah dipublikasikan dari dalam execute.
+          // dilaporkan sendiri selain finish-step: state tool sudah dipublikasikan
+          // dari dalam execute.
           break
       }
     }

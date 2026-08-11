@@ -144,3 +144,23 @@ export function wrapSummary(summary: string): string {
     "</context-summary>",
   ].join("\n")
 }
+
+/**
+ * Apakah konteks sudah cukup penuh untuk dipadatkan.
+ *
+ * `lastStepTokens` WAJIB input token satu langkah, bukan `totalUsage` yang
+ * menjumlahkan seluruh langkah. Giliran 20 langkah dengan konteks tetap 15k
+ * melaporkan totalUsage ~300k; memakainya di sini memicu pemadatan terus-menerus
+ * sambil terlihat persis seperti fitur yang sedang bekerja.
+ *
+ * Batas yang tidak dideklarasikan berarti mati, bukan ditebak — lihat
+ * `contextWindowFor`.
+ */
+export function overBudget(
+  lastStepTokens: number | undefined,
+  contextWindow: number | undefined,
+  reserved: number,
+): boolean {
+  if (lastStepTokens === undefined || contextWindow === undefined) return false
+  return lastStepTokens >= contextWindow - reserved
+}

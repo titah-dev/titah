@@ -49,7 +49,13 @@ export interface Message {
   created: number
   parts: Part[]
   model?: string
-  usage?: { input?: number; output?: number }
+  /**
+   * `input` adalah total penagihan seluruh langkah; `context` adalah input
+   * langkah TERAKHIR, yaitu ukuran konteks sesungguhnya. Dua besaran berbeda
+   * yang tidak boleh berbagi satu field — menukarnya membuat ambang pemadatan
+   * menyala jauh terlalu dini.
+   */
+  usage?: { input?: number; output?: number; context?: number }
   /**
    * Token & biaya yang dipakai agent EKSTERNAL. Sengaja dipisah dari `usage`
    * (Q24): menjumlahkannya membuat angka biaya Titah bohong, karena keduanya
