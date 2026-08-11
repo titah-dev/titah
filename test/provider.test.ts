@@ -1,6 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { parseModelId, resolveCredential, resolveModel, ProviderError } from "../src/core/provider.ts"
+import {
+  parseModelId,
+  resolveCredential,
+  resolveModel,
+  ProviderError,
+  contextWindowFor,
+  undeclaredContextWindows,
+} from "../src/core/provider.ts"
 import { Config, Provider } from "../src/core/schema.ts"
 
 const compatible = (overrides: Record<string, unknown> = {}) =>
@@ -107,4 +114,51 @@ test("anthropic tanpa apiKey menolak dengan instruksi yang bisa dijalankan", () 
     provider: { ant: { npm: "@ai-sdk/anthropic", models: { "claude-x": {} } } },
   })
   assert.throws(() => resolveModel(config), /titah auth set ant/)
+})
+
+test("contextWindowFor membaca angka yang dideklarasikan config", () => {
+  const config = Config.parse({
+    model: "ollama/qwen3:14b",
+    provider: {
+      ollama: { models: { "qwen3:14b": { contextWindow: 32768 } } },
+    },
+  })
+  assert.equal(contextWindowFor(config, "ollama/qwen3:14b"), 32768)
+})
+
+test("contextWindowFor memakai config.model saat argumennya kosong", () => {
+  const config = Config.parse({
+    model: "ollama/qwen3:14b",
+    provider: { ollama: { models: { "qwen3:14b": { contextWindow: 32768 } } } },
+  })
+  assert.equal(contextWindowFor(config), 32768)
+})
+
+test("model tanpa contextWindow mengembalikan undefined, BUKAN angka tebakan", () => {
+  // Angka yang salah lebih berbahaya daripada tidak ada angka: memadatkan
+  // terlalu telat tidak bisa dibedakan dari tidak memadatkan sama sekali,
+  // kecuali user sudah telanjur percaya masalahnya tertangani.
+  const config = Config.parse({
+    model: "ollama/qwen3:14b",
+    provider: { ollama: { models: { "qwen3:14b": {} } } },
+  })
+  assert.equal(contextWindowFor(config, "ollama/qwen3:14b"), undefined)
+})
+
+test("id model yang tidak berbentuk provider/model tidak melempar, cuma undefined", () => {
+  // contextWindowFor dipanggil di jalur panas tiap langkah. Melempar di sini
+  // akan mematikan giliran gara-gara metadata yang hilang.
+  const config = Config.parse({ provider: {} })
+  assert.equal(contextWindowFor(config, "tanpa-slash"), undefined)
+})
+
+test("undeclaredContextWindows menyebut model yang dikonfigurasi tanpa batas", () => {
+  const config = Config.parse({
+    provider: {
+      ollama: {
+        models: { "qwen3:14b": { contextWindow: 32768 }, "llama3:8b": {} },
+      },
+    },
+  })
+  assert.deepEqual(undeclaredContextWindows(config), ["ollama/llama3:8b"])
 })

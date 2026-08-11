@@ -28,6 +28,12 @@ export const ProviderOptions = z
 
 export const ProviderModel = z.object({
   name: z.string().optional().describe("Display name for this model"),
+  contextWindow: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Context window in tokens. Required for automatic compaction on this model."),
 })
 
 export const Provider = z.object({

@@ -4,7 +4,12 @@ import path from "node:path"
 import { parseArgs } from "node:util"
 import { loadConfig, redact, ConfigError } from "./core/config.ts"
 import { checkPermissions, readAuth, removeCredential, setCredential } from "./core/auth.ts"
-import { listModels, resolveCredential, ProviderError } from "./core/provider.ts"
+import {
+  listModels,
+  resolveCredential,
+  undeclaredContextWindows,
+  ProviderError,
+} from "./core/provider.ts"
 import { which } from "./core/which.ts"
 import {
   authFile,
@@ -342,6 +347,21 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
     const baseURL = provider.options?.baseURL
     const reach = withProbe && baseURL ? `  ${await probe(baseURL)}` : ""
     out(`  ${id.padEnd(18)} ${(baseURL ?? provider.npm).padEnd(46)} key: ${source}${reach}`)
+  }
+  out()
+
+  out("Context windows")
+  const undeclared = undeclaredContextWindows(loaded.config)
+  if (undeclared.length === 0) {
+    out("  all configured models declare one")
+  } else {
+    for (const id of undeclared) {
+      const slash = id.indexOf("/")
+      const providerId = id.slice(0, slash)
+      const modelId = id.slice(slash + 1)
+      out(`  ! ${id} — no contextWindow, automatic compaction is off for it`)
+      out(`      add provider.${providerId}.models."${modelId}".contextWindow`)
+    }
   }
   out()
 

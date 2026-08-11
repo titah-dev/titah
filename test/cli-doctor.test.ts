@@ -70,3 +70,45 @@ test("titah doctor menampilkan bagian Skills dengan hitungan, konflik, dan sumbe
   assert.match(output, /sources with no skills/)
   assert.match(output, /ns:hilang/)
 })
+
+test("doctor menyebut model yang belum punya contextWindow beserta jalur confignya", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "llama3:8b": {} },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  // Positif dulu: buktikan bagian Context windows benar-benar dirender,
+  // supaya assertion berikutnya tidak lolos pada output kosong.
+  assert.match(output, /Context windows/)
+  assert.match(output, /ollama\/llama3:8b/)
+  assert.match(output, /provider\.ollama\.models/)
+})
+
+test("doctor tidak mengeluh saat semua model sudah punya contextWindow", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "llama3:8b": { contextWindow: 8192 } },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /Context windows/)
+  assert.match(output, /all configured models declare one/)
+  assert.doesNotMatch(output, /ollama\/llama3:8b/)
+})

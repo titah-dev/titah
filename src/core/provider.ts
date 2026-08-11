@@ -152,3 +152,34 @@ export function listModels(config: Config): ModelListing[] {
   }
   return out
 }
+
+/**
+ * Jendela konteks sebuah model, kalau config menyatakannya.
+ *
+ * TIDAK ADA tabel bawaan. Angka yang salah lebih berbahaya daripada tidak ada
+ * angka: pemadatan yang terlambat tidak bisa dibedakan dari tidak ada pemadatan
+ * — sesinya tetap mati, hanya saja user sudah telanjur mengira aman.
+ *
+ * Tidak pernah melempar: ini dipanggil di jalur panas tiap langkah, dan
+ * metadata yang hilang tidak boleh menjatuhkan giliran yang sedang berjalan.
+ */
+export function contextWindowFor(config: Config, full?: string): number | undefined {
+  const target = full ?? config.model
+  if (target === undefined) return undefined
+  const slash = target.indexOf("/")
+  if (slash <= 0 || slash === target.length - 1) return undefined
+  const providerId = target.slice(0, slash)
+  const modelId = target.slice(slash + 1)
+  return config.provider[providerId]?.models[modelId]?.contextWindow
+}
+
+/** Model yang dikonfigurasi tapi belum punya `contextWindow`, untuk dilaporkan `doctor`. */
+export function undeclaredContextWindows(config: Config): string[] {
+  const out: string[] = []
+  for (const [providerId, provider] of Object.entries(config.provider)) {
+    for (const [modelId, model] of Object.entries(provider.models)) {
+      if (model.contextWindow === undefined) out.push(`${providerId}/${modelId}`)
+    }
+  }
+  return out
+}
