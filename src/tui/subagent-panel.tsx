@@ -57,10 +57,12 @@ export function SubagentPanel({
   /**
    * Sesi anak yang `x`-nya sudah dipersenjatai dan menunggu tekanan kedua.
    *
-   * Diumumkan di JUDUL panel, bukan hanya lewat pesan flash di footer: selama
-   * giliran berjalan footer dipakai penuh oleh "working — esc to cancel", dan
-   * panel ini justru paling dipakai persis pada saat itu. Konfirmasi yang
-   * tidak terlihat sama saja dengan tidak ada.
+   * Diumumkan di JUDUL panel, bukan hanya lewat pesan flash di footer: mata
+   * user sudah tertuju ke panel ini SAAT ia menekan `x`, dan judul panel
+   * bertahan apa pun yang footer sedang lakukan — flash 4 detik yang
+   * kadaluwarsa, atau footer yang berpindah ke pesan lain. Konfirmasi yang
+   * bergantung pada footer masih menyala tepat saat dibutuhkan bukan
+   * konfirmasi yang bisa diandalkan.
    */
   armed?: string
   height?: number

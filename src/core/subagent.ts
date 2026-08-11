@@ -144,8 +144,17 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   // baris di panel terlihat mati sampai antrean itu akhirnya jalan, padahal
   // pembatalannya sudah terjadi detik itu juga. Publish dobel untuk
   // `sessionID` yang sama tidak berbahaya — reducer di `state.ts` menimpa
-  // baris berdasarkan `sessionID`, jadi cabang `stopped` di dalam `work()`
-  // (yang tetap harus ada, untuk kasus tanpa antrean) tidak membuat baris ganda.
+  // baris berdasarkan `sessionID`.
+  //
+  // Cabang `cancelled()` di dalam `work()` TETAP WAJIB ada meski publish ini
+  // sudah terjadi — bukan basa-basi untuk kasus tanpa antrean. Publish yang
+  // mendarat SETELAH abort ini bisa menimpa baris "stopped" balik ke
+  // "running": `publish("running", "working")` begitu `work()` mulai, dan
+  // `onUpdate` sub-agent ber-delegate yang masih boleh mengirim satu update
+  // tool terakhir sementara proses eksternalnya baru menutup. Tanpa cabang
+  // `cancelled()` di `work()` menangkap keduanya dan mempublikasikan
+  // "stopped" lagi, baris itu tersangkut `◐ running ...` selamanya walau
+  // sub-agent-nya sudah benar-benar berhenti.
   control.signal.addEventListener("abort", () => publish("stopped", "stopped by user"), {
     once: true,
   })

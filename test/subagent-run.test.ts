@@ -334,6 +334,15 @@ test("penulis QUEUED yang dibatalkan lewat sesi ANAK disiarkan 'stopped' SEGERA,
       signal: new AbortController().signal,
     })
 
+    // Diambil SEBELUM mendaftarkan penulis kedua, supaya sesi anak kedua bisa
+    // dikenali lewat SELISIHNYA, bukan lewat posisi. `created` keduanya sama
+    // — dipanggil balik-balikan, tanpa await di antaranya — dan
+    // `listChildSessions` mengurutkan `ORDER BY created ASC`; untuk nilai
+    // yang seri, urutan barisnya tergantung SQLite, bukan kontrak yang bisa
+    // diandalkan. `.at(-1)` di sini adalah lempar koin yang GAGAL DIAM-DIAM:
+    // kalau seri jatuh ke arah lain, test ini memeriksa anak yang salah.
+    const idsBeforeSecond = new Set(listChildSessions(parent.id).map((s) => s.id))
+
     const second = runSubagent({
       parentSessionID: parent.id,
       agentID: "scribe",
@@ -343,7 +352,7 @@ test("penulis QUEUED yang dibatalkan lewat sesi ANAK disiarkan 'stopped' SEGERA,
       signal: new AbortController().signal,
     })
 
-    const secondChild = listChildSessions(parent.id).at(-1)
+    const secondChild = listChildSessions(parent.id).find((s) => !idsBeforeSecond.has(s.id))
     assert.ok(secondChild, "sesi anak kedua harus sudah ada begitu runSubagent kedua dipanggil")
     assert.equal(
       abort(secondChild.id),
