@@ -2,10 +2,12 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { ModelMessage } from "ai"
 import {
+  BYTES_PER_TOKEN,
   COMPACT_SYSTEM,
   compactPrompt,
   estimateTokens,
   KEEP_TURNS,
+  MID_TURN_KEEP,
   midTurnCut,
   overBudget,
   planAtCut,
@@ -28,10 +30,23 @@ const toolCall = (id: string): ModelMessage => ({
   role: "assistant",
   content: [{ type: "tool-call", toolCallId: id, toolName: "read", input: {} }],
 })
+// Nilainya sengaja jauh lebih besar dari penanda prune (97 byte JSON): output
+// tiga huruf lama membuat tiap test bytesFreed>0 lolos secara kebetulan lewat
+// bug gross-count, bukan lewat perilaku yang benar. Ini memaksa pruning di
+// fixture manapun untuk sungguhan menghemat, bukan cuma tampak menghemat.
 const toolResult = (id: string): ModelMessage => ({
   role: "tool",
   content: [
-    { type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "isi" } },
+    {
+      type: "tool-result",
+      toolCallId: id,
+      toolName: "read",
+      output: {
+        type: "text",
+        value:
+          "isi lengkap dari hasil tool — cukup panjang supaya pemangkasan ini sungguhan menghemat byte, bukan sekadar berpura-pura",
+      },
+    },
   ],
 })
 
@@ -244,6 +259,17 @@ test("reserved lebih besar dari window memicu segera, bukan diam-diam mati", () 
 
 // ---------- pruner ----------
 
+test("BYTES_PER_TOKEN bawaan adalah 8", () => {
+  // Dipatok di sini seperti KEEP_TURNS: supaya perubahan angka ini ketahuan
+  // sebagai keputusan sengaja, bukan luput karena tidak ada pemanggil yang
+  // membaca konstantanya langsung.
+  assert.equal(BYTES_PER_TOKEN, 8)
+})
+
+test("MID_TURN_KEEP bawaan adalah 6", () => {
+  assert.equal(MID_TURN_KEEP, 6)
+})
+
 test("pruner mengganti output tool dengan penanda, TIDAK menghapus pesannya", () => {
   // Menghapus pesan `tool` akan meninggalkan tool-call tanpa hasilnya, dan
   // provider menolak riwayat seperti itu. Penanda menjaga strukturnya utuh.
@@ -282,8 +308,39 @@ test("prune kedua atas hasil yang sama tidak membebaskan byte lagi", () => {
   // naik ke peringkasan — sesinya lalu mati persis seperti sebelum fitur ada.
   const messages = [toolCall("a"), toolResult("a")]
   const once = pruneToolOutputs(messages, 2)
+  // Positif dulu: prune PERTAMA sungguhan menghemat byte pada data ini —
+  // tanpa ini, implementasi yang tidak pernah menghemat apa pun (bytesFreed
+  // selalu 0) juga lolos di assert kedua, karena 0 === 0 tidak membedakan
+  // "sudah dipangkas" dari "tidak pernah menghemat sama sekali".
+  assert.ok(once.bytesFreed > 0)
   const twice = pruneToolOutputs(once.messages, 2)
   assert.equal(twice.bytesFreed, 0)
+})
+
+test("banyak output kecil tidak membesarkan riwayat — prune yang tak menghemat dilewati", () => {
+  // Bug yang ditemukan review: bytesFreed lama menghitung KOTOR (byte yang
+  // dibuang), bukan BERSIH (dikurangi ukuran penanda). Pada satu giliran hasil
+  // edit/confirm pendek — kasus nyata, bukan pengecualian — itu membuat
+  // bytesFreed positif padahal riwayat SERIALISASINYA justru membesar, karena
+  // penanda (97 byte) lebih besar dari tiap output kecil yang digantikannya.
+  // Arah kesalahan ini yang dilarang: melebih-lebihkan penghematan membuat
+  // pemanggil melewatkan peringkasan yang justru dibutuhkan.
+  const messages: ModelMessage[] = []
+  for (let i = 0; i < 40; i += 1) {
+    messages.push(toolCall(`t${i}`))
+    messages.push({
+      role: "tool",
+      content: [
+        { type: "tool-result", toolCallId: `t${i}`, toolName: "read", output: { type: "text", value: "ok" } },
+      ],
+    })
+  }
+  const before = JSON.stringify(messages)
+
+  const { messages: pruned, bytesFreed } = pruneToolOutputs(messages, messages.length)
+
+  assert.equal(bytesFreed, 0, "output sekecil ini tidak pantas dipangkas — menggantinya tidak menghemat apa pun")
+  assert.equal(JSON.stringify(pruned), before, "riwayat dibiarkan apa adanya, bukan malah dibesarkan")
 })
 
 test("estimateTokens MEREMEHKAN penghematan, tidak melebih-lebihkannya", () => {
@@ -312,6 +369,10 @@ test("potong mid-turn tidak pernah jatuh di pesan tool", () => {
   ]
   for (let keep = 1; keep <= messages.length; keep += 1) {
     const cut = midTurnCut(messages, keep)
+    // Buktikan dulu ADA pesan di indeks itu — tanpa ini, `cut` yang berjalan
+    // sampai lewat ujung larik membuat `messages[cut]` `undefined`, dan
+    // `undefined?.role !== "tool"` lolos begitu saja tanpa memeriksa apa pun.
+    assert.ok(messages[cut], `keep=${keep} cut=${cut} di luar riwayat`)
     assert.notEqual(messages[cut]?.role, "tool", `keep=${keep} memotong di pesan tool`)
   }
 })
@@ -323,6 +384,12 @@ test("potong mid-turn mundur ke indeks aman terdekat, tidak maju", () => {
   const cut = midTurnCut(messages, 2)
   assert.equal(cut, 3)
   assert.equal(messages[cut]?.role, "assistant")
+
+  // keep=2 di atas kebetulan sudah mendarat di indeks aman (loop tidak pernah
+  // jalan), jadi tidak membedakan mundur dari maju. keep=3 mendarat di pesan
+  // `tool`: mundur berhenti di 1, maju akan lanjut ke 3 — di sinilah arahnya
+  // sungguh diuji.
+  assert.equal(midTurnCut(messages, 3), 1, "harus mundur ke pesan assistant sebelumnya, bukan maju")
 })
 
 test("potong mid-turn nol saat tidak ada indeks aman", () => {

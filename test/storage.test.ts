@@ -292,6 +292,18 @@ test("replaceModelMessage menimpa satu baris tanpa menyentuh urutannya", () => {
     { role: "user", content: "satu" },
     { role: "assistant", content: "dua" },
   ])
+
+  // Sesi lain, dibuat dengan urutan yang sama persis (seq mulai dari 0 lagi —
+  // nextSeq dihitung PER sesi). Kalau WHERE clause lupa menyaring session_id,
+  // UPDATE ini akan menimpa baris sesi ini juga karena seq-nya kebetulan cocok,
+  // dan korupsi lintas-sesi seperti itu tidak akan terlihat sama sekali —
+  // pruner akan memanggil ini berulang kali di dalam loop.
+  const other = createSession("/proyek/ganti-lain")
+  appendModelMessages(other.id, [
+    { role: "user", content: "punya sesi lain" },
+    { role: "assistant", content: "jangan disentuh" },
+  ])
+
   const rows = listModelRows(session.id)
   const target = rows[1]
   assert.ok(target)
@@ -306,6 +318,12 @@ test("replaceModelMessage menimpa satu baris tanpa menyentuh urutannya", () => {
   )
   assert.equal(after[1]?.message.content, "diganti")
   assert.equal(after[0]?.message.content, "satu")
+
+  const otherAfter = listModelRows(other.id)
+  assert.deepEqual(
+    otherAfter.map((row) => row.message.content),
+    ["punya sesi lain", "jangan disentuh"],
+  )
 })
 
 test("subfolder BUKAN proyek yang sama — aturannya cocok persis", () => {

@@ -67,6 +67,17 @@ export function estimateTokens(bytes: number): number {
 const PRUNED = "[output was dropped to free context — re-run the tool if you need it]"
 
 /**
+ * Ukuran penanda itu sendiri, dalam byte JSON.
+ *
+ * Dipakai sebagai ambang: mengganti output yang SUDAH lebih kecil atau sama
+ * dengan penanda tidak menghemat apa pun — riwayatnya bisa saja malah membesar.
+ * `bytesFreed` harus berarti "byte yang SUNGGUH terhemat", bukan "byte yang
+ * dibuang". Melebih-lebihkannya membuat pemanggil mengira sudah cukup meringan
+ * padahal belum, dan melewatkan peringkasan yang justru dibutuhkan.
+ */
+const MARKER_BYTES = Buffer.byteLength(JSON.stringify({ type: "text", value: PRUNED }))
+
+/**
  * Membuang output hasil tool SEBELUM `upTo`, tanpa menghapus satu pesan pun.
  *
  * Pesan `tool` yang dihapus akan meninggalkan tool-call tanpa hasilnya, dan
@@ -93,8 +104,14 @@ export function pruneToolOutputs(
       if (part["type"] !== "tool-result") return part
       const output = part["output"]
       const rendered = JSON.stringify(output ?? "")
-      if (rendered === JSON.stringify({ type: "text", value: PRUNED })) return part
-      bytesFreed += Buffer.byteLength(rendered)
+      const removed = Buffer.byteLength(rendered)
+      // Output yang sudah <= ukuran penanda TIDAK disentuh: mengganti output
+      // sebesar ini tidak membebaskan apa pun (kasus sudah-dipangkas termasuk
+      // di sini, karena rendernya sama persis dengan penanda). Satu giliran
+      // penuh hasil edit/confirm pendek adalah kasus nyata di mana ini terjadi
+      // pada SEMUA bagiannya sekaligus, bukan pengecualian langka.
+      if (removed <= MARKER_BYTES) return part
+      bytesFreed += removed - MARKER_BYTES
       changed = true
       return { ...part, output: { type: "text", value: PRUNED } }
     })
