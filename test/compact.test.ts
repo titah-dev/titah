@@ -4,6 +4,7 @@ import type { ModelMessage } from "ai"
 import {
   COMPACT_SYSTEM,
   compactPrompt,
+  KEEP_TURNS,
   planCompaction,
   renderMessage,
   renderTranscript,
@@ -30,6 +31,13 @@ const toolResult = (id: string): ModelMessage => ({
 })
 
 // ---------- batas potong ----------
+
+test("KEEP_TURNS bawaan adalah 2", () => {
+  // Dipatok di sini supaya perubahan nilai bawaan ketahuan sebagai keputusan
+  // sengaja, bukan luput karena tiap pemanggil produksi sudah memberi argumen
+  // eksplisit dan diam-diam membuat konstanta ini tidak pernah teruji.
+  assert.equal(KEEP_TURNS, 2)
+})
 
 test("keepTurns menghitung GILIRAN user, bukan pesan", () => {
   // KEEP_TAIL lama menghitung pesan, dan satu giliran agentic bisa 20 pesan —
@@ -179,7 +187,12 @@ test("fokus dari user menajamkan ringkasan tanpa membuang sisanya", () => {
   assert.match(dengan, /keputusan soal skema/)
   assert.match(dengan, /do not drop it/i, "sisanya diringkas, bukan dihapus")
 
-  assert.doesNotMatch(compactPrompt("transkrip", "   "), /particular attention/)
+  const kosong = compactPrompt("transkrip", "   ")
+  // Positif dulu: buktikan promptnya sungguh dibangun (bukan string kosong)
+  // SEBELUM menegaskan apa yang tidak ada di dalamnya — tanpa ini, doesNotMatch
+  // di bawah akan lolos juga kalau compactPrompt diam-diam mengembalikan "".
+  assert.match(kosong, /<transcript>\ntranskrip\n<\/transcript>/)
+  assert.doesNotMatch(kosong, /particular attention/)
 })
 
 test("ringkasan dibungkus supaya tidak terbaca sebagai permintaan baru user", () => {

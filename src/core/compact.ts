@@ -29,6 +29,12 @@ export const KEEP_TURNS = 2
  * dengan error yang tidak menyebut pemadatan sama sekali.
  */
 export function tailStart(messages: ModelMessage[], keepTurns = KEEP_TURNS): number {
+  // keepTurns <= 0 berarti TIDAK ADA giliran yang disisakan — ringkas semuanya,
+  // jadi kembalikan panjang penuh. Ini KEBALIKAN dari fallback `return 0` di
+  // bawah: keduanya angka "batas", tapi 0 di sana berarti giliran yang ADA
+  // lebih sedikit dari yang diminta, jadi justru pertahankan semuanya apa
+  // adanya. Sama-sama "tidak ada yang dipotong di tengah", tapi satu berarti
+  // ringkas total, satu berarti simpan total.
   if (keepTurns <= 0) return messages.length
 
   let seen = 0

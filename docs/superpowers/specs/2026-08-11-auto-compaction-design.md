@@ -248,9 +248,17 @@ than `KEEP_TAIL` messages.
 
 ### Mid-turn
 
-There is no `user` message after the turn began, so `tailStart()` as written
-returns "summarise everything" — including the instruction currently being
-executed.
+There is no `user` message after the turn began, so `tailStart()` cannot serve
+here. **Corrected during Task 2** — the original text claimed it would return
+"summarise everything, including the running instruction". Turn-counting made the
+opposite true: with fewer `user` messages than `tailTurns`, `tailStart()` returns
+`0`, meaning *keep everything*, so mid-turn it would compact nothing at all.
+
+The conclusion is unchanged and the safer failure was chosen deliberately — a
+`tailStart()` that over-keeps produces an empty `dropped` and a "nothing to
+compact" report, while one that over-drops orphans a tool result. But mid-turn
+still needs its own rule, because "compact nothing" is exactly as useless as
+"compact everything" when the context is already full.
 
 **The rule: cut at any index that is not a `tool` message.**
 

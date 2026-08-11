@@ -358,3 +358,16 @@ test("compaction.auto false bisa dinyatakan tanpa menyebut field lain", () => {
   assert.equal(config.compaction.auto, false)
   assert.equal(config.compaction.tailTurns, 2)
 })
+
+test("default level FIELD compaction juga benar, bukan hanya level blok", () => {
+  // Config.parse({}) lolos lewat Compaction.default({...}) di :250, yang
+  // menyalin keempat nilai ini secara literal — tidak pernah menyentuh
+  // .default() milik masing-masing field. Memberi SATU field (auto) memaksa
+  // Zod memvalidasi objeknya sungguhan, sehingga reserved/tailTurns/prune di
+  // sini datang dari .default() field-nya sendiri di schema.ts, bukan dari
+  // salinan di :250 — kalau keduanya menyimpang, baru di sini ketahuan.
+  const config = Config.parse({ compaction: { auto: false } })
+  assert.equal(config.compaction.reserved, 8192)
+  assert.equal(config.compaction.tailTurns, 2)
+  assert.equal(config.compaction.prune, true)
+})
