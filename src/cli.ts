@@ -10,6 +10,7 @@ import {
   undeclaredContextWindows,
   ProviderError,
 } from "./core/provider.ts"
+import { reservedCollisions } from "./core/compact.ts"
 import { which } from "./core/which.ts"
 import {
   authFile,
@@ -362,6 +363,12 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       out(`  ! ${id} — no contextWindow, automatic compaction is off for it`)
       out(`      add provider.${providerId}.models."${modelId}".contextWindow`)
     }
+  }
+  for (const clash of reservedCollisions(loaded.config)) {
+    out(
+      `  ! ${clash.model} — compaction.reserved (${clash.reserved}) is large for a ` +
+        `${clash.contextWindow}-token window; capped at ${Math.floor(clash.contextWindow / 4)}`,
+    )
   }
   out()
 

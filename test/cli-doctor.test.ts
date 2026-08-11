@@ -97,6 +97,11 @@ test("doctor tidak mengeluh saat semua model sudah punya contextWindow", () => {
   const project = isolatedProject(
     {
       skills: { discover: [], paths: [] },
+      // reserved diset EKSPLISIT di bawah seperempat jendela ini. Task 10 membuat
+      // `reserved` bawaan (8192) bertabrakan dengan jendela 8k ini juga, dan
+      // tabrakan itu punya peringatannya sendiri (test di bawah) — bukan urusan
+      // test ini, yang mengecek warning "contextWindow belum dideklarasikan".
+      compaction: { reserved: 2048 },
       provider: {
         ollama: {
           options: { baseURL: "http://127.0.0.1:11434/v1" },
@@ -111,4 +116,25 @@ test("doctor tidak mengeluh saat semua model sudah punya contextWindow", () => {
   assert.match(output, /Context windows/)
   assert.match(output, /all configured models declare one/)
   assert.doesNotMatch(output, /ollama\/llama3:8b/)
+})
+
+test("doctor bilang kalau reserved dijinakkan lantainya", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      compaction: { reserved: 8192 },
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "kecil": { contextWindow: 8192 } },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /Context windows/)
+  assert.match(output, /ollama\/kecil/)
+  assert.match(output, /capped at 2048/)
 })

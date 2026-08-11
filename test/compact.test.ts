@@ -5,6 +5,7 @@ import {
   BYTES_PER_TOKEN,
   COMPACT_SYSTEM,
   compactPrompt,
+  effectiveReserved,
   estimateTokens,
   KEEP_TURNS,
   MID_TURN_KEEP,
@@ -15,10 +16,12 @@ import {
   pruneToolOutputs,
   renderMessage,
   renderTranscript,
+  reservedCollisions,
   tailStart,
   wrapSummary,
 } from "../src/core/compact.ts"
 import type { ModelRow } from "../src/core/storage/session.ts"
+import { Config } from "../src/core/schema.ts"
 
 const user = (text: string): ModelMessage => ({ role: "user", content: text })
 const assistant = (text: string): ModelMessage => ({ role: "assistant", content: text })
@@ -251,10 +254,56 @@ test("token yang belum terukur TIDAK memicu", () => {
   assert.equal(overBudget(undefined, 32768, 8192), false)
 })
 
-test("reserved lebih besar dari window memicu segera, bukan diam-diam mati", () => {
-  // Config yang keliru harus terlihat sebagai pemadatan agresif, bukan sebagai
-  // fitur yang seolah-olah mati.
-  assert.equal(overBudget(1, 8192, 16384), true)
+test("reserved yang mustahil dijinakkan lantainya, bukan dibiarkan memicu terus", () => {
+  // Dulu test ini mematok `overBudget(1, 8192, 16384) === true` dengan alasan
+  // salah setelan harus terlihat sebagai pemadatan agresif, bukan fitur mati.
+  // Alasan itu gugur ketika ternyata reserved BAWAAN bertabrakan dengan jendela
+  // 8k yang umum: yang terlihat bukan salah setelan user, melainkan Titah yang
+  // memadatkan tiap giliran tanpa alasan. Lantainya menjinakkan keduanya, dan
+  // `doctor` yang bicara soal setelannya.
+  assert.equal(effectiveReserved(8192, 16384), 2048)
+  assert.equal(overBudget(6144, 8192, 16384), true)
+  assert.equal(overBudget(1, 8192, 16384), false)
+})
+
+test("reserved tidak boleh menelan lebih dari seperempat jendela", () => {
+  // Default reserved (8192) sama besar dengan jendela model 8k, dan itu
+  // membuat ambangnya nol — pemadatan menyala tiap giliran walau konteksnya
+  // dua belas token. Itu tabrakan bawaan Titah, bukan salah setelan user.
+  assert.equal(effectiveReserved(8192, 8192), 2048)
+  assert.equal(overBudget(6144, 8192, 8192), true)
+  assert.equal(overBudget(6143, 8192, 8192), false)
+})
+
+test("jendela besar tidak terpengaruh lantainya", () => {
+  // 8192 masih di bawah seperempat dari 200k, jadi nilai yang wajar lewat
+  // apa adanya. Lantai ini hanya menangkap yang mustahil.
+  assert.equal(effectiveReserved(200_000, 8192), 8192)
+  assert.equal(overBudget(191_808, 200_000, 8192), true)
+  assert.equal(overBudget(191_807, 200_000, 8192), false)
+})
+
+test("reserved nol tetap nol — lantainya batas atas, bukan batas bawah", () => {
+  // Lantai membatasi seberapa BANYAK reserved boleh mengambil. User yang
+  // sengaja menyetel 0 minta pemadatan sedekat mungkin ke batas, dan itu
+  // pilihannya.
+  assert.equal(effectiveReserved(8192, 0), 0)
+  assert.equal(overBudget(8192, 8192, 0), true)
+  assert.equal(overBudget(8191, 8192, 0), false)
+})
+
+test("reservedCollisions menyebut model yang reserved-nya menelan jendelanya", () => {
+  const config = Config.parse({
+    compaction: { reserved: 8192 },
+    provider: {
+      ollama: {
+        models: { "kecil": { contextWindow: 8192 }, "besar": { contextWindow: 200000 } },
+      },
+    },
+  })
+  assert.deepEqual(reservedCollisions(config), [
+    { model: "ollama/kecil", reserved: 8192, contextWindow: 8192 },
+  ])
 })
 
 // ---------- pruner ----------

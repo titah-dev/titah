@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai"
 import type { ModelRow } from "./storage/session.ts"
+import type { Config } from "./schema.ts"
 
 /**
  * Manajemen konteks: memadatkan percakapan yang sudah panjang menjadi ringkasan,
@@ -257,6 +258,27 @@ export function wrapSummary(summary: string): string {
 }
 
 /**
+ * Berapa bagian jendela yang paling banyak boleh diambil `reserved`.
+ *
+ * Tanpa lantai ini, `reserved` bawaan (8192) sama besar dengan jendela model
+ * 8k, ambangnya jadi nol, dan pemadatan menyala di TIAP giliran walau
+ * konteksnya cuma dua belas token — terukur. Model 8k lokal itu setelan yang
+ * umum, jadi tabrakannya milik Titah, bukan salah setelan user.
+ */
+export const RESERVE_FRACTION = 4
+
+/**
+ * `reserved` yang benar-benar dipakai: tidak pernah lebih dari seperempat
+ * jendela.
+ *
+ * Ini batas ATAS, bukan bawah — `reserved: 0` tetap nol, karena user yang
+ * menyetelnya nol memang minta pemadatan sedekat mungkin ke batas jendela.
+ */
+export function effectiveReserved(contextWindow: number, reserved: number): number {
+  return Math.min(reserved, Math.floor(contextWindow / RESERVE_FRACTION))
+}
+
+/**
  * Apakah konteks sudah cukup penuh untuk dipadatkan.
  *
  * `lastStepTokens` WAJIB input token satu langkah, bukan `totalUsage` yang
@@ -273,5 +295,29 @@ export function overBudget(
   reserved: number,
 ): boolean {
   if (lastStepTokens === undefined || contextWindow === undefined) return false
-  return lastStepTokens >= contextWindow - reserved
+  return lastStepTokens >= contextWindow - effectiveReserved(contextWindow, reserved)
+}
+
+/**
+ * Model yang `reserved`-nya menelan seperempat jendelanya atau lebih.
+ *
+ * Lantai di `effectiveReserved` sudah membuat perilakunya waras, jadi ini
+ * bukan peringatan soal kerusakan — ini memberi tahu user bahwa angka yang ia
+ * tulis TIDAK dipakai apa adanya, supaya ia tidak menyetel ulang berkali-kali
+ * dan bingung kenapa tidak ada bedanya.
+ */
+export function reservedCollisions(
+  config: Config,
+): { model: string; reserved: number; contextWindow: number }[] {
+  const reserved = config.compaction.reserved
+  const out: { model: string; reserved: number; contextWindow: number }[] = []
+  for (const [providerId, provider] of Object.entries(config.provider)) {
+    for (const [modelId, model] of Object.entries(provider.models)) {
+      const contextWindow = model.contextWindow
+      if (contextWindow === undefined) continue
+      if (reserved <= Math.floor(contextWindow / RESERVE_FRACTION)) continue
+      out.push({ model: `${providerId}/${modelId}`, reserved, contextWindow })
+    }
+  }
+  return out
 }
