@@ -242,15 +242,33 @@ export function Footer({
 }) {
   const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 
+  // Selama sebuah turn hidup, footer adalah SATU-SATUNYA tempat pesan sekejap
+  // (flash) dan status leader terlihat — panel sub-agent dan tombol leader
+  // sama-sama dipakai justru PALING SERING saat turn berjalan. Precedence
+  // lama menyembunyikan keduanya di belakang "● working", jadi setiap flash
+  // panel (mis. "cancelling <agent>") menghilang tanpa bekas persis saat
+  // paling dibutuhkan. `leaderActive` dan `hint` sekarang menang di atas
+  // status kerja; marker "● " dipertahankan di kedua cabang itu supaya user
+  // tidak pernah kehilangan jejak bahwa turn masih berjalan.
+  const workingMarker = status === "working" ? <Text color="yellow">{"● "}</Text> : null
+
   return (
     <Box justifyContent="space-between" flexShrink={0}>
       <Text dimColor>
-        {status === "working" ? (
+        {leaderActive ? (
+          <>
+            {workingMarker}
+            <Text color="green">ctrl+x …</Text>
+          </>
+        ) : hint !== undefined ? (
+          <>
+            {workingMarker}
+            <Text>{hint}</Text>
+          </>
+        ) : status === "working" ? (
           <Text color="yellow">● working — esc to cancel</Text>
-        ) : leaderActive ? (
-          <Text color="green">ctrl+x …</Text>
         ) : (
-          (hint ?? "ctrl+x for commands · ctrl+c to quit")
+          "ctrl+x for commands · ctrl+c to quit"
         )}
         {mouseCapture ? null : (
           // Ditampilkan TERUS, bukan sebagai pesan sekejap: selama ini menyala,
