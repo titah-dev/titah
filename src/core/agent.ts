@@ -323,14 +323,38 @@ export async function prompt(input: PromptInput): Promise<Message> {
     .filter((message) => message.role === "assistant" && message.usage?.context !== undefined)
     .at(-1)
   const contextWindow = contextWindowFor(config, agentDef?.model ?? modelOverride)
-  await autoCompact({
-    sessionID: session.id,
-    compaction: config.compaction,
-    contextWindow,
-    lastStepTokens: lastMeasured?.usage?.context,
-    summarise: synthesizerFor(resolver(config, config.smallModel ?? input.model)),
-    focus: text,
-  })
+  // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
+  // hanya kalau prune saja tidak cukup sehingga ia benar-benar sampai ke
+  // langkah meringkas. `smallModel` sebelum ini TIDAK PERNAH dipakai di mana
+  // pun di `src/`, jadi nilai siapa pun belum pernah tervalidasi — provider
+  // tak dikenal atau kredensial hilang di sana akan melempar pada SETIAP
+  // giliran kalau diresolusi di sini, termasuk giliran yang tidak punya apa
+  // pun untuk dipadatkan.
+  const summarise = (system: string, userPrompt: string): Promise<string> =>
+    synthesizerFor(resolver(config, config.smallModel ?? input.model))(system, userPrompt)
+  try {
+    await autoCompact({
+      sessionID: session.id,
+      compaction: config.compaction,
+      contextWindow,
+      lastStepTokens: lastMeasured?.usage?.context,
+      summarise,
+      focus: text,
+    })
+  } catch (error) {
+    // Titik ini berada SEBELUM `try` utama di bawah, yang satu-satunya tempat
+    // `finally`-nya membersihkan `running`/`setAutoApprove` berada. Tanpa
+    // tangkapan ini, smallModel yang salah melempar DI SINI, `finally` tidak
+    // pernah tercapai, dan sesi terkunci "sedang memproses" SELAMANYA untuk
+    // sisa umur proses — giliran berikutnya pun ditolak. Gagal memadatkan
+    // berarti "lewati pemadatan giliran ini", bukan "gagalkan giliran ini".
+    const message = error instanceof Error ? error.message : String(error)
+    bus.publish({
+      type: "session.error",
+      sessionID: session.id,
+      message: `Auto-compaction skipped: ${message}`,
+    })
+  }
 
   const history = listModelMessages(session.id)
   const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }

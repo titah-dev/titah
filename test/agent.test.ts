@@ -597,10 +597,50 @@ test("giliran berikutnya memadatkan sendiri saat giliran sebelumnya mengisi kont
   await prompt({ sessionID: session.id, text: "giliran dua" })
 
   const history = listModelMessages(session.id)
-  // Positif dulu: pemadatan memang menghasilkan ringkasan yang terpasang.
+  // Positif dulu: pemadatan memang menghasilkan ringkasan yang terpasang, DAN
+  // ekornya (giliran dua) memang ada di luar potongan yang diperiksa di bawah
+  // — tanpa baris ini, `slice(2)` di bawah bisa saja memeriksa array kosong
+  // dan lolos untuk alasan yang salah.
   assert.match(JSON.stringify(history), /context-summary/)
+  assert.ok(history.length > 2, "harus ada sesuatu SETELAH pasangan ringkasan untuk diperiksa")
   // Baru negatif: teks giliran pertama sudah tidak dikirim apa adanya.
   assert.doesNotMatch(JSON.stringify(history.slice(2)), /giliran satu/)
+})
+
+test("ambang membaca usage.context (langkah TERAKHIR), bukan usage.input (jumlah semua langkah)", async () => {
+  // Kalau baris pemicu di agent.ts diam-diam berganti ke usage.input, giliran
+  // dua-langkah apa pun memicu pemadatan padahal konteks SEBENARNYA masih
+  // jauh di bawah ambang — false positive yang terlihat seperti fitur yang
+  // terlalu rajin, bukan seperti bug. Materinya sama dengan test di atas
+  // ("usage.context adalah input langkah TERAKHIR..."): tool-call (input 100)
+  // lalu teks (input 180) menghasilkan context=180 tapi input(jumlah)=280.
+  const dir = projectWith(
+    windowConfig(1000, { compaction: { auto: true, reserved: 750, tailTurns: 0, prune: true } }),
+  )
+  const session = createSession(dir)
+
+  recordingModel([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(100) },
+    ],
+    textChunk("selesai satu", usageWith(180)),
+  ])
+
+  const first = await prompt({ sessionID: session.id, text: "giliran satu" })
+  // Positif dulu: context (langkah TERAKHIR) dan input (JUMLAH langkah)
+  // sungguh berbeda di sini — 180 di bawah ambang 250, 280 di atasnya.
+  assert.equal(first.usage?.context, 180)
+  assert.equal(first.usage?.input, 280)
+
+  await prompt({ sessionID: session.id, text: "giliran dua" })
+
+  // Baru negatif: dibaca dari context (180 < 250), giliran dua tidak pernah
+  // memadatkan apa pun. `tailTurns: 0` di config memastikan kalau ambangnya
+  // SAMPAI terlewati, pemadatan akan benar-benar jalan (bukan diam-diam
+  // gagal karena alasan lain) — jadi kalau baris pemicu diam-diam berganti ke
+  // usage.input, assersi ini akan gagal, bukan lolos untuk alasan yang salah.
+  assert.equal(latestCompaction(session.id), undefined)
 })
 
 test("giliran ketiga TIDAK meringkas lagi setelah giliran kedua memadatkan", async () => {
@@ -618,11 +658,68 @@ test("giliran ketiga TIDAK meringkas lagi setelah giliran kedua memadatkan", asy
 
   await prompt({ sessionID: session.id, text: "giliran satu" })
   await prompt({ sessionID: session.id, text: "giliran dua" })
-  const before = latestCompaction(session.id)?.created
+  // `seq`, bukan `created`: dua pemadatan yang jatuh pada milidetik yang sama
+  // punya `created` yang identik dan akan lolos secara kebetulan. `seq` cuma
+  // berubah kalau `saveCompaction` benar-benar dipanggil lagi.
+  const before = latestCompaction(session.id)?.seq
 
   await prompt({ sessionID: session.id, text: "giliran tiga" })
-  const after = latestCompaction(session.id)?.created
+  const after = latestCompaction(session.id)?.seq
 
   assert.ok(before !== undefined, "giliran dua seharusnya sudah memadatkan")
   assert.equal(after, before, "giliran tiga tidak boleh memadatkan lagi")
+})
+
+test("smallModel yang salah tidak menjatuhkan giliran, dan sesi tetap menerima prompt berikutnya", async () => {
+  // Reproduksi defect kritis: sebelum diperbaiki, `resolver(config,
+  // config.smallModel ?? input.model)` dipanggil TANPA pengaman di setiap
+  // giliran, sebelum `try` yang `finally`-nya membersihkan `running`. Kalau
+  // itu melempar, sesi terkunci "sedang memproses" SELAMANYA. `smallModel`
+  // tidak punya konsumen di `src/` sebelum Task 5, jadi nilai siapa pun belum
+  // pernah tervalidasi — provider tak dikenal adalah kejadian yang realistis,
+  // bukan yang dibuat-buat.
+  const dir = projectWith(
+    windowConfig(8192, { compaction: COMPACTING_CONFIG, smallModel: "rusak/kecil" }),
+  )
+  const session = createSession(dir)
+
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: simulateReadableStream({ chunks: textChunk("jawaban", usageWith(7800)) }),
+    }),
+  })
+  // TIDAK lewat `recordingModel`: resolver di sini harus MELEMPAR untuk
+  // model kecil yang rusak, sementara model utama tetap dilayani mock —
+  // persis situasi nyata (model utama valid, smallModel yang salah).
+  restore?.()
+  restore = setModelResolver((_config, full) => {
+    if (full === "rusak/kecil") throw new Error('Unknown provider "rusak".')
+    return model
+  })
+
+  // Giliran satu: belum ada apa pun untuk dipadatkan, jadi `summarise` (dan
+  // karenanya `resolver` untuk smallModel) TIDAK PERNAH dipanggil — ini
+  // membuktikan sisi "lambat" dari perbaikan: giliran yang tidak memadatkan
+  // apa pun tidak boleh gagal gara-gara smallModel yang rusak.
+  const first = await prompt({ sessionID: session.id, text: "giliran satu" })
+  assert.equal(first.error, undefined)
+  assert.match(bodyOf(first), /jawaban/)
+
+  // Giliran dua: sekarang overBudget benar-benar true dan ada satu giliran
+  // untuk dipadatkan (tailTurns: 0 di COMPACTING_CONFIG memaksa itu), jadi
+  // `autoCompact` sampai ke `summarise` dan resolver-nya MELEMPAR. Giliran
+  // ini sendiri harus tetap SELESAI dengan jawaban, bukan gagal.
+  const second = await prompt({ sessionID: session.id, text: "giliran dua" })
+  assert.equal(second.error, undefined)
+  assert.match(bodyOf(second), /jawaban/)
+
+  // Positif dulu: pemadatan memang GAGAL (bukan diam-diam tidak pernah
+  // dicoba) — tidak ada ringkasan yang tersimpan.
+  assert.equal(latestCompaction(session.id), undefined)
+
+  // Baru buktinya: `running` sungguh terbersihkan. Sebelum perbaikan, baris
+  // ini melempar "This session is already processing another turn." karena
+  // `finally` di giliran dua tidak pernah tercapai.
+  const third = await prompt({ sessionID: session.id, text: "giliran tiga" })
+  assert.equal(third.error, undefined)
 })
