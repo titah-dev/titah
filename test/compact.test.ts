@@ -297,7 +297,18 @@ test("reservedCollisions menyebut model yang reserved-nya menelan jendelanya", (
     compaction: { reserved: 8192 },
     provider: {
       ollama: {
-        models: { "kecil": { contextWindow: 8192 }, "besar": { contextWindow: 200000 } },
+        models: {
+          "kecil": { contextWindow: 8192 },
+          "besar": { contextWindow: 200000 },
+          // reserved (8192) PERSIS sama dengan floor(32768/4) — batasnya sendiri,
+          // bukan di sisi manapun darinya. `<=` di reservedCollisions harus
+          // menganggap ini AMAN (tidak dilaporkan): dua model di atas jauh dari
+          // batas dan lolos untuk alasan yang salah kalau `<=` diam-diam jadi
+          // `<`. Tanpa model ini, test lain di seluruh berkas juga tidak
+          // menguji batasnya — satu-satunya yang menguji itu adalah test doctor
+          // di berkas lain, secara kebetulan.
+          "pas": { contextWindow: 32768 },
+        },
       },
     },
   })

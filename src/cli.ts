@@ -10,7 +10,7 @@ import {
   undeclaredContextWindows,
   ProviderError,
 } from "./core/provider.ts"
-import { reservedCollisions } from "./core/compact.ts"
+import { effectiveReserved, reservedCollisions } from "./core/compact.ts"
 import { which } from "./core/which.ts"
 import {
   authFile,
@@ -364,10 +364,15 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       out(`      add provider.${providerId}.models."${modelId}".contextWindow`)
     }
   }
+  // Angka yang dilaporkan HARUS lewat `effectiveReserved`, bukan aritmetika
+  // sendiri — dua rumus yang seharusnya sama bisa diam-diam menyimpang begitu
+  // RESERVE_FRACTION berubah, dan doctor lalu melaporkan angka yang salah
+  // sambil terlihat baik-baik saja.
   for (const clash of reservedCollisions(loaded.config)) {
     out(
-      `  ! ${clash.model} — compaction.reserved (${clash.reserved}) is large for a ` +
-        `${clash.contextWindow}-token window; capped at ${Math.floor(clash.contextWindow / 4)}`,
+      `  ! ${clash.model} — compaction.reserved (${clash.reserved}) exceeds a quarter of ` +
+        `this ${clash.contextWindow}-token window; using ` +
+        `${effectiveReserved(clash.contextWindow, clash.reserved)}`,
     )
   }
   out()

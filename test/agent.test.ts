@@ -566,11 +566,15 @@ test("usage.context adalah input langkah TERAKHIR, bukan jumlah seluruh langkah"
 // default, `tailStart` menolak memotong apa pun selama giliran yang tersimpan
 // lebih sedikit dari `tailTurns` — dan kedua test ini cuma menumpuk SATU
 // giliran sebelum giliran yang diharapkan memadatkan. `reserved` juga
-// diturunkan dari default (8192, PERSIS sama dengan contextWindow di sini):
-// itu membuat ambangnya nol dan overBudget SELALU true untuk usage berapa pun,
-// termasuk usage kecil giliran susulan yang justru harus lolos di bawah
-// ambang. Sengaja dipisah jauh dari usage besar/kecil di bawah supaya kedua
-// test tetap benar walau angkanya sedikit bergeser.
+// diturunkan dari default (8192): dulu, sebelum lantai `effectiveReserved`
+// (Task 10) ada, default itu PERSIS sama dengan contextWindow di sini,
+// ambangnya nol, dan overBudget SELALU true untuk usage berapa pun — termasuk
+// usage kecil giliran susulan yang justru harus lolos di bawah ambang. Lantai
+// itu sudah menutup celah nol itu (ambang default sekarang 6144, bukan nol),
+// tapi 1000 dipertahankan tetap: alasannya kini sekadar jarak yang lega antara
+// usage besar (7800, harus memicu) dan usage kecil pasca-ringkas (50, tidak
+// boleh), sengaja dipisah jauh supaya kedua test tetap benar walau angkanya
+// sedikit bergeser.
 const COMPACTING_CONFIG = { auto: true, reserved: 1000, tailTurns: 0, prune: true }
 
 /** Chunk teks lengkap dengan `text-start`/`text-end` — tanpanya AI SDK menolak `text-delta` dengan "text part … not found", dan giliran itu tersimpan sebagai error tanpa baris riwayat sama sekali. */
@@ -614,8 +618,16 @@ test("ambang membaca usage.context (langkah TERAKHIR), bukan usage.input (jumlah
   // terlalu rajin, bukan seperti bug. Materinya sama dengan test di atas
   // ("usage.context adalah input langkah TERAKHIR..."): tool-call (input 100)
   // lalu teks (input 180) menghasilkan context=180 tapi input(jumlah)=280.
+  //
+  // Jendelanya 320, bukan 1000: lantai `effectiveReserved` (Task 10) membatasi
+  // `reserved` ke paling banyak seperempat jendela, jadi pada jendela 1000
+  // ambangnya tidak akan pernah turun di bawah 750 — 180 dan 280 sama-sama
+  // jatuh di bawahnya, dan test ini berhenti membedakan apa pun. Pada 320,
+  // reserved=750 dijinakkan lantai itu jadi 80 (seperempat dari 320), ambangnya
+  // jadi 240 — persis di antara 180 dan 280, tempat perbedaan context/input
+  // tadi kembali kelihatan.
   const dir = projectWith(
-    windowConfig(1000, { compaction: { auto: true, reserved: 750, tailTurns: 0, prune: true } }),
+    windowConfig(320, { compaction: { auto: true, reserved: 750, tailTurns: 0, prune: true } }),
   )
   const session = createSession(dir)
 
@@ -629,13 +641,13 @@ test("ambang membaca usage.context (langkah TERAKHIR), bukan usage.input (jumlah
 
   const first = await prompt({ sessionID: session.id, text: "giliran satu" })
   // Positif dulu: context (langkah TERAKHIR) dan input (JUMLAH langkah)
-  // sungguh berbeda di sini — 180 di bawah ambang 250, 280 di atasnya.
+  // sungguh berbeda di sini — 180 di bawah ambang 240, 280 di atasnya.
   assert.equal(first.usage?.context, 180)
   assert.equal(first.usage?.input, 280)
 
   await prompt({ sessionID: session.id, text: "giliran dua" })
 
-  // Baru negatif: dibaca dari context (180 < 250), giliran dua tidak pernah
+  // Baru negatif: dibaca dari context (180 < 240), giliran dua tidak pernah
   // memadatkan apa pun. `tailTurns: 0` di config memastikan kalau ambangnya
   // SAMPAI terlewati, pemadatan akan benar-benar jalan (bukan diam-diam
   // gagal karena alasan lain) — jadi kalau baris pemicu diam-diam berganti ke

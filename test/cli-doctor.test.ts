@@ -136,5 +136,5 @@ test("doctor bilang kalau reserved dijinakkan lantainya", () => {
 
   assert.match(output, /Context windows/)
   assert.match(output, /ollama\/kecil/)
-  assert.match(output, /capped at 2048/)
+  assert.match(output, /using 2048/)
 })
