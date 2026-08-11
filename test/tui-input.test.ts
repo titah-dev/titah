@@ -270,7 +270,17 @@ test("mengetik lalu Enter mengirim prompt dan mengosongkan editor", async () => 
       ["halo"],
       "Enter harus memanggil client.send",
     )
-    assert.doesNotMatch(h.frame().split("\n").at(-6) ?? "", /halo/, "editor harus kosong lagi")
+    // `.at(-6)` sebelumnya menyasar baris petunjuk footer yang statis ("@claude
+    // to delegate..."), BUKAN baris penyunting -- indeks itu bergeser begitu
+    // baris petunjuk kedua ditambahkan, dan sejak itu assert ini tidak pernah
+    // benar-benar memeriksa isi penyunting. `findLast` menyasar baris "› " yang
+    // TERAKHIR ditulis (baris tunggal itu unik untuk kotak penyunting di test
+    // ini), jadi ia tahan terhadap footer yang berubah dan tetap membaca
+    // keadaan penyunting yang paling baru walau bingkai lama tetap menumpuk di
+    // buffer (test ini sengaja tidak memanggil `h.clear()`, karena "halo" harus
+    // sempat terlihat SEBELUM Enter).
+    const editorLine = h.frame().split("\n").findLast((line) => line.includes("› ")) ?? ""
+    assert.doesNotMatch(editorLine, /halo/, "editor harus kosong lagi")
   } finally {
     h.cleanup()
   }
@@ -393,7 +403,11 @@ test("tombol saat dialog izin terbuka tidak bocor ke editor", async () => {
     await tick()
 
     assert.deepEqual(h.recorded.sent, [], "Enter tidak boleh mengirim saat dialog terbuka")
-    assert.doesNotMatch(h.frame().split("\n").at(-5) ?? "", /zzz/)
+    // `.at(-5)` sebelumnya menyasar garis batas ATAS kotak penyunting, satu baris
+    // di atas isinya -- salah satu baris yang TIDAK PERNAH memuat "zzz" apa pun
+    // yang terjadi. `findLast` menyasar baris "› " yang sungguh berisi draft.
+    const editorLine = h.frame().split("\n").findLast((line) => line.includes("› ")) ?? ""
+    assert.doesNotMatch(editorLine, /zzz/)
   } finally {
     h.cleanup()
   }
@@ -470,6 +484,12 @@ test("teks tempelan yang berakhir dengan CR tidak menyelundupkan kontrol ke prom
     assert.deepEqual(h.recorded.sent, [], "tempelan bukan Enter — tidak boleh terkirim")
     assert.match(h.frame(), /prompt tertempel/)
     assert.doesNotMatch(h.frame(), /\u0000|\u001b\[?$/)
+    // Regex di atas TIDAK PERNAH bisa menangkap CR mentah yang lolos --
+    // sanitizePaste dibuang dari alur input dan bug ini tetap tidak terdeteksi.
+    // Baris penyunting diperiksa langsung: sanitasi yang benar menjadikan CR di
+    // akhir tempelan sebagai newline, jadi baris "› " tidak boleh memuat \r.
+    const editorLine = h.frame().split("\n").findLast((line) => line.includes("› ")) ?? ""
+    assert.doesNotMatch(editorLine, /\r/, "CR mentah harus sudah menjadi newline, bukan lolos apa adanya")
   } finally {
     h.cleanup()
   }
@@ -563,6 +583,15 @@ test("mengetik @ memunculkan popup, esc menutupnya", async () => {
   const h = mount()
   try {
     await tick()
+    // Tanda "zzz" ditulis SEBELUM "@" (bukan sesudahnya, yang akan disaring
+    // sebagai query popup dan bisa membuatnya menutup diri sendiri lewat cabang
+    // "tanpa satu pun pilihan"). Draft bertahan lewat buka/tutup popup, jadi
+    // tanda ini tetap ada di bingkai manapun yang benar-benar dirender setelah
+    // esc -- tanpa itu, esc yang sepenuhnya rusak (tidak pernah menutup, tidak
+    // pernah me-render ulang) lolos identik dari `doesNotMatch` di bawah,
+    // karena bingkai KOSONG pun lolos begitu saja.
+    for (const ch of "zzz ") h.stdin.press(ch)
+    await tick(1)
     h.stdin.press("@")
     await tick()
     assert.match(h.frame(), /Agents & files/)
@@ -570,6 +599,7 @@ test("mengetik @ memunculkan popup, esc menutupnya", async () => {
     h.clear()
     h.stdin.press("\u001b")
     await tick()
+    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(h.frame(), /Agents & files/)
   } finally {
     h.cleanup()
@@ -984,9 +1014,17 @@ test("mengklik baris tool membuka rinciannya, dan tidak membatalkan giliran", as
     assert.match(h.frame(), /npm run build/, "klik membuka blok yang diklik")
     assert.deepEqual(h.recorded.aborted, [], "klik TIDAK boleh terbaca sebagai Escape")
 
+    // Tanda yang HARUS tetap terlihat -- kalau toggle kedua mengembalikan
+    // referensi `Set` yang SAMA (lupa `.delete`), React membatalkan render
+    // karena referensinya identik, dan bingkai KOSONG lolos begitu saja dari
+    // `doesNotMatch` di bawah tanpa membuktikan blok benar-benar tertutup.
+    for (const ch of "zzz") h.stdin.press(ch)
+    await tick(1)
+
     h.clear()
     h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
     await tick()
+    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(h.frame(), /npm run build/, "klik kedua menutupnya lagi")
   } finally {
     h.cleanup()
@@ -1187,6 +1225,37 @@ test("ctrl+x b juga melompat ke bawah", async () => {
     h.stdin.press("b")
     await tick()
 
+    assert.doesNotMatch(h.frame(), /lines below/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("tombol End langsung juga melompat ke bawah, tanpa leader", async () => {
+  // `messages_last` punya TIGA jalan masuk (lihat keybinds.ts), dan test di atas
+  // hanya membuktikan jalan lewat leader (`<leader>b`) -- cabang `scrollAction`
+  // yang menangani "end"/"ctrl+alt+g" langsung (tanpa leader) tidak tersentuh
+  // satu test pun sebelum ini. Kalau cabang itu tidak pernah setScroll(0), tidak
+  // ada efek samping lain yang memaksa render (leader-chord punya
+  // `setLeaderActive(false)` yang tidak pernah nol di sini), jadi bingkai KOSONG
+  // pun lolos begitu saja dari `doesNotMatch` di bawah tanpa membuktikan apa pun.
+  const h = mount()
+  try {
+    await tick()
+    pushLongHistory(h)
+    await tick()
+    h.stdin.press("[5~") // pageup — gulir ke atas
+    await tick()
+    assert.match(h.frame(), /lines below/)
+
+    for (const ch of "zzz") h.stdin.press(ch)
+    await tick(1)
+
+    h.clear()
+    h.stdin.press("[F") // End (Ink: parse-keypress memetakan "[F" ke key.end)
+    await tick(8)
+
+    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(h.frame(), /lines below/)
   } finally {
     h.cleanup()
