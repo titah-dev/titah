@@ -279,7 +279,18 @@ test("mengetik lalu Enter mengirim prompt dan mengosongkan editor", async () => 
     // keadaan penyunting yang paling baru walau bingkai lama tetap menumpuk di
     // buffer (test ini sengaja tidak memanggil `h.clear()`, karena "halo" harus
     // sempat terlihat SEBELUM Enter).
-    const editorLine = h.frame().split("\n").findLast((line) => line.includes("› ")) ?? ""
+    //
+    // `?? ""` DIHINDARI dengan sengaja: kalau tidak ada baris "› " sama sekali
+    // (mis. seseorang menambahkan `h.clear()` sebelum baris ini, idiom yang
+    // dominan di file ini), fallback ke string kosong akan membuat
+    // `doesNotMatch` di bawah lolos tanpa bukti apa pun -- persis lubang yang
+    // audit ini menutup. Gagal keras di sini, bukan lolos diam-diam.
+    const lines = h.frame().split("\n")
+    const editorLine = lines.findLast((line) => line.includes("› "))
+    assert.ok(
+      editorLine !== undefined,
+      "harus ada baris penyunting \"› \" di bingkai ini -- kalau tidak ada, test ini tidak membuktikan apa pun",
+    )
     assert.doesNotMatch(editorLine, /halo/, "editor harus kosong lagi")
   } finally {
     h.cleanup()
@@ -406,7 +417,19 @@ test("tombol saat dialog izin terbuka tidak bocor ke editor", async () => {
     // `.at(-5)` sebelumnya menyasar garis batas ATAS kotak penyunting, satu baris
     // di atas isinya -- salah satu baris yang TIDAK PERNAH memuat "zzz" apa pun
     // yang terjadi. `findLast` menyasar baris "› " yang sungguh berisi draft.
-    const editorLine = h.frame().split("\n").findLast((line) => line.includes("› ")) ?? ""
+    // Test ini juga sengaja tidak memanggil `h.clear()` -- bingkai menumpuk
+    // sejak mount, jadi tidak pernah kosong dengan sendirinya.
+    //
+    // `?? ""` DIHINDARI: fallback ke string kosong kalau tidak ketemu baris
+    // "› " sama sekali akan membuat `doesNotMatch` di bawah lolos tanpa bukti,
+    // persis kalau nanti seseorang menambahkan `h.clear()` di sini mengikuti
+    // idiom dominan file ini. Gagal keras, bukan lolos diam-diam.
+    const lines = h.frame().split("\n")
+    const editorLine = lines.findLast((line) => line.includes("› "))
+    assert.ok(
+      editorLine !== undefined,
+      "harus ada baris penyunting \"› \" di bingkai ini -- kalau tidak ada, test ini tidak membuktikan apa pun",
+    )
     assert.doesNotMatch(editorLine, /zzz/)
   } finally {
     h.cleanup()
@@ -1217,14 +1240,26 @@ test("ctrl+x b juga melompat ke bawah", async () => {
     await tick()
     assert.match(h.frame(), /lines below/)
 
+    // Tanda yang HARUS tetap terlihat -- site ini lolos vakum saat ini HANYA
+    // karena `setLeaderActive(false)` di app.tsx memaksa render footer yang
+    // tidak terkait, bukan karena chord `<leader>b` ini sendiri terbukti
+    // menulis ulang apa pun. Kalau refactor nanti memindahkan
+    // `setLeaderActive(false)` ke dalam cabang switch atau ke tiap kasusnya
+    // satu-satu, site ini bisa diam-diam jadi vakum lagi tanpa satu pun
+    // assertion berubah. Tanda ini melepaskannya dari efek-samping yang
+    // tidak terkait itu.
+    for (const ch of "zzz") h.stdin.press(ch)
+    await tick(1)
+
     // Dibersihkan SETELAH leader: menekan ctrl+x sendiri sudah menulis satu
     // bingkai (footer berubah), dan bingkai itu masih memuat penunjuk gulir.
     h.stdin.press("\u0018")
-    await tick(1)
+    await tick(3)
     h.clear()
     h.stdin.press("b")
     await tick()
 
+    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
     assert.doesNotMatch(h.frame(), /lines below/)
   } finally {
     h.cleanup()
