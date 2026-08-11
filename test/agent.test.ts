@@ -1023,3 +1023,214 @@ test("smallModel yang salah tidak menjatuhkan giliran walau pemicunya di TENGAH 
     "peringkas yang gagal tidak boleh tersimpan sebagai pemadatan",
   )
 })
+
+test("smallModel yang salah TIDAK menghalangi prune mid-turn, dan resolvernya tidak disentuh sama sekali saat prune saja sudah cukup", async () => {
+  // Regresi Finding 1 ronde 2 (review): closure LAMBAT + try/catch dari
+  // ronde 1 hanya membuktikan giliran tidak MATI kalau smallModel dipaksa
+  // dipanggil. Reviewer menunjukkan itu belum cukup — laziness harus berarti
+  // resolvernya TIDAK PERNAH dicoba sama sekali ketika prune SAJA sudah
+  // memadamkan ambang, bukan sekadar "kalaupun dicoba, errornya tertangkap".
+  // Mutasi yang membedakan keduanya: mengganti acuan `summarise` (closure)
+  // dengan `synthesizerFor(resolver(...))` yang dievaluasi LANGSUNG sebagai
+  // argumen — masih di DALAM try/catch yang sama. Resolver lalu melempar
+  // SAAT argumen `autoCompact({...})` dikonstruksi, SEBELUM badan
+  // `autoCompact` (tempat prune hidup, src/core/auto-compact.ts:68-78)
+  // sempat jalan sama sekali. `catch` menelan lemparan itu diam-diam,
+  // `turn.error` tetap `undefined`, dan byte yang seharusnya terpangkas
+  // tetap utuh terkirim ke provider — overflow yang fitur ini ada untuk
+  // dicegah, gagal TANPA jejak apa pun yang terlihat dari luar.
+  //
+  // Fixture: baca pertama sebuah berkas ~20 KB (di bawah INLINE_LIMIT 32 KB
+  // di storage/blob.ts, supaya isinya tersimpan UTUH, tidak dipotong lebih
+  // dulu oleh mekanisme lain — kalau tidak, angka byte yang dibebaskan
+  // prune jadi tidak bisa dihitung tangan). Tiga baca kecil susulan
+  // menaikkan usage sampai memicu (7900 ≥ 6144, ambang yang sama dengan
+  // test "giliran multi-langkah..." di atas). `midTurnCut(9, 6) = 3`
+  // memotong PERSIS di pasangan baca besar itu (indeks sama seperti test
+  // "giliran multi-langkah..."), dan prune membebaskan sekitar 20.000 byte
+  // — jauh di atas ~14.048 byte (1.756 token × 8) yang dibutuhkan agar
+  // `remaining` jatuh di bawah 6144 — sehingga `autoCompact` pulang di
+  // jalur PRUNE-SAJA (src/core/auto-compact.ts:83-85) tanpa PERNAH
+  // memanggil `summarise`. Diverifikasi lewat probe manual sebelum ditulis
+  // ke sini (lihat task-6-report.md ronde 2): dengan closure lambat,
+  // `smallCalls` tetap 0 dan baris baca besar berubah jadi penanda PRUNED;
+  // dengan resolusi eager, `smallCalls` jadi 1 dan penandanya tidak pernah
+  // muncul — isi 20 KB tetap utuh di storage.
+  const dir = projectWith(windowConfig(8192, { smallModel: "rusak/kecil" }))
+  const lines = Array.from(
+    { length: 400 },
+    (_, i) => `konten pruning baris nomor ${i} diisi supaya panjang`,
+  )
+  fs.writeFileSync(path.join(dir, "big.txt"), lines.join("\n"))
+  fs.writeFileSync(path.join(dir, "filler.txt"), "konten kecil, bukan bagian yang dipangkas\n")
+  const session = createSession(dir)
+
+  let calls = 0
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      const sequences: LanguageModelV4StreamPart[][] = [
+        [
+          { type: "tool-call", toolCallId: "b1", toolName: "read", input: '{"path":"big.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+        ],
+        [
+          { type: "tool-call", toolCallId: "b2", toolName: "read", input: '{"path":"filler.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(2500) },
+        ],
+        [
+          { type: "tool-call", toolCallId: "b3", toolName: "read", input: '{"path":"filler.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(3000) },
+        ],
+        [
+          { type: "tool-call", toolCallId: "b4", toolName: "read", input: '{"path":"filler.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+        ],
+        textChunk("jawaban", usageWith(130)),
+      ]
+      const parts = sequences[Math.min(calls, sequences.length - 1)] as LanguageModelV4StreamPart[]
+      calls += 1
+      return { stream: simulateReadableStream({ chunks: parts }) }
+    },
+  })
+
+  // TIDAK lewat `recordingModel`: resolvernya harus melempar KHUSUS untuk
+  // smallModel, sementara model utama tetap melayani baca/teks biasa —
+  // pola yang sama dengan "smallModel yang salah..." di atas.
+  let smallCalls = 0
+  restore?.()
+  restore = setModelResolver((_config, full) => {
+    if (full === "rusak/kecil") {
+      smallCalls += 1
+      throw new Error('Unknown provider "rusak".')
+    }
+    return model
+  })
+
+  const result = await prompt({ sessionID: session.id, text: "baca berkas besar" })
+
+  // Positif dulu: giliran selesai NORMAL, DAN resolver smallModel tidak
+  // pernah disentuh — itu inti klaim Finding 1: laziness berarti "tidak
+  // pernah mencoba sama sekali" saat prune saja sudah cukup, bukan cuma
+  // "kalaupun mencoba, amannya ditangkap".
+  assert.equal(result.error, undefined)
+  assert.match(bodyOf(result), /jawaban/)
+  assert.equal(
+    smallCalls,
+    0,
+    "prune saja sudah cukup — resolver smallModel semestinya tidak pernah dicoba",
+  )
+  assert.equal(latestCompaction(session.id), undefined, "prune-saja tidak menyimpan ringkasan")
+
+  // Baru pembuktian utamanya: penanda PRUNE sungguh mendarat di storage.
+  // Tanpa ini, "tidak melempar" bisa lolos karena prune-nya diam-diam TIDAK
+  // PERNAH jalan (persis yang terjadi di bawah mutasi) — bukan karena ia
+  // sungguh membebaskan byte seperti yang diklaim.
+  const rows = listModelRows(session.id)
+  const pruned = rows.some((row) =>
+    JSON.stringify(row.message).includes("output was dropped to free context"),
+  )
+  assert.ok(pruned, "hasil baca berkas besar semestinya sudah dipangkas jadi penanda PRUNED")
+})
+
+test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvernya tidak disentuh sama sekali saat prune saja sudah cukup", async () => {
+  // Celah yang SAMA dengan test mid-turn di atas, tapi di titik panggil
+  // yang BEDA: jalur antar-giliran (agent.ts, closure `summarise` di sekitar
+  // ":335-336" dan pemanggilan `autoCompact` tepat di bawahnya). Reviewer
+  // secara eksplisit meminta ini dibuktikan terpisah — kedua titik panggil
+  // memakai closure yang SAMA, tapi memperbaiki satu tanpa yang lain akan
+  // lolos tanpa terdeteksi kalau cuma ada satu test.
+  //
+  // Giliran 1: satu baca berkas besar dengan usage RENDAH (2000, di bawah
+  // 6144 — sengaja supaya mid-turn TIDAK memicu apa pun di giliran ini
+  // sendiri, dan isi besarnya tetap UTUH tersimpan sampai giliran 2
+  // memeriksanya), lalu teks penutup dengan usage TINGGI (7900). Usage
+  // langkah TERAKHIR itulah yang jadi `usage.context` yang dibaca giliran
+  // berikutnya (lihat test "usage.context adalah input langkah TERAKHIR..."
+  // di atas untuk mekanismenya).
+  //
+  // Giliran 2: giliran SEDERHANA tanpa tool sama sekali. Pemicunya adalah
+  // pengecekan ANTAR-giliran di AWAL prompt() — BUKAN apa pun di dalam
+  // giliran ini sendiri. `tailTurns: 0` memaksa `tailStart` meringkas
+  // SEMUA baris giliran 1 (satu-satunya giliran yang ada; default
+  // `tailTurns: 2` akan membiarkan cut=0 karena baru ada satu giliran,
+  // lihat komentar `tailStart` di compact.ts), sehingga prune menyasar baca
+  // besar itu dan membebaskan cukup byte untuk lolos ambang TANPA pernah
+  // memanggil peringkas.
+  const dir = projectWith(
+    windowConfig(8192, {
+      compaction: { auto: true, reserved: 8192, tailTurns: 0, prune: true },
+      smallModel: "rusak/kecil",
+    }),
+  )
+  const lines = Array.from(
+    { length: 400 },
+    (_, i) => `konten pruning baris nomor ${i} diisi supaya panjang`,
+  )
+  fs.writeFileSync(path.join(dir, "big.txt"), lines.join("\n"))
+  const session = createSession(dir)
+
+  let model1Calls = 0
+  const model1 = new MockLanguageModelV4({
+    doStream: async () => {
+      const sequences: LanguageModelV4StreamPart[][] = [
+        [
+          { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"big.txt"}' },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+        ],
+        textChunk("jawaban1", usageWith(7900)),
+      ]
+      const parts = sequences[Math.min(model1Calls, sequences.length - 1)] as LanguageModelV4StreamPart[]
+      model1Calls += 1
+      return { stream: simulateReadableStream({ chunks: parts }) }
+    },
+  })
+  const model2 = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: simulateReadableStream({ chunks: textChunk("jawaban2", usageWith(120)) }),
+    }),
+  })
+
+  // Resolver TUNGGAL untuk seluruh test, yang model AKTIF-nya ditukar lewat
+  // `currentModel` di antara dua giliran — sengaja bukan dua kali
+  // `setModelResolver`, supaya `smallCalls` menghitung KEDUA giliran tanpa
+  // rantai restore yang perlu disambung manual.
+  let currentModel = model1
+  let smallCalls = 0
+  restore?.()
+  restore = setModelResolver((_config, full) => {
+    if (full === "rusak/kecil") {
+      smallCalls += 1
+      throw new Error('Unknown provider "rusak".')
+    }
+    return currentModel
+  })
+
+  const turn1 = await prompt({ sessionID: session.id, text: "baca berkas besar" })
+  // Positif dulu: giliran 1 memang mengukur usage.context tinggi yang
+  // dibutuhkan test ini — tanpa ini, giliran 2 tidak akan pernah memicu
+  // pengecekan antar-giliran sama sekali, dan seluruh assertion di bawah
+  // lolos karena tidak ada apa pun yang diperiksa.
+  assert.equal(turn1.error, undefined)
+  assert.equal(turn1.usage?.context, 7900)
+
+  currentModel = model2
+  const turn2 = await prompt({ sessionID: session.id, text: "lanjutkan" })
+
+  // Sama seperti test mid-turn: giliran selesai normal, resolver smallModel
+  // tidak pernah tersentuh, tidak ada ringkasan tersimpan (prune saja
+  // cukup), dan penanda PRUNE sungguh mendarat di storage.
+  assert.equal(turn2.error, undefined)
+  assert.match(bodyOf(turn2), /jawaban2/)
+  assert.equal(
+    smallCalls,
+    0,
+    "prune saja sudah cukup — resolver smallModel semestinya tidak pernah dicoba di giliran mana pun",
+  )
+  assert.equal(latestCompaction(session.id), undefined, "prune-saja tidak menyimpan ringkasan")
+
+  const rows = listModelRows(session.id)
+  const pruned = rows.some((row) =>
+    JSON.stringify(row.message).includes("output was dropped to free context"),
+  )
+  assert.ok(pruned, "hasil baca berkas besar semestinya sudah dipangkas jadi penanda PRUNED")
+})
