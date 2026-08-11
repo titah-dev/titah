@@ -390,6 +390,42 @@
       },
       "description": "Deny by default. With no client connected, every ask becomes a deny."
     },
+    "compaction": {
+      "default": {
+        "auto": true,
+        "reserved": 8192,
+        "tailTurns": 2,
+        "prune": true
+      },
+      "type": "object",
+      "properties": {
+        "auto": {
+          "default": true,
+          "description": "Compact automatically when the context fills up",
+          "type": "boolean"
+        },
+        "reserved": {
+          "default": 8192,
+          "description": "Tokens held back from the window, covering the next response and the summarisation call itself",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "tailTurns": {
+          "default": 2,
+          "description": "Recent user turns kept verbatim, never summarised",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "prune": {
+          "default": true,
+          "description": "Drop old tool output before summarising — free, and tool output is the bulk of it",
+          "type": "boolean"
+        }
+      },
+      "description": "Automatic context compaction. Requires contextWindow on the model in use."
+    },
     "keybinds": {
       "default": {},
       "description": "TUI keybinding overrides, e.g. {\"session_interrupt\": \"ctrl+g\"}. Defaults follow opencode; \"none\" disables an action.",

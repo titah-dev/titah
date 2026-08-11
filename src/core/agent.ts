@@ -730,7 +730,7 @@ async function compactTurn(
 ): Promise<Message> {
   const previous = latestCompaction(session.id)
   const rows = listModelRows(session.id).filter((row) => !previous || row.seq > previous.seq)
-  const plan = planCompaction(rows)
+  const plan = planCompaction(rows, config.compaction.tailTurns)
 
   if (plan.dropped.length === 0) {
     return infoTurn(

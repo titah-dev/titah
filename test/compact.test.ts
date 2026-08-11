@@ -4,7 +4,6 @@ import type { ModelMessage } from "ai"
 import {
   COMPACT_SYSTEM,
   compactPrompt,
-  KEEP_TAIL,
   planCompaction,
   renderMessage,
   renderTranscript,
@@ -19,7 +18,50 @@ const assistant = (text: string): ModelMessage => ({ role: "assistant", content:
 const rows = (messages: ModelMessage[], from = 0): ModelRow[] =>
   messages.map((message, index) => ({ seq: from + index, message }))
 
+const toolCall = (id: string): ModelMessage => ({
+  role: "assistant",
+  content: [{ type: "tool-call", toolCallId: id, toolName: "read", input: {} }],
+})
+const toolResult = (id: string): ModelMessage => ({
+  role: "tool",
+  content: [
+    { type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "isi" } },
+  ],
+})
+
 // ---------- batas potong ----------
+
+test("keepTurns menghitung GILIRAN user, bukan pesan", () => {
+  // KEEP_TAIL lama menghitung pesan, dan satu giliran agentic bisa 20 pesan —
+  // sehingga "4 pesan terakhir" bisa berisi empat hasil tool dari tengah
+  // giliran, tanpa satu pun pertukaran yang utuh.
+  const messages = [
+    user("satu"),
+    toolCall("a"),
+    toolResult("a"),
+    assistant("jawab satu"),
+    user("dua"),
+    toolCall("b"),
+    toolResult("b"),
+    assistant("jawab dua"),
+    user("tiga"),
+    assistant("jawab tiga"),
+  ]
+  const cut = tailStart(messages, 2)
+  assert.equal(messages[cut]?.role, "user")
+  // Dua giliran terakhir dimulai di "dua" (indeks 4).
+  assert.equal(cut, 4)
+})
+
+test("keepTurns lebih besar dari jumlah giliran mempertahankan semuanya", () => {
+  const messages = [user("satu"), assistant("jawab")]
+  assert.equal(tailStart(messages, 5), 0)
+})
+
+test("keepTurns 0 memadatkan seluruh riwayat", () => {
+  const messages = [user("satu"), assistant("jawab"), user("dua"), assistant("jawab")]
+  assert.equal(tailStart(messages, 0), messages.length)
+})
 
 test("batas potong SELALU jatuh di pesan user", () => {
   // Memotong di tengah pasangan tool-call/tool-result meninggalkan tool-result
@@ -27,35 +69,24 @@ test("batas potong SELALU jatuh di pesan user", () => {
   // menyebut pemadatan sama sekali.
   const messages = [
     user("satu"),
-    assistant("jawab satu"),
+    toolCall("a"),
+    toolResult("a"),
     user("dua"),
-    assistant("jawab dua"),
-    user("tiga"),
-    assistant("jawab tiga"),
+    toolCall("b"),
+    toolResult("b"),
   ]
-  const cut = tailStart(messages, 3)
+  const cut = tailStart(messages, 1)
   assert.equal(messages[cut]?.role, "user")
-})
-
-test("ekor tanpa pesan user sama sekali memadatkan semuanya", () => {
-  // Bisa terjadi pada giliran multi-langkah yang panjang: ekornya seluruhnya
-  // assistant dan tool. Menyisakan potongan itu berarti menyisakan yatim.
-  const messages = [user("mulai"), assistant("a"), assistant("b"), assistant("c")]
-  assert.equal(tailStart(messages, 3), messages.length)
-})
-
-test("percakapan yang lebih pendek dari ekor dipertahankan seluruhnya", () => {
-  // Beda dari kasus "tidak ada batas aman", yang justru meringkas semuanya.
-  // Meringkas dua pesan hanya menukar teks asli dengan parafrasenya.
-  assert.equal(tailStart([user("a"), assistant("b")], KEEP_TAIL), 0)
 })
 
 // ---------- rencana ----------
 
 test("rencana memisahkan yang diringkas dari yang dikirim apa adanya", () => {
+  // keepTurns=1 di sini menyisakan giliran terakhir saja ("3"), sehingga dua
+  // giliran pertama ("1", "2") — empat pesan — masuk ke ringkasan.
   const plan = planCompaction(
     rows([user("1"), assistant("1"), user("2"), assistant("2"), user("3"), assistant("3")]),
-    2,
+    1,
   )
 
   assert.equal(plan.dropped.length, 4)
@@ -68,7 +99,10 @@ test("batas air memakai seq SUNGGUHAN, bukan indeks larik", () => {
   // Menyamakan indeks dengan seq akan menyimpan batas air yang jauh terlalu
   // rendah, dan pesan yang sudah diringkas ikut terkirim lagi.
   const plan = planCompaction(
-    rows([user("1"), assistant("1"), user("2"), assistant("2")], 40),
+    rows(
+      [user("1"), assistant("1"), user("2"), assistant("2"), user("3"), assistant("3")],
+      40,
+    ),
     2,
   )
   assert.equal(plan.watermark, 41)

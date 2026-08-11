@@ -12,13 +12,14 @@ import type { ModelRow } from "./storage/session.ts"
  */
 
 /**
- * Berapa pesan terakhir yang tetap dikirim apa adanya.
+ * Berapa GILIRAN user terakhir yang tetap dikirim apa adanya.
  *
- * Ringkasan selalu kehilangan sesuatu. Menyisakan pertukaran terakhir secara
- * utuh membuat jawaban tepat SETELAH pemadatan tidak mendadak kehilangan detail
- * dari kalimat yang barusan diketik user.
+ * Dihitung dalam giliran, bukan pesan: satu giliran agentic bisa berisi dua
+ * puluh pesan, jadi "4 pesan terakhir" bisa berarti empat hasil tool dari
+ * tengah giliran — instruksinya sudah hilang, dan tidak satu pun pertukaran
+ * tersisa utuh. Giliran adalah satuan yang bisa dibayangkan user.
  */
-export const KEEP_TAIL = 4
+export const KEEP_TURNS = 2
 
 /**
  * Batas potong: indeks pesan pertama yang dipertahankan.
@@ -27,18 +28,17 @@ export const KEEP_TAIL = 4
  * meninggalkan tool-result yatim di awal riwayat, dan provider menolak itu
  * dengan error yang tidak menyebut pemadatan sama sekali.
  */
-export function tailStart(messages: ModelMessage[], keepTail = KEEP_TAIL): number {
-  // Percakapan yang lebih pendek dari ekor tidak punya apa pun untuk dipadatkan.
-  // Ini BEDA dari "tidak ada batas aman" di bawah, walau keduanya sama-sama
-  // berarti tidak ada yang dipotong di tengah — yang satu mempertahankan semua,
-  // yang satu meringkas semua.
-  if (messages.length <= keepTail) return 0
+export function tailStart(messages: ModelMessage[], keepTurns = KEEP_TURNS): number {
+  if (keepTurns <= 0) return messages.length
 
-  for (let index = messages.length - keepTail; index > 0; index -= 1) {
-    if (messages[index]?.role === "user") return index
+  let seen = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role !== "user") continue
+    seen += 1
+    if (seen === keepTurns) return index
   }
-  // Ekor tidak punya batas aman — ringkas semuanya daripada meninggalkan yatim.
-  return messages.length
+  // Giliran yang ada lebih sedikit dari yang diminta — pertahankan semuanya.
+  return 0
 }
 
 export interface CompactionPlan {
@@ -56,9 +56,9 @@ export interface CompactionPlan {
  * `rows` harus sudah disaring ke atas batas air sebelumnya, sehingga pemadatan
  * berulang tidak pernah meringkas dua kali hal yang sama.
  */
-export function planCompaction(rows: ModelRow[], keepTail = KEEP_TAIL): CompactionPlan {
+export function planCompaction(rows: ModelRow[], keepTurns = KEEP_TURNS): CompactionPlan {
   const messages = rows.map((row) => row.message)
-  const cut = tailStart(messages, keepTail)
+  const cut = tailStart(messages, keepTurns)
   const dropped = messages.slice(0, cut)
 
   // Batas air = seq terakhir yang diringkas. Kalau semuanya diringkas, itu seq

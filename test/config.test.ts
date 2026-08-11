@@ -342,3 +342,19 @@ test("delegate dan model bersamaan DITOLAK", () => {
     /delegate/i,
   )
 })
+
+test("compaction punya default yang bisa dipakai tanpa konfigurasi apa pun", () => {
+  const config = Config.parse({})
+  assert.deepEqual(config.compaction, {
+    auto: true,
+    reserved: 8192,
+    tailTurns: 2,
+    prune: true,
+  })
+})
+
+test("compaction.auto false bisa dinyatakan tanpa menyebut field lain", () => {
+  const config = Config.parse({ compaction: { auto: false } })
+  assert.equal(config.compaction.auto, false)
+  assert.equal(config.compaction.tailTurns, 2)
+})

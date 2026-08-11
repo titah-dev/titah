@@ -190,6 +190,30 @@ export const Permission = z
   })
   .describe("Deny by default. With no client connected, every ask becomes a deny.")
 
+export const Compaction = z
+  .object({
+    auto: z.boolean().default(true).describe("Compact automatically when the context fills up"),
+    reserved: z
+      .number()
+      .int()
+      .min(0)
+      .default(8192)
+      .describe(
+        "Tokens held back from the window, covering the next response and the summarisation call itself",
+      ),
+    tailTurns: z
+      .number()
+      .int()
+      .min(0)
+      .default(2)
+      .describe("Recent user turns kept verbatim, never summarised"),
+    prune: z
+      .boolean()
+      .default(true)
+      .describe("Drop old tool output before summarising — free, and tool output is the bulk of it"),
+  })
+  .describe("Automatic context compaction. Requires contextWindow on the model in use.")
+
 export const Config = z.object({
   $schema: z.string().optional(),
   model: z
@@ -223,6 +247,7 @@ export const Config = z.object({
     .optional()
     .describe("Agent used when none is selected"),
   permission: Permission.default({ edit: "ask", write: "ask", bash: "ask", allowlist: [] }),
+  compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())
     .default({})
@@ -242,6 +267,7 @@ export type Provider = z.infer<typeof Provider>
 export type ExternalAgent = z.infer<typeof ExternalAgent>
 export type Agent = z.infer<typeof Agent>
 export type Command = z.infer<typeof Command>
+export type Compaction = z.infer<typeof Compaction>
 
 /**
  * Tiga mode bawaan, mengikuti pola opencode (`plan` / `build`) tapi memisahkan
