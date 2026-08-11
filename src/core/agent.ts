@@ -341,19 +341,15 @@ export async function prompt(input: PromptInput): Promise<Message> {
       summarise,
       focus: text,
     })
-  } catch (error) {
+  } catch {
     // Titik ini berada SEBELUM `try` utama di bawah, yang satu-satunya tempat
     // `finally`-nya membersihkan `running`/`setAutoApprove` berada. Tanpa
     // tangkapan ini, smallModel yang salah melempar DI SINI, `finally` tidak
     // pernah tercapai, dan sesi terkunci "sedang memproses" SELAMANYA untuk
     // sisa umur proses — giliran berikutnya pun ditolak. Gagal memadatkan
-    // berarti "lewati pemadatan giliran ini", bukan "gagalkan giliran ini".
-    const message = error instanceof Error ? error.message : String(error)
-    bus.publish({
-      type: "session.error",
-      sessionID: session.id,
-      message: `Auto-compaction skipped: ${message}`,
-    })
+    // berarti "lewati pemadatan giliran ini", bukan "gagalkan giliran ini" —
+    // dan SENGAJA tidak memakai `session.error`: event itu berarti giliran
+    // GAGAL, sementara giliran ini justru lanjut dan berhasil.
   }
 
   const history = listModelMessages(session.id)

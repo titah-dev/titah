@@ -688,22 +688,33 @@ test("smallModel yang salah tidak menjatuhkan giliran, dan sesi tetap menerima p
       stream: simulateReadableStream({ chunks: textChunk("jawaban", usageWith(7800)) }),
     }),
   })
+  // Dihitung, bukan diamati lewat bus: `session.error` TIDAK lagi dipublikasikan
+  // untuk kegagalan yang tertangkap (lihat komentar di `agent.ts`), jadi bus
+  // bukan sinyal yang bisa dipakai di sini. Menghitung panggilan resolver untuk
+  // smallModel langsung adalah satu-satunya cara membedakan "belum pernah
+  // dicoba" dari "dicoba dan gagal, lalu ditangkap" — keduanya sama-sama
+  // tidak melempar ke pemanggil dan sama-sama tidak menyimpan pemadatan.
+  let smallCalls = 0
   // TIDAK lewat `recordingModel`: resolver di sini harus MELEMPAR untuk
   // model kecil yang rusak, sementara model utama tetap dilayani mock —
   // persis situasi nyata (model utama valid, smallModel yang salah).
   restore?.()
   restore = setModelResolver((_config, full) => {
-    if (full === "rusak/kecil") throw new Error('Unknown provider "rusak".')
+    if (full === "rusak/kecil") {
+      smallCalls += 1
+      throw new Error('Unknown provider "rusak".')
+    }
     return model
   })
 
-  // Giliran satu: belum ada apa pun untuk dipadatkan, jadi `summarise` (dan
-  // karenanya `resolver` untuk smallModel) TIDAK PERNAH dipanggil — ini
-  // membuktikan sisi "lambat" dari perbaikan: giliran yang tidak memadatkan
-  // apa pun tidak boleh gagal gara-gara smallModel yang rusak.
+  // Giliran satu: belum ada apa pun untuk dipadatkan. `error === undefined` di
+  // sini TIDAK cukup untuk membuktikan resolver smallModel belum dipanggil —
+  // resolver yang dipanggil eager tapi tertangkap `try/catch` juga akan lolos
+  // tanpa error. `smallCalls` di bawah yang membuktikan LAMBAT-nya sungguhan.
   const first = await prompt({ sessionID: session.id, text: "giliran satu" })
   assert.equal(first.error, undefined)
   assert.match(bodyOf(first), /jawaban/)
+  assert.equal(smallCalls, 0, "resolver smallModel tidak boleh dipanggil kalau tidak ada yang dipadatkan")
 
   // Giliran dua: sekarang overBudget benar-benar true dan ada satu giliran
   // untuk dipadatkan (tailTurns: 0 di COMPACTING_CONFIG memaksa itu), jadi
@@ -712,9 +723,11 @@ test("smallModel yang salah tidak menjatuhkan giliran, dan sesi tetap menerima p
   const second = await prompt({ sessionID: session.id, text: "giliran dua" })
   assert.equal(second.error, undefined)
   assert.match(bodyOf(second), /jawaban/)
+  // Positif dulu: resolver SUNGGUH dicoba dan gagal tepat sekali — bukan
+  // diam-diam tidak pernah dipanggil sama sekali.
+  assert.equal(smallCalls, 1, "pemadatan seharusnya sungguh dicoba dan gagal di giliran ini")
 
-  // Positif dulu: pemadatan memang GAGAL (bukan diam-diam tidak pernah
-  // dicoba) — tidak ada ringkasan yang tersimpan.
+  // Baru negatif: kegagalan itu tidak tersimpan sebagai pemadatan.
   assert.equal(latestCompaction(session.id), undefined)
 
   // Baru buktinya: `running` sungguh terbersihkan. Sebelum perbaikan, baris
