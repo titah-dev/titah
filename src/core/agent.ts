@@ -391,7 +391,14 @@ export async function prompt(input: PromptInput): Promise<Message> {
         },
         hasSnapshot: () => assistant.snapshot !== undefined,
       }),
-      prepareStep: async ({ steps }) => {
+      prepareStep: async ({ steps, stepNumber }) => {
+        // Langkah terakhir dijalankan tanpa tool sama sekali, sehingga model
+        // TIDAK PUNYA pilihan selain menjawab dengan teks. Tanpa ini, giliran
+        // yang kehabisan langkah berakhir pada tool call dan user membaca
+        // "try a different model" — padahal modelnya baik-baik saja, cuma
+        // kehabisan langkah. Dihitung DI LUAR try/catch di bawah: harus tetap
+        // berlaku baik pemadatan berhasil, dilewati, MAUPUN melempar error.
+        const lastStep = stepNumber >= maxSteps - 1
         try {
           // `config.compaction.auto` dicek DI SINI, bukan diserahkan ke
           // `autoCompact` saja: tanpa ini, flush di bawah masih jalan walau
@@ -399,7 +406,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
           // dihindari lebih dulu.
           const used = steps.at(-1)?.usage?.inputTokens
           if (!config.compaction.auto || !overBudget(used, contextWindow, config.compaction.reserved)) {
-            return {}
+            return lastStep ? { activeTools: [] } : {}
           }
 
           const soFar: ModelMessage[] = [
@@ -423,9 +430,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
             focus: text,
             midTurnKeep: MID_TURN_KEEP,
           })
-          if (!compacted.ran) return {}
+          if (!compacted.ran) return lastStep ? { activeTools: [] } : {}
 
-          return { messages: listModelMessages(session.id) }
+          return lastStep
+            ? { activeTools: [], messages: listModelMessages(session.id) }
+            : { messages: listModelMessages(session.id) }
         } catch {
           // Gagal memadatkan DI TENGAH giliran berarti "lewati pemadatan
           // langkah ini", bukan "jatuhkan seluruh giliran yang sudah
@@ -433,7 +442,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
           // yang salah melempar DI SINI dan giliran berakhir dengan error
           // serta jawaban kosong, padahal beberapa tool sudah berhasil jalan
           // — pasangan persis `catch {}` di jalur antar-giliran di atas.
-          return {}
+          // `lastStep` tetap dihormati: kegagalan memadatkan tidak boleh
+          // membiarkan giliran berakhir pada tool call lagi.
+          return lastStep ? { activeTools: [] } : {}
         }
       },
       stopWhen: stepCountIs(maxSteps),

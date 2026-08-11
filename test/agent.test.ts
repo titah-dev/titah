@@ -1268,3 +1268,35 @@ test("agent tanpa steps tetap memakai batas bawaan", async () => {
 
   assert.equal(model.doStreamCalls.length, 20)
 })
+
+test("langkah terakhir dijalankan tanpa tool, sehingga model WAJIB menjawab teks", async () => {
+  // Sebelum ini, giliran yang kehabisan langkah berakhir pada tool call dan
+  // user dikirimi "try a different model" — nasihat yang menyalahkan pihak
+  // yang keliru, karena modelnya baik-baik saja dan cuma kehabisan langkah.
+  const model = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(10) },
+    ],
+    // `textChunk`, bukan `text-delta` telanjang — lihat komentar di test lain.
+    textChunk("sejauh ini saya menemukan X", usageWith(10)),
+  ])
+
+  const dir = projectWith(windowConfig(1_000_000, { agent: { scout: { steps: 2 } } }))
+  const session = createSession(dir)
+  const message = await prompt({ sessionID: session.id, text: "baca terus", agent: "scout" })
+
+  assert.equal(model.doStreamCalls.length, 2)
+
+  // Positif: langkah pertama memang punya tool.
+  const firstTools = model.doStreamCalls[0]?.tools ?? []
+  assert.ok(firstTools.length > 0)
+  // Baru negatif: langkah terakhir tidak punya satu pun.
+  const lastTools = model.doStreamCalls[1]?.tools ?? []
+  assert.equal(lastTools.length, 0)
+
+  // Dan hasilnya jawaban teks, bukan pesan "ganti model".
+  const text = message.parts.find((part) => part.type === "text")
+  assert.match(JSON.stringify(text), /sejauh ini saya menemukan X/)
+  assert.doesNotMatch(JSON.stringify(message.parts), /different model/)
+})
