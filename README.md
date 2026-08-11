@@ -441,6 +441,11 @@ Two ways to restrict an agent, both applied before anything runs:
 Use `permission` when you want the model to know why it was refused; use `tools`
 when you do not want it thinking about the tool at all.
 
+`steps` caps how many tool-calling iterations one turn may take for this agent —
+five for a scout, sixty for a refactor. The default is 20. When the cap is
+reached, the final iteration runs with no tools at all, so the model has to
+report what it found rather than stopping mid-air.
+
 **`skills`** loads those skills into this agent's system prompt in full, and
 takes fully-qualified ids (`namespace:name`), exactly like `skills.always` —
 see [Skills](#skills). A bare name such as `"project-analyzer"` never resolves;
@@ -639,29 +644,67 @@ the execution flow rather than merely expanding a prompt.
 
 ### Context management
 
-`/compact` summarises the session so far, so a long conversation keeps fitting
-in the model's context window.
+Titah compacts automatically once the context approaches the model's window, and
+`/compact` runs the same thing on demand.
+
+```
+/compact                        # summarise everything but the last turns
+/compact the database schema    # same, but keep that material in full detail
+```
 
 This is about correctness, not tidiness. When history exceeds the window,
 providers do not reject the request — they **truncate the oldest part**, and the
 model then answers confidently about decisions it can no longer see. ollama
 truncates at `num_ctx` (4096 by default) without a single warning.
 
+Automatic compaction needs to know how large the model's window is, and nothing
+is guessed. Declare it per model:
+
+```jsonc
+"provider": { "ollama": { "models": { "qwen3:14b": { "contextWindow": 32768 } } } }
 ```
-/compact                        # summarise everything but the last exchange
-/compact the database schema    # same, but keep that material in full detail
+
+Without it, automatic compaction is off for that model — `titah doctor` lists
+every model missing one. `/compact` still works either way.
+
+Tuning, with the defaults shown:
+
+```jsonc
+"compaction": {
+  "auto": true,        // turn the whole thing off with false
+  "reserved": 8192,    // tokens held back for the next answer and the summary itself
+  "tailTurns": 2,      // recent turns kept verbatim, never summarised
+  "prune": true        // drop old tool output first — free, and usually enough
+}
 ```
+
+`reserved` is a headroom, not a hard token count: the threshold that triggers
+compaction is `contextWindow - reserved`, capped so `reserved` can never take
+more than a quarter of the window. Without that cap, the 8192 default would
+equal the whole window on a common 8k local model, push the threshold to zero,
+and fire compaction on every single turn regardless of how little context was
+actually in use. `titah doctor` reports every model where the cap is biting,
+and the `reserved` value actually in effect for it.
 
 What it does, precisely:
 
 - Only what is **sent to the model** shrinks. The transcript on screen and in
   SQLite is untouched — scroll up and the real conversation is still there.
-- The last few messages are kept **verbatim**, so the reply right after
-  compacting does not lose the detail you just typed.
+- The last few turns (`tailTurns`) are kept **verbatim**, so the reply right
+  after compacting does not lose the detail you just typed.
 - The cut always lands on a user message. Cutting between a tool call and its
   result would leave an orphaned result that providers reject.
 - Compacting again re-summarises the previous summary rather than stacking a new
   one on top, so the summary cannot grow without bound.
+- When the context fills up, old tool output is dropped first (`prune`),
+  because it is the bulk of an agentic turn and costs nothing to discard — the
+  model can re-read a file. Only if that is not enough is a summary written.
+- This happens **mid-turn** too, not just between turns. One long turn reading
+  thirty files is the case that overflows most often, and there is no user
+  message in the middle of it where a between-turns check could fire.
+- A failed compaction — a broken `smallModel`, a provider error — never fails
+  the turn. That step's compaction is simply skipped and the turn continues
+  with whatever context it already had.
 
 The summariser is instructed, above everything else, never to invent: identifiers
 are copied verbatim, and anything it cannot confirm is recorded as unresolved. A

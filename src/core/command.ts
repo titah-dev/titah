@@ -66,7 +66,6 @@ export const IMMEDIATE_COMMANDS = new Set([
   "commands",
   "session",
   "new",
-  "compact",
 ])
 
 export type BuiltinCommand = (typeof BUILTIN_COMMANDS)[number]
