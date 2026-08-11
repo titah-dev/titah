@@ -189,6 +189,12 @@
             "description": "Model override, in \"provider/model\" form",
             "type": "string"
           },
+          "steps": {
+            "description": "Maximum agentic iterations for this agent before it is forced to answer in text",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
           "tools": {
             "default": {},
             "description": "Tool filter, e.g. {\"write\": false}. Tools not listed stay enabled.",

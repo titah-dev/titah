@@ -371,3 +371,15 @@ test("default level FIELD compaction juga benar, bukan hanya level blok", () => 
   assert.equal(config.compaction.tailTurns, 2)
   assert.equal(config.compaction.prune, true)
 })
+
+test("steps opsional pada agent, dan wajib positif", () => {
+  const config = Config.parse({ agent: { scout: { steps: 5 } } })
+  assert.equal(config.agent["scout"]?.steps, 5)
+  assert.throws(() => Config.parse({ agent: { scout: { steps: 0 } } }))
+  assert.throws(() => Config.parse({ agent: { scout: { steps: -1 } } }))
+})
+
+test("agent tanpa steps tidak memaksa nilai apa pun", () => {
+  const config = Config.parse({ agent: { scout: {} } })
+  assert.equal(config.agent["scout"]?.steps, undefined)
+})

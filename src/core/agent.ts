@@ -52,6 +52,7 @@ import { allTools } from "./tool/index.ts"
 import type { TitahTool } from "./tool/index.ts"
 import { dispatchableAgents } from "./subagent.ts"
 
+/** Batas langkah bawaan, dipakai agent yang tidak menyatakan `steps` sendiri. */
 const MAX_STEPS = 20
 
 /**
@@ -364,6 +365,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // menduplikasi apa yang sudah tersimpan.
   let flushed = 0
 
+  // Per-agent, karena satu angka global tidak bisa pas untuk scout (butuh
+  // sedikit iterasi) maupun refactor (butuh banyak) sekaligus — lihat Task 7.
+  const maxSteps = agentDef?.steps ?? MAX_STEPS
+
   try {
     const result = streamText({
       model,
@@ -431,7 +436,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
           return {}
         }
       },
-      stopWhen: stepCountIs(MAX_STEPS),
+      stopWhen: stepCountIs(maxSteps),
       abortSignal: controller.signal,
     })
 

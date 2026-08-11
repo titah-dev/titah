@@ -109,6 +109,14 @@ export const Agent = z
       ),
     prompt: z.string().optional().describe("Appended to the system prompt"),
     model: z.string().optional().describe("Model override, in \"provider/model\" form"),
+    steps: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Maximum agentic iterations for this agent before it is forced to answer in text",
+      ),
     tools: z
       .record(z.string(), z.boolean())
       .default({})

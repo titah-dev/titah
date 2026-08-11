@@ -1234,3 +1234,37 @@ test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvern
   )
   assert.ok(pruned, "hasil baca berkas besar semestinya sudah dipangkas jadi penanda PRUNED")
 })
+
+test("steps agent membatasi jumlah langkah giliran", async () => {
+  // Tiap langkah memanggil tool lagi; tanpa batas, mock ini berputar sampai
+  // MAX_STEPS. Dengan steps: 2, giliran berhenti setelah dua langkah.
+  const model = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(10) },
+    ],
+  ])
+
+  // Jendela sengaja besar supaya pemadatan tidak ikut campur — yang diuji di
+  // sini murni batas langkah.
+  const dir = projectWith(windowConfig(1_000_000, { agent: { scout: { steps: 2 } } }))
+  const session = createSession(dir)
+  await prompt({ sessionID: session.id, text: "baca terus", agent: "scout" })
+
+  assert.equal(model.doStreamCalls.length, 2)
+})
+
+test("agent tanpa steps tetap memakai batas bawaan", async () => {
+  const model = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(10) },
+    ],
+  ])
+
+  const dir = projectWith(windowConfig(1_000_000, { agent: { plain: {} } }))
+  const session = createSession(dir)
+  await prompt({ sessionID: session.id, text: "baca terus", agent: "plain" })
+
+  assert.equal(model.doStreamCalls.length, 20)
+})
