@@ -116,13 +116,36 @@ export function database(): DatabaseSync {
  */
 export function transaction<T>(fn: () => T): T {
   const connection = database()
-  connection.exec("BEGIN")
+  // `IMMEDIATE`, bukan `BEGIN` biasa (DEFERRED).
+  //
+  // DEFERRED membuka snapshot BACA dulu, lalu berusaha menaik ke transaksi TULIS
+  // pada pernyataan tulis pertama. Di mode WAL, kalau ada proses lain yang commit
+  // di antara keduanya, kenaikan itu gagal dengan `SQLITE_BUSY_SNAPSHOT` — dan
+  // `PRAGMA busy_timeout` TIDAK mengulang yang itu. Sebelum ada transaksi di sini,
+  // insert telanjangnya justru tercakup timeout tersebut, jadi membungkusnya
+  // dengan DEFERRED menukar satu jaminan dengan kegagalan kelas baru: satu TUI
+  // dan satu `titah run` pada DB yang sama membuat flush akhir-giliran melempar,
+  // giliran yang sebenarnya BERHASIL ditandai error, dan riwayat modelnya hilang.
+  //
+  // `IMMEDIATE` mengambil kunci tulis di awal, sehingga tunggu-dan-ulang milik
+  // `busy_timeout` berlaku sebagaimana mestinya.
+  connection.exec("BEGIN IMMEDIATE")
   try {
     const result = fn()
     connection.exec("COMMIT")
     return result
   } catch (error) {
-    connection.exec("ROLLBACK")
+    // `ROLLBACK` sendiri bisa melempar — paling gampang kalau yang gagal justru
+    // `COMMIT` dan SQLite sudah menggulung sendiri, sehingga tidak ada transaksi
+    // aktif untuk digulung. Membiarkannya lepas berarti error yang dilihat
+    // pemanggil adalah "cannot rollback — no transaction is active", menutupi
+    // penyebab SUNGGUHAN yang justru satu-satunya yang berguna untuk didiagnosis.
+    try {
+      connection.exec("ROLLBACK")
+    } catch {
+      // Sengaja ditelan: keadaan DB sudah benar (tergulung atau tidak pernah
+      // terbuka), dan error aslinya di bawah ini yang harus sampai.
+    }
     throw error
   }
 }

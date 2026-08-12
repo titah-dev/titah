@@ -1979,12 +1979,23 @@ git commit -m "fix(command): stop the palette from running /compact before its f
 
 ## Final gate
 
-- [ ] `npm run typecheck && npm run build && npm test` — all green
-- [ ] A session with an undeclared `contextWindow` behaves exactly as it did before this plan
-- [ ] `compaction.auto: false` behaves exactly as it did before this plan
-- [ ] `titah doctor` names every model missing a `contextWindow`
-- [ ] No `any` in `src/`
-- [ ] All new comments are Indonesian and explain WHY; all new user-facing strings are English
+- [x] `npm run typecheck && npm run build && npm test` — all green (615/615, 2026-08-12)
+- [x] A session with an undeclared `contextWindow` behaves exactly as it did before this plan — pinned by `test/agent.test.ts` ("contextWindow yang tidak dideklarasikan…", and the once-per-session notice test)
+- [x] `compaction.auto: false` behaves exactly as it did before this plan — pinned by `test/auto-compact.test.ts` ("compaction.auto: false tidak menjalankan apa pun…")
+- [x] `titah doctor` names every model missing a `contextWindow` — and, since the follow-up cycle, a `smallModel` missing one too
+- [x] No `any` in `src/`
+- [x] All new comments are Indonesian and explain WHY; all new user-facing strings are English
+
+**Follow-up cycle, 2026-08-12.** Shipping this plan surfaced four defects that
+were behaviours no test pinned, filed as issues #1–#4. Two of them land here —
+`appendModelMessages` had no transaction, and the pruner discarded sub-agent
+results — under
+`docs/superpowers/specs/2026-08-12-storage-and-pruner-design.md`. The other two
+(the summariser's unbounded prompt, and the "was pruning enough?" decision being
+arithmetic on a stale provider number) are a separate change: three review rounds
+found further defects in that work, including a regression against `main`, so it
+is not held together with the settled half. Issue #5 (no intent state) has a
+design and no code: `2026-08-12-intent-state-design.md`.
 
 ---
 

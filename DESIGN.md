@@ -64,9 +64,17 @@ its own server.
 
 ### v1 tool set
 
-`read`, `list`, `glob`, `grep`, `edit`, `write`, `bash`, plus delegation.
+`read`, `list`, `glob`, `grep`, `edit`, `write`, `bash`, `skill`, `task`, plus
+delegation.
 
-Deferred to v2: `task`/subagent spawning, `webfetch`, MCP, plugin loader.
+`skill` and `task` were **not** in the original v1 set — they shipped after this
+document was first written, and it said so for longer than it should have. See
+`docs/superpowers/specs/2026-08-09-skills-active-passive-design.md` and
+`2026-08-10-parallel-subagents-design.md`.
+
+Still deferred to v2: `webfetch`/`websearch`, MCP, plugin loader, LSP and
+formatter integration, background/persistent `bash`. The reasoning and the
+priority order are in `docs/gap-analysis.md`.
 
 ### The `edit` tool
 
@@ -102,9 +110,33 @@ Instruction files are read in order: `AGENTS.md` → `CLAUDE.md` → `TITAH.md`
 
 ### Modes and custom agents
 
-An agent is a **prompt + tool filter + permission override + model override**
-behind a name, selected with `Tab` or `--agent`. **No** subagent spawning in v1,
-so there is no recursive concurrency.
+An agent is a **prompt + tool filter + permission override + model override +
+engine override (`delegate`)** behind a name, selected with `Tab` or `--agent`.
+
+Sub-agent spawning **does** ship, through the `task` tool and `/tim`, and
+recursive concurrency is bounded rather than absent: dispatch depth is capped at
+exactly one level (a sub-agent never receives `task` itself), readers run
+concurrently, and writers are serialised on a queue keyed by working directory.
+An agent with `delegate` is always treated as a writer, because Titah cannot know
+what the external CLI will touch. Details in `README.md` § Sub-agents.
+
+### Context management
+
+Compaction runs automatically, both **between turns** and **mid-turn**, bounded
+by the model's declared `contextWindow`. An undeclared window means compaction is
+off for that model — never guessed, because a wrong number is more dangerous than
+no number. Old tool output is pruned before anything is summarised, and sub-agent
+(`task`) results are exempt from that pruning: re-running one costs a whole nested
+turn, unlike re-reading a file. Design:
+`docs/superpowers/specs/2026-08-11-auto-compaction-design.md` and
+`2026-08-12-storage-and-pruner-design.md`.
+
+The summariser's own prompt is **not** bounded yet, and that is a known gap rather
+than an oversight — see issues #1 and #2.
+
+Titah tracks execution state but has **no intent state** — the model has nowhere
+to record a plan that survives compaction. That is a known gap with a written
+design and no code yet: `2026-08-12-intent-state-design.md`.
 
 Three modes ship built in: **Plan** (refuses every change), **Build Manual**
 (confirm each step, the default), and **Build Auto** (no confirmations).

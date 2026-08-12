@@ -31,7 +31,7 @@ const {
   saveMessage,
   touchSession,
 } = await import("../src/core/storage/session.ts")
-const { database } = await import("../src/core/storage/db.ts")
+const { database, transaction } = await import("../src/core/storage/db.ts")
 
 before(() => {
   database()
@@ -184,6 +184,25 @@ test("flush yang gagal di tengah tidak meninggalkan baris separuh, dan tidak men
   for (const [index, pesan] of isi.entries()) {
     if (index > 0) assert.notEqual(pesan, isi[index - 1])
   }
+})
+
+test("error asli tetap sampai walau ROLLBACK-nya sendiri gagal", () => {
+  // Ronde review pertama menyebut ini dan tidak ditindaklanjuti; ronde ketiga
+  // menyebutnya lagi. `ROLLBACK` paling mudah gagal justru ketika yang gagal
+  // adalah `COMMIT` dan SQLite sudah menggulung sendiri — tidak ada transaksi
+  // aktif untuk digulung. Kalau lemparannya lepas, yang dilihat pemanggil adalah
+  // "cannot rollback — no transaction is active", menutupi penyebab SUNGGUHAN.
+  //
+  // Disimulasikan dengan menutup transaksinya dari DALAM `fn`, lalu melempar:
+  // persis keadaan "tidak ada transaksi aktif" saat catch berjalan.
+  assert.throws(
+    () =>
+      transaction(() => {
+        database().exec("COMMIT")
+        throw new Error("penyebab asli")
+      }),
+    /penyebab asli/,
+  )
 })
 
 test("menghapus sesi ikut menghapus pesannya (foreign key ON DELETE CASCADE)", () => {

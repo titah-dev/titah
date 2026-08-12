@@ -288,6 +288,53 @@ test("prune jalan lebih dulu, dan tersimpan ke baris", async () => {
   assert.equal(latestCompaction(sessionID), undefined)
 })
 
+test("hasil task di riwayat lama MENGALAH kalau peringkasan gagal", async () => {
+  // Ronde review kedua. Perlindungan hasil sub-agent (#4) bertumpu pada
+  // peringkas yang mewakilinya. Kalau peringkasnya GAGAL, tidak ada ringkasan,
+  // batas air tidak maju, dan baris itu tetap dikirim — sementara `pruneTail`
+  // hanya menjangkau [cut, akhir). Jadi satu hasil task 20 KB di riwayat lama
+  // duduk di luar jangkauan semua tuas yang tersisa.
+  //
+  // Sebelum #4 ia terpangkas tanpa syarat. Perlindungan tidak boleh berarti
+  // permintaan kebesaran terkirim: pada titik ini memotong diam-diam oleh
+  // provider lebih buruk daripada kehilangan jawaban sub-agent.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    call("t"),
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "t",
+          toolName: "task",
+          output: { type: "text", value: "jawaban sub-agent ".repeat(1_200) }, // ~22 KB
+        },
+      ],
+    },
+    { role: "user", content: "dua" },
+    { role: "assistant", content: "selesai" },
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => "", // peringkas gagal
+  })
+
+  assert.equal(result.summarised, false)
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[2]?.message),
+    /sub-agent's answer was dropped/,
+    "hasil task harus mengalah, dengan penanda yang menyebut harganya",
+  )
+  assert.ok(result.prunedBytes > 10_000)
+})
+
 test("prune yang tidak cukup naik ke peringkasan", async () => {
   const sessionID = seed()
   let called = 0
