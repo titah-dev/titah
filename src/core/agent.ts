@@ -465,6 +465,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       system,
       messages,
       tools: buildTools({
+        contextWindow,
         sessionID: session.id,
         cwd: session.directory,
         config,
@@ -1266,6 +1267,11 @@ interface BuildToolsOptions {
   allowlistSessionID: string
   /** Sesi yang stream event-nya benar-benar didengarkan klien — lihat komentar di `prompt()`. */
   streamSessionID: string
+  /**
+   * Jendela model giliran ini, kalau dideklarasikan. Diteruskan ke ToolContext
+   * supaya `plan` bisa membatasi dirinya relatif jendela (issue #5).
+   */
+  contextWindow?: number
 }
 
 /**
@@ -1303,7 +1309,14 @@ function buildTools(options: BuildToolsOptions): ToolSet {
       async execute(input: unknown, options2: { toolCallId: string }) {
         const callID = options2.toolCallId
         const started = Date.now()
-        const ctx = { cwd, sessionID, callID, signal, config: options.config }
+        const ctx = {
+          cwd,
+          sessionID,
+          callID,
+          signal,
+          config: options.config,
+          ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
+        }
         upsert(callID, definition.name, { status: "running", input, started })
 
         try {

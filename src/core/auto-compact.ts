@@ -20,6 +20,8 @@ import {
   listModelRows,
   replaceModelMessage,
   saveCompaction,
+  planPair,
+  requestShape,
   summaryPair,
 } from "./storage/session.ts"
 
@@ -167,19 +169,23 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
    *
    * `summary` adalah ringkasan yang akan menyertai permintaan itu (yang lama
    * sebelum peringkasan, yang baru sesudahnya), dan `tail` pesan yang menyusul.
-   * Bentuknya dirakit lewat `summaryPair` — fungsi yang sama yang dipakai
-   * `listModelMessages` saat sungguh mengirim — supaya yang diukur dan yang
-   * dikirim tidak bisa berbeda.
+   * Bentuknya dirakit lewat `requestShape` — fungsi yang SAMA yang dipakai
+   * `listModelMessages` saat sungguh mengirim, bukan salinannya — supaya yang
+   * diukur dan yang dikirim tidak bisa berbeda.
+   *
+   * Rencana (issue #5) ikut diukur, dan urutannya pun sama: ringkasan, rencana,
+   * ekor. Ia store terlindungi yang menumpang di SETIAP permintaan, jadi
+   * mengecualikannya dari pengukuran akan mengulang persis cacat yang fungsi ini
+   * ada untuk menutupnya — yang diukur bukan yang dikirim, dan selisihnya baru
+   * terlihat ketika sebuah permintaan meluap.
    *
    * `systemBytes` menutup satu-satunya bagian yang tidak ada di daftar pesan:
    * system prompt. Ia ikut memakan jendela yang sama, dan mengabaikannya berarti
    * meremehkan permintaan.
    */
+  const planMessages = planPair(sessionID)
   const measure = (summary: string | undefined, tail: ModelMessage[]): number =>
-    requestTokens(
-      summary === undefined ? tail : [...summaryPair(summary), ...tail],
-      input.systemBytes ?? 0,
-    )
+    requestTokens(requestShape(summary, planMessages, tail), input.systemBytes ?? 0)
 
   /**
    * Berapa token yang SUDAH dibebaskan giliran ini, untuk mengkredit angka

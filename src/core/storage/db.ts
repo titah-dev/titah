@@ -76,6 +76,23 @@ const MIGRATIONS: string[] = [
    */
   `ALTER TABLE session ADD COLUMN parent_id TEXT REFERENCES session(id) ON DELETE CASCADE;
    CREATE INDEX session_parent ON session(parent_id);`,
+
+  /*
+   * Intent state (issue #5): rencana yang ditulis model untuk dirinya sendiri.
+   *
+   * Tabel SENDIRI, dan itulah yang membuatnya selamat dari pemadatan. Pemangkas
+   * hanya menulis ulang baris `model_message`, dan peringkas hanya membaca baris
+   * di atas batas air. Keduanya tidak menyebut tabel ini, dan tidak bisa — itu
+   * sifat skema, bukan aturan yang harus diingat orang.
+   *
+   * Bukan kolom di `session`: membaca rencana tidak boleh berarti memuat lalu
+   * menulis ulang metadata sesi setiap giliran.
+   */
+  `CREATE TABLE plan (
+     session_id TEXT    PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
+     text       TEXT    NOT NULL,
+     updated    INTEGER NOT NULL
+   );`,
 ]
 
 export function database(): DatabaseSync {
