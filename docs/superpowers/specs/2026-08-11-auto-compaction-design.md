@@ -383,14 +383,27 @@ request. That argument is about a decision under uncertainty. "Will it fit" is
 about arithmetic, and arithmetic does not get two rulers.
 
 After all of it, no request exceeds the window at any result size, and a file
-that fits is delivered on every step that could carry it:
+that fits is delivered on every step that could carry it.
+
+Measured on an 8192-token window with stock `compaction` defaults, over a
+thirty-step turn that reads one file repeatedly. **The peaks are approximate and
+harness-specific** — they include the system prompt, which varies with the
+project path and the instruction files present. Two independent harnesses agreed
+on the shape and on every "over-window" and "delivered" cell, and differed by
+about 2% on the peaks:
 
 | result | peak | over-window | file delivered |
 |---|---|---|---|
-| 22 KB | 6,755 | none | 29 of 30 |
-| 26 KB | 7,895 | none | 29 of 30 |
-| 28 KB | 501 | none | 0 of 30 — cannot fit; replaced by the marker |
-| 32 KB | 501 | none | 0 of 30 — cannot fit; replaced by the marker |
+| 22 KB | ≈6.7k | none | 29 of 30 |
+| 26 KB | ≈7.8k | none | 29 of 30 |
+| 28 KB | ≈0.5k | none | 0 of 30 — cannot fit; replaced by the marker |
+| 32 KB | ≈0.5k | none | 0 of 30 — cannot fit; replaced by the marker |
+
+The cliff between "delivered" and "replaced by the marker" sits between 27 and
+28 KB: at 27 KB the request reaches 98% of the window and still carries the file.
+A sweep from 18 KB to 64 KB found identical peaks and zero overflow under both
+the old and the balanced ratio — the balanced ratio changed only delivery, and
+opened no regression band.
 
 ### Preserving the running instruction
 

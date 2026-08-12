@@ -1985,3 +1985,223 @@ git commit -m "fix(command): stop the palette from running /compact before its f
 - [ ] `titah doctor` names every model missing a `contextWindow`
 - [ ] No `any` in `src/`
 - [ ] All new comments are Indonesian and explain WHY; all new user-facing strings are English
+
+---
+
+### Task 10: The `reserved` floor, and a `doctor` warning for the collision
+
+**Added 2026-08-11, after Task 5's review.** Not in the original plan — it corrects a design defect the review reproduced. **Must land before Task 6**, because Task 6's `prepareStep` calls `overBudget` and its tests would otherwise be written against the un-floored threshold.
+
+**The defect.** `reserved` defaults to `8192`. A model with an 8192-token window makes `contextWindow - reserved` exactly `0`, so `overBudget` returns true for every measured value. Reproduced by the reviewer: **12 tokens of context triggered a full summarisation** on an 8k model with stock config, silently, on every turn from the third onward. 8k local models are a common setup, so this is Titah's collision, not a user misconfiguration.
+
+Task 3 deliberately pinned `overBudget(1, 8192, 16384) === true` with the rationale that a misconfiguration should read as aggressive compaction rather than a dead feature. That rationale stands for `reserved` *larger than the whole window*; it does not transfer to the shipped default meeting a common model.
+
+**Files:**
+- Modify: `src/core/compact.ts` (`overBudget`)
+- Modify: `src/cli.ts` (`cmdDoctor`)
+- Test: `test/compact.test.ts`, `test/cli-doctor.test.ts`
+
+**Interfaces:**
+- Consumes: `overBudget`, `contextWindowFor`, `undeclaredContextWindows`
+- Produces: `RESERVE_FRACTION = 4`; `effectiveReserved(contextWindow: number, reserved: number): number`; `reservedCollisions(config: Config): { model: string; reserved: number; contextWindow: number }[]`
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `test/compact.test.ts`:
+
+```ts
+test("reserved tidak boleh menelan lebih dari seperempat jendela", () => {
+  // Default reserved (8192) sama besar dengan jendela model 8k, dan itu
+  // membuat ambangnya nol — pemadatan menyala tiap giliran walau konteksnya
+  // dua belas token. Itu tabrakan bawaan Titah, bukan salah setelan user.
+  assert.equal(effectiveReserved(8192, 8192), 2048)
+  assert.equal(overBudget(6144, 8192, 8192), true)
+  assert.equal(overBudget(6143, 8192, 8192), false)
+})
+
+test("jendela besar tidak terpengaruh lantainya", () => {
+  // 8192 masih di bawah seperempat dari 200k, jadi nilai yang wajar lewat
+  // apa adanya. Lantai ini hanya menangkap yang mustahil.
+  assert.equal(effectiveReserved(200_000, 8192), 8192)
+  assert.equal(overBudget(191_808, 200_000, 8192), true)
+  assert.equal(overBudget(191_807, 200_000, 8192), false)
+})
+
+test("reserved nol tetap nol — lantainya batas atas, bukan batas bawah", () => {
+  // Lantai membatasi seberapa BANYAK reserved boleh mengambil. User yang
+  // sengaja menyetel 0 minta pemadatan sedekat mungkin ke batas, dan itu
+  // pilihannya.
+  assert.equal(effectiveReserved(8192, 0), 0)
+  assert.equal(overBudget(8192, 8192, 0), true)
+  assert.equal(overBudget(8191, 8192, 0), false)
+})
+
+test("reservedCollisions menyebut model yang reserved-nya menelan jendelanya", () => {
+  const config = Config.parse({
+    compaction: { reserved: 8192 },
+    provider: {
+      ollama: {
+        models: { "kecil": { contextWindow: 8192 }, "besar": { contextWindow: 200000 } },
+      },
+    },
+  })
+  assert.deepEqual(reservedCollisions(config), [
+    { model: "ollama/kecil", reserved: 8192, contextWindow: 8192 },
+  ])
+})
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `node --test test/compact.test.ts`
+Expected: FAIL — `effectiveReserved is not a function`.
+
+Also expected: the Task 3 test `"reserved lebih besar dari window memicu segera, bukan diam-diam mati"` (`overBudget(1, 8192, 16384) === true`) now **fails**, because the floor makes the threshold 6144. That test is being deliberately superseded — see Step 4.
+
+- [ ] **Step 3: Implement the floor**
+
+In `src/core/compact.ts`, above `overBudget`:
+
+```ts
+/**
+ * Berapa bagian jendela yang paling banyak boleh diambil `reserved`.
+ *
+ * Tanpa lantai ini, `reserved` bawaan (8192) sama besar dengan jendela model
+ * 8k, ambangnya jadi nol, dan pemadatan menyala di TIAP giliran walau
+ * konteksnya cuma dua belas token — terukur. Model 8k lokal itu setelan yang
+ * umum, jadi tabrakannya milik Titah, bukan salah setelan user.
+ */
+export const RESERVE_FRACTION = 4
+
+/**
+ * `reserved` yang benar-benar dipakai: tidak pernah lebih dari seperempat
+ * jendela.
+ *
+ * Ini batas ATAS, bukan bawah — `reserved: 0` tetap nol, karena user yang
+ * menyetelnya nol memang minta pemadatan sedekat mungkin ke batas jendela.
+ */
+export function effectiveReserved(contextWindow: number, reserved: number): number {
+  return Math.min(reserved, Math.floor(contextWindow / RESERVE_FRACTION))
+}
+```
+
+and change `overBudget`'s final line to use it:
+
+```ts
+  return lastStepTokens >= contextWindow - effectiveReserved(contextWindow, reserved)
+```
+
+- [ ] **Step 4: Restate the superseded Task 3 test**
+
+`test/compact.test.ts` has a Task 3 test named `"reserved lebih besar dari window memicu segera, bukan diam-diam mati"` asserting `overBudget(1, 8192, 16384) === true`. The floor makes that false, and deliberately so.
+
+**Do not delete it.** Rewrite it to pin what is now true, and say in its comment why the old expectation was dropped:
+
+```ts
+test("reserved yang mustahil dijinakkan lantainya, bukan dibiarkan memicu terus", () => {
+  // Dulu test ini mematok `overBudget(1, 8192, 16384) === true` dengan alasan
+  // salah setelan harus terlihat sebagai pemadatan agresif, bukan fitur mati.
+  // Alasan itu gugur ketika ternyata reserved BAWAAN bertabrakan dengan jendela
+  // 8k yang umum: yang terlihat bukan salah setelan user, melainkan Titah yang
+  // memadatkan tiap giliran tanpa alasan. Lantainya menjinakkan keduanya, dan
+  // `doctor` yang bicara soal setelannya.
+  assert.equal(effectiveReserved(8192, 16384), 2048)
+  assert.equal(overBudget(6144, 8192, 16384), true)
+  assert.equal(overBudget(1, 8192, 16384), false)
+})
+```
+
+- [ ] **Step 5: Implement the collision report**
+
+Append to `src/core/compact.ts`:
+
+```ts
+/**
+ * Model yang `reserved`-nya menelan seperempat jendelanya atau lebih.
+ *
+ * Lantai di `effectiveReserved` sudah membuat perilakunya waras, jadi ini
+ * bukan peringatan soal kerusakan — ini memberi tahu user bahwa angka yang ia
+ * tulis TIDAK dipakai apa adanya, supaya ia tidak menyetel ulang berkali-kali
+ * dan bingung kenapa tidak ada bedanya.
+ */
+export function reservedCollisions(
+  config: Config,
+): { model: string; reserved: number; contextWindow: number }[] {
+  const reserved = config.compaction.reserved
+  const out: { model: string; reserved: number; contextWindow: number }[] = []
+  for (const [providerId, provider] of Object.entries(config.provider)) {
+    for (const [modelId, model] of Object.entries(provider.models)) {
+      const contextWindow = model.contextWindow
+      if (contextWindow === undefined) continue
+      if (reserved <= Math.floor(contextWindow / RESERVE_FRACTION)) continue
+      out.push({ model: `${providerId}/${modelId}`, reserved, contextWindow })
+    }
+  }
+  return out
+}
+```
+
+This needs `Config` imported as a type in `src/core/compact.ts`. If that import would create a cycle, put `reservedCollisions` in `src/core/provider.ts` beside `undeclaredContextWindows` instead and say which you chose.
+
+- [ ] **Step 6: Report it in `doctor`**
+
+In `src/cli.ts`, inside the `Context windows` section added by Task 1, after the undeclared loop:
+
+```ts
+  for (const clash of reservedCollisions(loaded.config)) {
+    out(
+      `  ! ${clash.model} — compaction.reserved (${clash.reserved}) is large for a ` +
+        `${clash.contextWindow}-token window; capped at ${Math.floor(clash.contextWindow / 4)}`,
+    )
+  }
+```
+
+- [ ] **Step 7: Write the doctor test**
+
+Append to `test/cli-doctor.test.ts`, using the file's existing `isolatedProject` and `runDoctor` helpers:
+
+```ts
+test("doctor bilang kalau reserved dijinakkan lantainya", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      compaction: { reserved: 8192 },
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "kecil": { contextWindow: 8192 } },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /Context windows/)
+  assert.match(output, /ollama\/kecil/)
+  assert.match(output, /capped at 2048/)
+})
+```
+
+- [ ] **Step 8: Run and prove by mutation**
+
+Run: `npm run typecheck && npm run build && npm test`
+
+Mutations, each restored after:
+1. `effectiveReserved` returns `reserved` unchanged. Expected: the floor tests fail.
+2. `Math.min` → `Math.max`. Expected: the large-window test fails (8192 becomes 50000).
+3. `effectiveReserved` returns `Math.max(reserved, …)` so `reserved: 0` becomes 2048. Expected: the `reserved: 0` test fails — the floor must be an upper bound on `reserved`, not a lower one.
+4. `reservedCollisions` returns `[]`. Expected: the doctor test fails.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/core/compact.ts src/cli.ts test/compact.test.ts test/cli-doctor.test.ts
+git commit -m "fix(compact): cap reserved at a quarter of the window, and have doctor say so
+
+The default reserved (8192) equals a common 8k context window, which made the
+threshold zero and fired compaction on every turn — measured at twelve tokens of
+context. Task 3's test pinning the opposite is restated rather than deleted: its
+rationale covered a user misconfiguration, not the shipped default colliding
+with a common model."
+```
