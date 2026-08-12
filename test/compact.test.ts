@@ -623,6 +623,30 @@ test("pemotongan dihitung per BYTE, bukan per karakter", async () => {
   assert.doesNotMatch(chunk, /�/)
 })
 
+test("pemisah antar-bagian ikut dihitung, jadi potongan tidak melewati batasnya", () => {
+  // Ronde review ketiga: `bytes` hanya menjumlahkan `byteLength(part)`, sementara
+  // `flush()` menyatukannya dengan "\n\n". Satu potongan karena itu bisa
+  // sebesar `limit + 2×(jumlah−1)`. Untuk giliran agentic panjang dengan puluhan
+  // pesan pendek per potongan, itu beberapa persen di atas anggaran peringkas —
+  // kecil, tapi satu-satunya tugas fungsi ini adalah "tiap potongan muat".
+  // Di ATAS lantai MIN_CHUNK_BYTES (512): di bawahnya lantai itu yang berlaku dan
+  // test ini akan mengukur angka yang bukan miliknya.
+  const parts = Array.from({ length: 60 }, (_, index) => `user: pesan nomor ${index} di sini`)
+  const limit = 1_000
+
+  const chunks = packChunks(parts, limit)
+
+  assert.ok(chunks.length > 1, "harus sungguh memotong, kalau tidak test ini kosong")
+  for (const chunk of chunks) {
+    assert.ok(
+      Buffer.byteLength(chunk) <= limit,
+      `potongan ${Buffer.byteLength(chunk)} byte melewati anggaran ${limit}`,
+    )
+  }
+  // Dan tidak ada bagian yang hilang gara-gara akuntansi yang lebih ketat.
+  for (const part of parts) assert.ok(chunks.some((chunk) => chunk.includes(part)))
+})
+
 test("potongan multibyte tetap utuh saat ukurannya tepat di batas", async () => {
   // Penjaga arah untuk pemotongan per byte: memotong satu byte terlalu jauh
   // membelah karakter, memotong satu byte terlalu sedikit membuang karakter yang
