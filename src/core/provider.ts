@@ -174,29 +174,23 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
 }
 
 /**
- * Jendela yang membatasi prompt PERINGKAS.
+ * Model yang BENAR-BENAR menulis ringkasan.
  *
- * Peringkas ditulis `smallModel` kalau ada, jadi jendelanya yang berlaku — bukan
- * jendela model giliran. Ini yang membuat prompt peringkas bisa dibatasi sama
- * sekali: sebelumnya tidak ada satu pun pemanggil `contextWindowFor` untuk
- * `smallModel`, dan promptnya terukur 19,3x jendela yang ia nyatakan sendiri.
+ * Satu fungsi, dipakai untuk dua hal yang wajib sepakat: me-resolve modelnya, dan
+ * menentukan jendela yang membatasi promptnya. Sebelumnya keduanya dihitung dari
+ * ekspresi yang BERBEDA — peringkasnya `config.smallModel ?? input.model`,
+ * jendelanya dari `agentDef?.model ?? modelOverride` — dan keduanya menyimpang
+ * pada kasus yang sangat nyata: `subagent.ts` memanggil `prompt()` TANPA `model`,
+ * jadi sebuah agent yang menyatakan `model` sendiri memberi jendela model itu
+ * (mis. 400.000) sementara yang meringkas adalah `config.model` (mis. 8192).
+ * Transkrip 1,2 MB lalu dikirim sebagai satu panggilan ke jendela 8k dan dipotong
+ * diam-diam — kegagalan yang sama yang seluruh siklus ini tutup.
  *
- * Urutannya: jendela `smallModel`, lalu jendela model giliran. Yang kedua bukan
- * tebakan — kalau `smallModel` tidak disetel, model giliran SENDIRI yang
- * meringkas, dan angkanya toh sudah wajib ada agar pemadatan otomatis hidup.
- * `smallModel` yang disetel tapi jendelanya belum dideklarasikan juga mendarat di
- * sini, dan itu yang dilaporkan `smallModelWindowMissing` ke `doctor` — perilaku
- * yang aman, tapi bukan yang user maksud.
- *
- * `undefined` kalau TIDAK ADA yang dideklarasikan, bukan `0`. Nol terlihat seperti
- * angka dan ikut terhitung: ia melewati aritmetika anggaran menjadi negatif, lalu
- * dijinakkan lantai jadi potongan terkecil yang mungkin — ~400 panggilan
- * smallModel untuk transkrip 200 KB. `undefined` berarti "tidak diketahui", dan
- * pemanggilnya memperlakukannya sebagai "jangan potong".
+ * Dua sumber kebenaran untuk satu keputusan adalah bug yang menunggu; ini
+ * membuatnya tidak mungkin lagi.
  */
-export function summariserWindowFor(config: Config, turnModel?: string): number | undefined {
-  const small = config.smallModel ? contextWindowFor(config, config.smallModel) : undefined
-  return small ?? contextWindowFor(config, turnModel)
+export function summariserModelFor(config: Config, turnModel?: string): string | undefined {
+  return config.smallModel ?? turnModel ?? config.model
 }
 
 /**

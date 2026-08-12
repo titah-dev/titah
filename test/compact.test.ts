@@ -365,22 +365,22 @@ test("requestTokens tumbuh bersama isinya, bukan bersama jumlah pesannya", () =>
 
 // ---------- peringkas berpotong ----------
 
-test("chunkBytes menyisakan tempat untuk instruksi peringkas, bukan cuma jendelanya", () => {
+test("anggaran prompt peringkas adalah SELURUH prompt, bukan cuma transkripnya", () => {
   // Inti issue #1: prompt peringkas TIDAK dibatasi apa pun. Terukur, dengan
   // smallModel yang menyatakan contextWindow 4096, prompt yang dikirim 78.964
   // token lewat `/compact` dan 79.662 lewat jalur otomatis — 19,3x dan 19,4x.
-  // Provider tidak menolaknya; ia MEMOTONG bagian paling awal, lalu peringkas
-  // menulis ringkasan yang yakin tentang bahan yang tidak pernah dilihatnya.
   //
-  // COMPACT_SYSTEM ikut memakan jendela yang sama dengan transkripnya. Anggaran
-  // potongan yang mengabaikannya tetap meluap — itu versi naif dari perbaikan ini.
-  const budget = budgetTokens(4096, 1000) * REAL_BYTES_PER_TOKEN
-  const chunk = summariserChunkBytes(4096, 1000)
-
-  assert.ok(chunk > 0, "harus ada ruang untuk transkrip, bukan nol")
-  assert.ok(chunk < budget, "instruksi peringkas dan pembungkusnya harus sudah dikurangkan")
-  assert.ok(chunk <= budget - Buffer.byteLength(COMPACT_SYSTEM))
+  // Kontraknya: `summariserChunkBytes` memulangkan anggaran SELURUH prompt, dan
+  // `summariseInChunks` yang menguranginya dengan instruksi, pembungkus, dan
+  // teks fokus. Pembagian itu penting — pada versi sebelumnya sebagian
+  // pengurangan dilakukan di sini dan sebagian tidak dilakukan siapa pun, dan
+  // teks fokus lolos dari hitungan sama sekali (42.515 byte pada jendela 4096).
+  assert.equal(summariserChunkBytes(4096, 1000), budgetTokens(4096, 1000) * REAL_BYTES_PER_TOKEN)
+  assert.ok(summariserChunkBytes(4096, 1000) > 0)
+  // Dan yang dijaga adalah prompt yang SUNGGUH dikirim, bukan angka perantara:
+  // itu dipatok oleh test "tidak satu pun prompt melewati anggaran" di bawah.
 })
+
 
 test("jendela yang lebih kecil memberi potongan yang lebih kecil, dan tidak pernah negatif", () => {
   assert.ok(summariserChunkBytes(32_768, 1000) > summariserChunkBytes(8192, 1000))
@@ -512,6 +512,40 @@ test("pemotongan selalu maju: peringkas yang membalas sepanjang bahannya tidak m
   assert.ok(calls > 1, "harus sungguh mencoba memotong")
   assert.ok(calls < 40, `berhenti sendiri, bukan menggantung — ${calls} panggilan`)
   assert.ok(summary.length > 0)
+})
+
+test("teks fokus ikut dihitung, dan dibatasi — bukan dikirim utuh tiap potongan", async () => {
+  // Ronde review kedua menemukan ini, dan ia mengalahkan seluruh batas issue #1:
+  // `focus` adalah teks prompt user (`focus: text`), tidak dibatasi apa pun, dan
+  // `compactPrompt` menempelkannya ke SETIAP potongan. Terukur pada versi itu:
+  // anggaran potongan 11.047 byte, prompt nyata 42.515 byte ≈ 10.629 token pada
+  // jendela 4096 — 2,6x, dan transkripnya duduk di DEPAN prompt, jadi yang
+  // dipotong provider justru bahan yang sedang diringkas.
+  const focus = "spesifikasi ".repeat(2_500) // ~30 KB, seperti paste berkas
+  const parts = Array.from({ length: 12 }, (_, index) => `user: bagian ${index} ${"a".repeat(900)}`)
+  const budget = 6_000
+
+  const prompts: string[] = []
+  await summariseInChunks(
+    async (system, prompt) => {
+      prompts.push(system + prompt)
+      return "RINGKASAN"
+    },
+    parts,
+    budget,
+    focus,
+  )
+
+  assert.ok(prompts.length > 1, "harus sungguh memotong, kalau tidak test ini kosong")
+  for (const whole of prompts) {
+    assert.ok(
+      Buffer.byteLength(whole) <= budget,
+      `prompt ${Buffer.byteLength(whole)} byte melewati anggaran ${budget}`,
+    )
+  }
+  // Fokusnya tetap sampai — dipotong, bukan dibuang: ia tetap menajamkan
+  // ringkasan, hanya tidak lagi boleh menelan seluruh jendela.
+  assert.match(prompts[0] ?? "", /spesifikasi/)
 })
 
 test("batas kedalaman menyatukan SEMUA ringkasan, dan menandai kalau harus memotong", async () => {

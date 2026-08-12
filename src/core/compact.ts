@@ -450,10 +450,24 @@ const MIN_CHUNK_BYTES = 512
  */
 export function summariserChunkBytes(contextWindow: number | undefined, reserved: number): number {
   if (contextWindow === undefined) return Number.POSITIVE_INFINITY
-  const overhead = Buffer.byteLength(COMPACT_SYSTEM) + Buffer.byteLength(compactPrompt(""))
-  const bytes = budgetTokens(contextWindow, reserved) * REAL_BYTES_PER_TOKEN - overhead
-  return Math.max(MIN_CHUNK_BYTES, bytes)
+  return budgetTokens(contextWindow, reserved) * REAL_BYTES_PER_TOKEN
 }
+
+/**
+ * Bagian anggaran prompt yang paling banyak boleh diambil teks FOKUS: seperempat,
+ * angka yang sama dengan `RESERVE_FRACTION` dan `TAIL_FRACTION`.
+ *
+ * `focus` adalah teks prompt user apa adanya (`focus: text` di agent.ts), jadi ia
+ * tidak dibatasi apa pun — dan `compactPrompt` menempelkannya ke SETIAP potongan.
+ * Terukur sebelum batas ini ada: anggaran potongan 11.047 byte, prompt nyata
+ * 42.515 byte ≈ 10.629 token pada jendela 4096 — 2,6x, dan transkripnya duduk di
+ * DEPAN prompt, jadi yang dipotong provider justru bahan yang sedang diringkas.
+ * Batas issue #1 dikalahkan oleh satu paste berkas sebagai prompt.
+ *
+ * Dipotong, bukan dibuang: fokus tetap menajamkan ringkasan, ia cuma tidak lagi
+ * boleh menelan jendela yang seharusnya memuat transkripnya.
+ */
+export const FOCUS_FRACTION = 4
 
 /**
  * Berapa kali paling banyak "ringkas ringkasannya" boleh berulang.
@@ -538,19 +552,30 @@ export function packChunks(parts: string[], chunkBytes: number): string[] {
 export async function summariseInChunks(
   summarise: (system: string, prompt: string) => Promise<string>,
   parts: string[],
-  chunkBytes: number,
+  promptBytes: number,
   focus?: string,
   round = 0,
 ): Promise<string> {
+  // Seluruh aritmetika batas hidup DI SINI, bukan dibagi dengan pemanggil.
+  // `promptBytes` adalah anggaran SELURUH prompt — instruksi, pembungkus, fokus,
+  // dan transkripnya — karena itulah yang dilihat provider. Pemanggil yang
+  // menghitung sebagian sendiri adalah bagaimana teks fokus bisa lolos dari
+  // hitungan sama sekali.
+  const trimmedFocus =
+    focus === undefined ? undefined : sliceBytes(focus, Math.floor(promptBytes / FOCUS_FRACTION))
+  const overhead =
+    Buffer.byteLength(COMPACT_SYSTEM) + Buffer.byteLength(compactPrompt("", trimmedFocus))
+  const chunkBytes = Math.max(MIN_CHUNK_BYTES, promptBytes - overhead)
+
   const chunks = packChunks(parts, chunkBytes)
   if (chunks.length === 0) return ""
   if (chunks.length === 1) {
-    return summarise(COMPACT_SYSTEM, compactPrompt(chunks[0] as string, focus))
+    return summarise(COMPACT_SYSTEM, compactPrompt(chunks[0] as string, trimmedFocus))
   }
 
   const summaries: string[] = []
   for (const chunk of chunks) {
-    const written = await summarise(COMPACT_SYSTEM, compactPrompt(chunk, focus))
+    const written = await summarise(COMPACT_SYSTEM, compactPrompt(chunk, trimmedFocus))
     // SATU potongan kosong menghentikan semuanya, dan mengembalikan kosong.
     //
     // Dua alasan, dan keduanya menolak "lewati saja yang gagal":
@@ -589,7 +614,7 @@ export async function summariseInChunks(
     if (Buffer.byteLength(joined) <= chunkBytes) return joined
     return sliceBytes(joined, chunkBytes - Buffer.byteLength(TRUNCATED)) + TRUNCATED
   }
-  return summariseInChunks(summarise, summaries, chunkBytes, focus, round + 1)
+  return summariseInChunks(summarise, summaries, promptBytes, trimmedFocus, round + 1)
 }
 
 /** Membungkus ringkasan supaya model tahu ini catatan, bukan ucapan user. */

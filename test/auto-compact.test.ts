@@ -12,6 +12,7 @@ process.env.TITAH_DB = path.join(root, "autocompact.db")
 process.env.HOME = path.join(root, "home")
 
 const { autoCompact } = await import("../src/core/auto-compact.ts")
+const { requestTokens } = await import("../src/core/compact.ts")
 const {
   createSession,
   appendModelMessages,
@@ -357,6 +358,97 @@ test("prune yang CUKUP tidak naik ke peringkasan, walau angka provider terakhir 
   assert.ok(result.prunedBytes > 10_000)
   assert.equal(result.summarised, false)
   assert.equal(latestCompaction(session.id), undefined)
+})
+
+test("angka provider yang sudah melewati jendela tetap memicu pemangkasan ekor", async () => {
+  // Ronde review kedua: `doesNotFit` sekarang MURNI pengukuran byte/4, dan
+  // pemeriksaan itu sengaja melewati `reserved` — jadi tidak ada kelapangan yang
+  // menyerap remehnya. Kalau provider melaporkan 8354 token untuk jendela 8192
+  // (luapan NYATA) sementara pesan yang sama terukur ~6100 lewat byte/4, ekor
+  // tidak pernah dipangkas dan permintaan berikutnya dipotong diam-diam — tiap
+  // langkah. Versi sebelum issue #2 memakai angka provider dan memangkasnya.
+  const session = createSession(root)
+  // Teks yang cukup besar untuk melewati ANGGARAN (900) tapi masih di bawah
+  // JENDELA (1000) menurut pengukuran — di situlah celahnya.
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    { role: "assistant", content: "z".repeat(3_200) },
+    { role: "user", content: "dua" },
+    call("b"),
+    smallResult("b"), // di dalam ekor, dan bisa diprune
+  ])
+
+  const before = listModelRows(session.id).map((row) => row.message)
+  const terukur = requestTokens(before)
+  // Positif dulu: fixture-nya memang berada di celah itu, kalau tidak test ini
+  // menguji sesuatu yang lain.
+  assert.ok(terukur >= 900, `terukur ${terukur} harus di atas anggaran 900`)
+  assert.ok(terukur < 1000, `terukur ${terukur} harus di bawah jendela 1000`)
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    // Angka provider yang SUNGGUH melewati jendela.
+    lastStepTokens: 5_000,
+    summarise: async () => "", // gagal, jadi tidak ada ringkasan yang menolong
+  })
+
+  assert.equal(result.ran, true)
+  assert.equal(result.summarised, false)
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[4]?.message),
+    /output was dropped/,
+    "angka provider bilang tidak muat, jadi ekor harus dipangkas",
+  )
+})
+
+test("hasil task di riwayat lama MENGALAH kalau peringkasan gagal", async () => {
+  // Ronde review kedua. Perlindungan hasil sub-agent (#4) bertumpu pada
+  // peringkas yang mewakilinya. Kalau peringkasnya GAGAL, tidak ada ringkasan,
+  // batas air tidak maju, dan baris itu tetap dikirim — sementara `pruneTail`
+  // hanya menjangkau [cut, akhir). Jadi satu hasil task 20 KB di riwayat lama
+  // duduk di luar jangkauan semua tuas yang tersisa.
+  //
+  // Sebelum #4 ia terpangkas tanpa syarat. Perlindungan tidak boleh berarti
+  // permintaan kebesaran terkirim: pada titik ini memotong diam-diam oleh
+  // provider lebih buruk daripada kehilangan jawaban sub-agent.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    call("t"),
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "t",
+          toolName: "task",
+          output: { type: "text", value: "jawaban sub-agent ".repeat(1_200) }, // ~22 KB
+        },
+      ],
+    },
+    { role: "user", content: "dua" },
+    { role: "assistant", content: "selesai" },
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => "", // peringkas gagal
+  })
+
+  assert.equal(result.summarised, false)
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[2]?.message),
+    /sub-agent's answer was dropped/,
+    "hasil task harus mengalah, dengan penanda yang menyebut harganya",
+  )
+  assert.ok(result.prunedBytes > 10_000)
 })
 
 test("peringkas yang GAGAL tidak mematikan pemangkasan ekor", async () => {

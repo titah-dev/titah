@@ -5,7 +5,7 @@ import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { contextWindowFor, resolveModel, summariserWindowFor } from "./provider.ts"
+import { contextWindowFor, resolveModel, summariserModelFor } from "./provider.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -387,16 +387,15 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // "masih perlu diringkas?" yang justru diambil karenanya.
   const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
   const systemBytes = Buffer.byteLength(system) + messageBytes(userTurn)
-  // Jendela yang membatasi prompt PERINGKAS — milik `smallModel` kalau ada.
-  // Dihitung di sini, bukan di dalam `autoCompact`, karena resolusi model adalah
-  // pengetahuan pemanggil: `autoCompact` hanya menerima angkanya.
-  const summariserWindow = summariserWindowFor(config, modelID)
+  // Model peringkas dihitung SEKALI, lalu dipakai untuk dua hal yang wajib
+  // sepakat: me-resolve modelnya di bawah, dan menentukan jendela yang membatasi
+  // promptnya. Dua ekspresi berbeda untuk satu keputusan adalah bug yang
+  // menunggu — dan sudah terjadi sekali (lihat `summariserModelFor`).
+  const summariserModel = summariserModelFor(config, input.model)
+  const summariserWindow = contextWindowFor(config, summariserModel)
 
   const summarise = (system: string, userPrompt: string): Promise<string> =>
-    synthesizerFor(
-      resolver(config, config.smallModel ?? input.model),
-      controller.signal,
-    )(system, userPrompt)
+    synthesizerFor(resolver(config, summariserModel), controller.signal)(system, userPrompt)
 
   try {
     try {
@@ -1005,10 +1004,8 @@ async function compactTurn(
     // persis), jadi dua pilihan model berarti `/compact` diam-diam menghasilkan
     // ringkasan yang berbeda mutunya dari yang ditulis otomatis di sesi yang
     // sama — beda yang tidak pernah bisa dijelaskan ke user.
-    const summarise = synthesizerFor(
-      resolver(config, config.smallModel ?? input.model),
-      controller.signal,
-    )
+    const summariserModel = summariserModelFor(config, input.model)
+    const summarise = synthesizerFor(resolver(config, summariserModel), controller.signal)
     // Lewat `summariseInChunks`, sama dengan jalur otomatis: prompt peringkas
     // dibatasi jendela model yang MENULIS ringkasan. Jalur ini justru yang
     // paparannya paling lebar — memindahkan `/compact` ke `smallModel` membuat
@@ -1017,7 +1014,7 @@ async function compactTurn(
     const summary = await summariseInChunks(
       summarise,
       parts,
-      summariserChunkBytes(summariserWindowFor(config, input.model), config.compaction.reserved),
+      summariserChunkBytes(contextWindowFor(config, summariserModel), config.compaction.reserved),
       focus,
     )
 

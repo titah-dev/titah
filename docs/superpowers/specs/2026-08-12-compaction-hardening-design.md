@@ -231,6 +231,35 @@ accepted, and the tests written for #1 checked that chunking *happened* rather
 than that its output was whole and within budget. The new tests assert the
 output.
 
+## Second review round, 2026-08-12
+
+A second `/code-review` on the same PR — after the fixes above — found five more.
+That is the honest headline: **two consecutive review rounds each found real
+defects in this cycle's work**, and the second round's findings were mostly in the
+code the first round had just produced.
+
+| # | Where | What |
+|---|---|---|
+| S1 | `summariserChunkBytes` overhead | The `focus` text — the user's entire prompt, unbounded — was appended to **every** chunk prompt and counted by nobody. Measured: chunk budget 11,047 bytes, actual prompt **42,515 bytes ≈ 10,629 tokens against a 4,096 window** (2.6×), with the transcript sitting *first* so the provider truncated exactly the material being summarised. Issue #1's bound was defeated by one pasted file. Now `summariseInChunks` owns the whole budget, and `focus` is clamped to a quarter of it. After: largest prompt 11,902 bytes ≈ 2,976 tokens. |
+| S2 | `doesNotFit` | Made purely measurement-based by #2, and it deliberately skips `reserved` — so nothing absorbed `requestTokens`' own admitted 30–50% under-count. A provider reporting 8,354 tokens on an 8,192 window while the same messages measure ~6,100 meant the tail was never pruned, every step. The provider number is back as a second signal, credited with what was freed; the larger of the two wins. |
+| S3 | sparing `task` in old history | #4's protection assumes the summariser will represent those results. When the summariser **fails**, nothing is saved, the watermark does not move, and `pruneTail` only reaches `[cut, end)` — so a 22 KB `task` result in old history sat outside every remaining lever. It now yields, with the cost-stating marker, before the tail is touched. |
+| S4 | summariser model vs window | The summariser was resolved from `config.smallModel ?? input.model` while its window came from `agentDef?.model ?? modelOverride` — **two expressions for one decision**. They diverge in a real case: `subagent.ts` calls `prompt()` with no `model`, so an agent declaring its own model gave a 400,000-token window while `config.model` (8,192) did the summarising. `summariserModelFor` is now the single source for both. |
+| S5 | `?? 0` in `autoCompact` | Converted "unknown window" back into the `0` that S-round-one had just removed, one edit away from being live. Dropped. |
+
+**The pattern across both rounds is the same shape of mistake**, and it is worth
+stating plainly rather than filed as five items: every one of these is a *bound*
+that trusted a number computed somewhere else. S1 trusted a caller to have
+subtracted the overhead; S2 trusted a byte ratio where a provider fact was
+available; S4 trusted two expressions to stay equal. The structural answer, applied
+in each case, is to give the bound everything it needs and let it do its own
+arithmetic — `summariseInChunks` now owns the whole prompt budget, `doesNotFit`
+consults both signals, and one function resolves the summariser model.
+
+**Not every fix has a test that would catch a regression.** S4's fix is structural
+(one expression used twice); its test pins `summariserModelFor`'s semantics, not
+agent.ts's wiring. S5's guard is unreachable today, so nothing exercises it. Both
+are stated here rather than counted as covered.
+
 ## Out of scope
 
 Intent state (#5) — its own design. The gap-analysis backlog (MCP, web tools,
