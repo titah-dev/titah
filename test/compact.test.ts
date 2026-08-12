@@ -500,6 +500,90 @@ test("prune bisa menjangkau ke DALAM ekor lewat `from`", () => {
   assert.doesNotMatch(JSON.stringify(inside.messages[2]), /output was dropped/)
 })
 
+/** Hasil `task`: jawaban sub-agent, seukuran hasil `read` di fixture lain. */
+const taskResult = (id: string): ModelMessage => ({
+  role: "tool",
+  content: [
+    {
+      type: "tool-result",
+      toolCallId: id,
+      toolName: "task",
+      output: { type: "text", value: "jawaban sub-agent ".repeat(40) },
+    },
+  ],
+})
+
+test("prune biasa MELEWATI hasil task, dan tetap membuang hasil read di pesan yang sama", () => {
+  // Penanda prune menyuruh model menjalankan ulang tool-nya. Untuk `read` itu
+  // nasihat yang benar; untuk `task` ia menyuruh mendispatch ulang satu giliran
+  // bersarang penuh — model call sendiri, tool call sendiri, mungkin CLI
+  // eksternal terdelegasi. Harga memulihkannya yang membedakan keduanya.
+  const messages = [
+    user("satu"),
+    toolCall("a"),
+    taskResult("a"),
+    toolCall("b"),
+    toolResult("b"),
+    user("dua"),
+  ]
+
+  const { messages: pruned, bytesFreed } = pruneToolOutputs(messages, messages.length)
+
+  // Hasil read dibuang seperti biasa — kalau tidak, test ini akan hijau hanya
+  // karena prune berhenti bekerja sama sekali.
+  assert.match(JSON.stringify(pruned[4]), /output was dropped/)
+  assert.ok(bytesFreed > 0)
+  // Hasil task lolos utuh: peringkas yang menanganinya, dan ringkasan itu lossy
+  // tapi tidak destruktif.
+  assert.deepEqual(pruned[2], messages[2])
+  assert.doesNotMatch(JSON.stringify(pruned[2]), /dropped/)
+})
+
+test("prune ekor MEMBUANG hasil task, tapi penandanya menyebut harganya", () => {
+  // Di ekor, mengecualikan task akan mengembalikan bahaya aslinya: permintaan
+  // tetap kebesaran, provider memotong diam-diam, dan model menjawab yakin
+  // tentang bahan yang tidak pernah dilihatnya. Kehilangan isi ekor adalah
+  // kerugian yang lebih kecil — tapi model harus tahu apa yang baru saja hilang.
+  const messages = [user("satu"), toolCall("a"), taskResult("a")]
+
+  const { messages: pruned, bytesFreed } = pruneToolOutputs(messages, messages.length, 0, false)
+
+  assert.ok(bytesFreed > 0)
+  const rendered = JSON.stringify(pruned[2])
+  assert.match(rendered, /sub-agent/)
+  // Penandanya TIDAK boleh berbunyi seperti penanda `read`: "jalankan ulang
+  // kalau perlu" tanpa menyebut ongkosnya adalah nasihat yang salah di sini.
+  assert.doesNotMatch(rendered, /re-run the tool if you need it/)
+})
+
+test("penanda task punya ukurannya sendiri, jadi bytesFreed tetap bersih", () => {
+  // Dua penanda dengan panjang berbeda: memakai satu angka untuk keduanya
+  // membuat penghematan hasil task dilaporkan lebih besar dari sebenarnya —
+  // arah kesalahan yang justru dilarang, karena pemanggil lalu mengira sudah
+  // cukup meringan dan melewatkan peringkasan yang dibutuhkan.
+  const message = taskResult("a")
+  const output = (message.content as { output: unknown }[])[0]?.output
+  const removed = Buffer.byteLength(JSON.stringify(output))
+
+  const { messages: pruned, bytesFreed } = pruneToolOutputs([toolCall("a"), message], 2, 0, false)
+  const markerSize = Buffer.byteLength(
+    JSON.stringify((pruned[1]?.content as { output: unknown }[])[0]?.output),
+  )
+
+  assert.ok(markerSize > 97, "penanda task memang lebih panjang dari penanda biasa (97 byte)")
+  assert.equal(bytesFreed, removed - markerSize)
+})
+
+test("prune ekor dua kali tidak menghemat apa pun untuk kedua kalinya", () => {
+  // Idempotensi harus berlaku untuk KEDUA penanda: output yang sudah berisi
+  // penanda task ukurannya sama persis dengan penanda itu, jadi menggantinya
+  // lagi tidak membebaskan satu byte pun dan tidak boleh dihitung.
+  const once = pruneToolOutputs([toolCall("a"), taskResult("a")], 2, 0, false)
+  const twice = pruneToolOutputs(once.messages, 2, 0, false)
+  assert.equal(twice.bytesFreed, 0)
+  assert.deepEqual(twice.messages, once.messages)
+})
+
 test("bytesFreed dihitung BERSIH dari penanda, bukan kotor", () => {
   // Perbaikan ini pernah tidak terpatok sama sekali: mengembalikan
   // `bytesFreed += removed` (kotor) meninggalkan seluruh suite hijau.

@@ -103,8 +103,8 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   let current = messages
   let prunedBytes = 0
 
-  const prune = (from: number, upTo: number): void => {
-    const result = pruneToolOutputs(current, upTo, from)
+  const prune = (from: number, upTo: number, sparing = true): void => {
+    const result = pruneToolOutputs(current, upTo, from, sparing)
     if (result.bytesFreed === 0) return
     for (const [index, message] of result.messages.entries()) {
       if (message === current[index]) continue
@@ -180,8 +180,9 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   const doesNotFit = (freedBytes: number): boolean =>
     input.contextWindow !== undefined && remainingBalanced(freedBytes) >= input.contextWindow
 
+  // `sparing: false` — di ekor tidak ada yang dikecualikan. Lihat komentar
   const pruneTail = (): void => {
-    if (compaction.prune) prune(cut, current.length)
+    if (compaction.prune) prune(cut, current.length, false)
   }
 
   const done = (summarised: boolean): AutoCompactResult => ({
