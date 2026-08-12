@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
-import { loadConfig, redact, ConfigError } from "./core/config.ts"
+import { isExplicit, loadConfig, redact, ConfigError } from "./core/config.ts"
 import { checkPermissions, readAuth, removeCredential, setCredential } from "./core/auth.ts"
 import {
   listModels,
@@ -368,11 +368,21 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   // sendiri — dua rumus yang seharusnya sama bisa diam-diam menyimpang begitu
   // RESERVE_FRACTION berubah, dan doctor lalu melaporkan angka yang salah
   // sambil terlihat baik-baik saja.
+  //
+  // `!` HANYA untuk angka yang user tulis sendiri. Bawaan 8192 lebih besar dari
+  // seperempat SETIAP jendela di bawah 32768, jadi tanpa pembedaan ini doctor
+  // menandai temuan pada config yang bahkan tidak punya blok `compaction` —
+  // dan satu-satunya yang user pelajari adalah bahwa Titah tidak menyetujui
+  // bawaannya sendiri.
+  const reservedSet = isExplicit(loaded, ["compaction", "reserved"])
   for (const clash of reservedCollisions(loaded.config)) {
+    const capped = effectiveReserved(clash.contextWindow, clash.reserved)
     out(
-      `  ! ${clash.model} — compaction.reserved (${clash.reserved}) exceeds a quarter of ` +
-        `this ${clash.contextWindow}-token window; using ` +
-        `${effectiveReserved(clash.contextWindow, clash.reserved)}`,
+      reservedSet
+        ? `  ! ${clash.model} — compaction.reserved (${clash.reserved}) exceeds a quarter of ` +
+            `this ${clash.contextWindow}-token window; using ${capped}`
+        : `  ${clash.model} — the default compaction.reserved (${clash.reserved}) exceeds a ` +
+            `quarter of this ${clash.contextWindow}-token window; using ${capped}. Nothing to fix.`,
     )
   }
   out()

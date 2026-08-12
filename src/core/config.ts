@@ -11,11 +11,34 @@ export interface LoadedConfig {
   sources: string[]
   /** Variabel `${env:...}` yang direferensikan config tapi tidak ada di environment. */
   missingEnv: { variable: string; at: string }[]
+  /**
+   * Hasil merge MENTAH, sebelum default Zod diterapkan.
+   *
+   * `config` tidak bisa menjawab "apakah user MENULIS angka ini" — setelah
+   * parse, nilai bawaan dan nilai yang diketik user terlihat persis sama. Itu
+   * cukup untuk menjalankan program, tapi tidak cukup untuk berbicara kepada
+   * user: menegur seseorang tentang angka yang tidak pernah ia tulis hanya
+   * mengajarkan bahwa Titah tidak menyetujui bawaannya sendiri.
+   */
+  raw: Json
+}
+
+/**
+ * Apakah sebuah kunci config SUNGGUH ada di berkas user — lihat `raw`.
+ */
+export function isExplicit(loaded: LoadedConfig, keys: string[]): boolean {
+  let node: Json = loaded.raw
+  for (const key of keys) {
+    if (!isPlainObject(node)) return false
+    if (!(key in node)) return false
+    node = node[key] as Json
+  }
+  return true
 }
 
 const ENV_PATTERN = /\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g
 
-type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
 /**
  * Mengganti `${env:NAMA}` di seluruh nilai string.
@@ -131,7 +154,7 @@ export function loadConfig(cwd: string = process.cwd()): LoadedConfig {
     config.defaultAgent = "build"
   }
 
-  return { config, sources, missingEnv }
+  return { config, sources, missingEnv, raw }
 }
 
 /** Menyembunyikan kredensial sebelum config dicetak ke layar atau log. */

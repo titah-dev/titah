@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { loadConfig, redact, ConfigError } from "../src/core/config.ts"
+import { isExplicit, loadConfig, redact, ConfigError } from "../src/core/config.ts"
 import { Config } from "../src/core/schema.ts"
 
 function sandbox(): { configHome: string; project: string; cleanup: () => void } {
@@ -382,4 +382,31 @@ test("steps opsional pada agent, dan wajib positif", () => {
 test("agent tanpa steps tidak memaksa nilai apa pun", () => {
   const config = Config.parse({ agent: { scout: {} } })
   assert.equal(config.agent["scout"]?.steps, undefined)
+})
+
+test("isExplicit membedakan angka yang user tulis dari nilai bawaan Zod", () => {
+  // Setelah `Config.parse`, nilai bawaan dan nilai yang diketik user terlihat
+  // persis sama. Itu cukup untuk menjalankan program, tapi tidak cukup untuk
+  // berbicara kepada user: `titah doctor` memakai ini supaya berhenti menegur
+  // orang tentang `compaction.reserved` yang tidak pernah ia tulis.
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, { model: "a/b" })
+    const bawaan = loadConfig(box.project)
+    // Positif dulu: kunci yang MEMANG ditulis terbaca eksplisit, jadi
+    // `false` di bawah bukan karena fungsinya selalu mengembalikan false.
+    assert.equal(isExplicit(bawaan, ["model"]), true)
+    assert.equal(bawaan.config.compaction.reserved, 8192, "nilainya tetap terisi bawaan")
+    assert.equal(isExplicit(bawaan, ["compaction", "reserved"]), false)
+    assert.equal(isExplicit(bawaan, ["compaction"]), false)
+
+    writeGlobal(box.configHome, { model: "a/b", compaction: { reserved: 8192 } })
+    const ditulis = loadConfig(box.project)
+    // Nilainya IDENTIK dengan bawaan — hanya asalnya yang berbeda, dan itulah
+    // yang harus bisa dibedakan.
+    assert.equal(ditulis.config.compaction.reserved, 8192)
+    assert.equal(isExplicit(ditulis, ["compaction", "reserved"]), true)
+  } finally {
+    box.cleanup()
+  }
 })

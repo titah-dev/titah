@@ -118,6 +118,39 @@ test("doctor tidak mengeluh saat semua model sudah punya contextWindow", () => {
   assert.doesNotMatch(output, /ollama\/llama3:8b/)
 })
 
+test("doctor tidak menegur angka reserved yang tidak pernah ditulis user", () => {
+  // Bawaan `reserved` (8192) lebih besar dari seperempat SETIAP jendela di
+  // bawah 32768, jadi peringatan yang tidak membedakan asal angkanya akan
+  // menandai temuan pada config yang bahkan tidak punya blok `compaction`.
+  // Satu-satunya yang user pelajari dari situ adalah bahwa Titah tidak
+  // menyetujui bawaannya sendiri — dan tidak ada yang bisa ia perbuat.
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      // SENGAJA tanpa blok `compaction` sama sekali.
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "kecil": { contextWindow: 8192 } },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  // Positif dulu: baris tentang model ini memang dirender, lengkap dengan
+  // angka yang benar-benar dipakai — informasinya tidak hilang, hanya
+  // berhenti berpura-pura sebagai temuan.
+  assert.match(output, /ollama\/kecil/)
+  assert.match(output, /using 2048/)
+  assert.match(output, /the default compaction\.reserved/)
+  assert.match(output, /Nothing to fix/)
+
+  // Baru negatif: tidak ada penanda temuan `!` untuk model ini.
+  assert.doesNotMatch(output, /! ollama\/kecil/)
+})
+
 test("doctor bilang kalau reserved dijinakkan lantainya", () => {
   const project = isolatedProject(
     {
@@ -137,4 +170,7 @@ test("doctor bilang kalau reserved dijinakkan lantainya", () => {
   assert.match(output, /Context windows/)
   assert.match(output, /ollama\/kecil/)
   assert.match(output, /using 2048/)
+  // Angka yang user TULIS SENDIRI tetap ditandai sebagai temuan — pasangan
+  // dari test di atas, yang membuktikan bawaan tidak ditandai.
+  assert.match(output, /! ollama\/kecil/)
 })
