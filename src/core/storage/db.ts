@@ -95,6 +95,38 @@ export function database(): DatabaseSync {
   return connection
 }
 
+/**
+ * Menjalankan beberapa penulisan sebagai SATU satuan: semuanya jadi, atau tidak
+ * ada yang jadi.
+ *
+ * Dibutuhkan hanya oleh jalur tulis yang terdiri dari beberapa pernyataan.
+ * Pernyataan tunggal sudah atomik dengan sendirinya di SQLite, jadi
+ * membungkusnya cuma menambah dua perintah tanpa mengubah jaminan apa pun.
+ *
+ * Kegagalan separuh jalan di jalur multi-pernyataan bukan sekadar "sebagian
+ * data hilang": ia meninggalkan keadaan yang TERBACA seperti keadaan sah, lalu
+ * penulisan berikutnya menambahkan lagi di atasnya. Untuk riwayat model,
+ * akibatnya riwayat berganda — dan `PRIMARY KEY (session_id, seq)` tidak
+ * menangkapnya, karena nomor urut berikutnya dihitung dari `MAX(seq)` yang ikut
+ * bergeser.
+ *
+ * TIDAK boleh disarangkan: SQLite menolak `BEGIN` di dalam transaksi. Semua
+ * pemanggilnya adalah jalur tulis paling dalam, jadi tidak ada penjaga
+ * kedalaman di sini — menambahkannya berarti mengarang kebutuhan yang belum ada.
+ */
+export function transaction<T>(fn: () => T): T {
+  const connection = database()
+  connection.exec("BEGIN")
+  try {
+    const result = fn()
+    connection.exec("COMMIT")
+    return result
+  } catch (error) {
+    connection.exec("ROLLBACK")
+    throw error
+  }
+}
+
 function migrate(connection: DatabaseSync): void {
   const row = connection.prepare("PRAGMA user_version").get() as { user_version: number }
   let version = row.user_version

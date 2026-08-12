@@ -2,7 +2,7 @@ import crypto from "node:crypto"
 import path from "node:path"
 import type { ModelMessage } from "ai"
 import type { Message, Session } from "../message.ts"
-import { database } from "./db.ts"
+import { database, transaction } from "./db.ts"
 
 interface SessionRow {
   id: string
@@ -282,13 +282,27 @@ export function lastContextTokens(sessionID: string): number | undefined {
  * tangan — sumber bug yang mahal dan senyap.
  */
 export function appendModelMessages(sessionID: string, messages: ModelMessage[]): void {
-  const db = database()
-  const insert = db.prepare("INSERT INTO model_message (session_id, seq, data) VALUES (?, ?, ?)")
-  let seq = nextSeq("model_message", sessionID)
-  for (const message of messages) {
-    insert.run(sessionID, seq, JSON.stringify(message))
-    seq += 1
-  }
+  if (messages.length === 0) return
+  const insert = database().prepare(
+    "INSERT INTO model_message (session_id, seq, data) VALUES (?, ?, ?)",
+  )
+  // `nextSeq` ikut MASUK transaksi. Membaca `MAX(seq)` di luar berarti angkanya
+  // bisa sudah basi sebelum insert pertama mendarat, dan dua penulis akan
+  // menyusun urutan dari dasar yang sama.
+  //
+  // Kenapa gagal separuh jalan itu SENYAP, dan karena itu wajib utuh: pemanggil
+  // memajukan offset `flushed`-nya hanya setelah panggilan ini kembali, jadi
+  // penulisan akhir-giliran mengirim ulang pesan yang sama. Baris yang tadi
+  // sempat tertulis membuat `MAX(seq)` bergeser, sehingga PRIMARY KEY
+  // (session_id, seq) menerima duplikatnya alih-alih menolaknya — riwayatnya
+  // berganda, tanpa satu pun error.
+  transaction(() => {
+    let seq = nextSeq("model_message", sessionID)
+    for (const message of messages) {
+      insert.run(sessionID, seq, JSON.stringify(message))
+      seq += 1
+    }
+  })
 }
 
 /**
