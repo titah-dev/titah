@@ -166,8 +166,35 @@ test("model tanpa contextWindow mengembalikan undefined, BUKAN angka tebakan", (
 test("id model yang tidak berbentuk provider/model tidak melempar, cuma undefined", () => {
   // contextWindowFor dipanggil di jalur panas tiap langkah. Melempar di sini
   // akan mematikan giliran gara-gara metadata yang hilang.
-  const config = Config.parse({ provider: {} })
+  //
+  // Ketiga bentuk cacat diuji, bukan cuma yang tanpa garis miring. Penjaganya
+  // satu baris dengan tiga syarat (`slash <= 0 || slash === panjang - 1`), dan
+  // melonggarkannya jadi `slash < 0` tetap lolos pada config biasa — dua
+  // pertiga penjaganya lalu tidak terjaga apa pun.
+  //
+  // Karena itu config di sini SENGAJA punya kunci kosong. Kunci kosong adalah
+  // salah ketik yang sungguh terjadi (`"": { ... }` di titah.json), dan
+  // pertanyaannya persis: apakah id yang cacat gagal dengan aman, atau
+  // diam-diam menemukan jendela konteks milik entri yang salah? Jendela yang
+  // salah adalah kegagalan paling senyap di seluruh fitur ini — pemadatan yang
+  // terlambat tidak bisa dibedakan dari tidak ada pemadatan.
+  const config = Config.parse({
+    provider: {
+      mock: { models: { m: { contextWindow: 4096 }, "": { contextWindow: 222 } } },
+      "": { models: { m: { contextWindow: 111 } } },
+    },
+  })
+
+  // Positif dulu: bentuk yang BENAR memang menemukan angkanya, DAN entri
+  // berkunci kosong itu sungguh ada untuk ditemukan — tanpa ini, `undefined`
+  // di bawah bisa berarti "tidak ada apa-apa di sana", bukan "ditolak".
+  assert.equal(contextWindowFor(config, "mock/m"), 4096)
+  assert.equal(config.provider[""]?.models["m"]?.contextWindow, 111)
+  assert.equal(config.provider["mock"]?.models[""]?.contextWindow, 222)
+
   assert.equal(contextWindowFor(config, "tanpa-slash"), undefined)
+  assert.equal(contextWindowFor(config, "/m"), undefined, "provider kosong ditolak, bukan dicocokkan")
+  assert.equal(contextWindowFor(config, "mock/"), undefined, "model kosong ditolak, bukan dicocokkan")
 })
 
 test("undeclaredContextWindows menyebut model yang dikonfigurasi tanpa batas", () => {
