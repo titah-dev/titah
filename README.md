@@ -321,6 +321,13 @@ snapshots resend every part each time.
 | `plan` | Record a plan that survives compaction | — |
 | `webfetch` | Fetch a URL; HTML is stripped to readable text | `network` |
 | `websearch` | Search the web; backend set by `search.backend` | `network` |
+| `patch` | Several edits to one file, all or nothing | `edit` |
+| `move` | Move or rename; never overwrites | `write` |
+| `remove` | Delete a file, or a directory with `recursive` | `delete` |
+| `bash_start` | Start a long-running command in the background | `bash` |
+| `bash_output` | Read what a background process printed since last look | — |
+| `bash_stop` | Stop a background process and its whole group | — |
+| `diagnostics` | Run `diagnostics.command` and return its output | `bash` |
 
 All filesystem access is confined to the session working directory — paths that
 escape it are refused. Tool output larger than 32 KB is written to
@@ -341,6 +348,26 @@ sidestep the working-directory confinement that every filesystem tool relies on.
 HTML — so it can break without warning. `titah doctor` says so out loud. Set
 `search.backend` to `brave` or `tavily` with `search.apiKey` for something
 stable.
+
+`patch` extends that promise to several edits at once: they apply in order, each
+seeing the previous one's result, and **any** miss leaves the file byte-for-byte
+untouched. A half-edited file is worse than an unedited one — it fails to compile
+in a way that looks like nobody's fault.
+
+`move` refuses to overwrite, and that is what keeps it on the `write` axis: if it
+could overwrite, it would be able to destroy a file without ever passing through
+`delete`, which would make that axis a fence with a gate beside it.
+
+`bash_start` runs its command in its own process group, so `bash_stop` kills the
+whole tree — a dev server that spawns children is the normal case, and killing
+only the parent leaves the port held. Output is kept in a ring buffer, newest
+kept, and the number of bytes dropped is reported rather than silently lost.
+Background processes do not survive Titah exiting.
+
+`diagnostics` runs only the command you declare in `diagnostics.command`. It
+never guesses one: a wrongly guessed checker fails in ways that read far worse
+than "not configured". A non-zero exit is a **finding**, not a tool failure —
+otherwise "three type errors" would look exactly like "the checker is broken".
 
 `edit` fails hard on purpose: if `oldString` is missing or appears more than
 once, the tool refuses and **writes nothing**. Refusing is far better than

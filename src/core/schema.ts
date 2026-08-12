@@ -264,6 +264,21 @@ export const Search = z
   })
   .describe("Web search backend for the `websearch` tool")
 
+/**
+ * Pemeriksa proyek untuk tool `diagnostics`.
+ *
+ * Dinyatakan, tidak pernah ditebak. Menebak `tsc` lalu gagal karena proyeknya
+ * memakai `deno check` menghasilkan pesan error yang jauh lebih membingungkan
+ * daripada "belum dikonfigurasi" — aturan yang sama dengan `contextWindow`.
+ */
+export const Diagnostics = z
+  .object({
+    command: z
+      .string()
+      .describe('Checker to run, e.g. "npm run typecheck" or "cargo clippy"'),
+  })
+  .describe("Project checker for the `diagnostics` tool")
+
 export const Config = z.object({
   $schema: z.string().optional(),
   model: z
@@ -305,6 +320,7 @@ export const Config = z.object({
     allowlist: [],
   }),
   search: Search.default({ backend: "ddg" }),
+  diagnostics: Diagnostics.optional(),
   compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())
@@ -327,6 +343,7 @@ export type Agent = z.infer<typeof Agent>
 export type Command = z.infer<typeof Command>
 export type Compaction = z.infer<typeof Compaction>
 export type Search = z.infer<typeof Search>
+export type Diagnostics = z.infer<typeof Diagnostics>
 
 /**
  * Tiga mode bawaan, mengikuti pola opencode (`plan` / `build`) tapi memisahkan

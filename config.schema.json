@@ -454,6 +454,19 @@
       },
       "description": "Web search backend for the `websearch` tool"
     },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Checker to run, e.g. \"npm run typecheck\" or \"cargo clippy\""
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "description": "Project checker for the `diagnostics` tool"
+    },
     "compaction": {
       "default": {
         "auto": true,

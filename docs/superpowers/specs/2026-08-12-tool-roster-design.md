@@ -107,10 +107,20 @@ Tiga tool, bukan satu dengan mode, karena izinnya berbeda: menyalakan proses
 adalah `bash`, membaca keluarannya bukan apa-apa, dan menghentikannya juga bukan
 apa-apa. Satu tool bermode akan memaksa ketiganya memakai sumbu yang paling ketat.
 
-Prosesnya hidup selama **sesi**, bukan selama giliran, dan dibunuh saat sesi
-berakhir. Output disangga di memori dengan batas cincin: proses yang mencetak
-selamanya tidak boleh menghabiskan RAM, dan yang dibuang adalah yang paling lama
-— pada log, yang baru hampir selalu yang dicari.
+Output disangga di memori dengan batas cincin: proses yang mencetak selamanya
+tidak boleh menghabiskan RAM, dan yang dibuang adalah yang paling LAMA — pada
+log, yang baru hampir selalu yang dicari, kebalikan dari berkas.
+
+**Koreksi terhadap rencana ini, ditemukan saat mengerjakan.** Paragraf ini
+semula berbunyi "hidup selama sesi, dan dibunuh saat sesi berakhir". Itu tidak
+bisa dibangun: tidak ada satu pun pemanggil `clearSession` di `src/` — sesi tidak
+punya hook pengakhiran sama sekali, hanya test yang memanggilnya.
+
+Jadi yang sebenarnya: proses hidup selama **proses Titah**, dan dibunuh lewat
+`process.on("exit")`. Yang mencegah kebocoran di dalam satu sesi panjang adalah
+batas jumlah (delapan proses hidup per sesi) plus `bash_stop`, bukan pembersihan
+otomatis. Menulis "per sesi" dan membangun "per proses" akan membuat pembaca
+berikutnya mencari kode pembersihan yang tidak pernah ada.
 
 ## `diagnostics`
 
@@ -136,3 +146,37 @@ Tiga fase, tiap fase satu PR yang berdiri sendiri dengan gate-nya sendiri.
 
 Fase 1 lebih dulu karena ia satu-satunya yang mengubah bentuk izin, dan dua fase
 sesudahnya lebih mudah dibaca kalau bentuk itu sudah tetap.
+
+## Hasil, dicatat setelah dikerjakan
+
+**Fase 1 dan 3 selesai penuh; fase 2 selesai kecuali `question`.** Yang mendarat:
+`webfetch` `websearch` `patch` `move` `remove` `bash_start` `bash_output`
+`bash_stop` `diagnostics` — sembilan dari sepuluh, jadi **19 tool bawaan**, bukan
+20.
+
+Dua penyesuaian terhadap rencana di atas, keduanya dibuat saat mengerjakannya:
+
+- **Sumbu `delete` ikut mendarat di fase 1**, bukan fase 2 seperti tertulis.
+  Bentuk izin lebih baik berubah sekali daripada dua kali, dan mode `plan`
+  membutuhkannya untuk menepati janjinya sebelum `remove` ada.
+- **`question` tidak jadi dikerjakan**, dan ini bukan kehabisan waktu melainkan
+  keputusan yang berbeda dari asumsi rencana ini. Sembilan tool lain adalah
+  fungsi murni plus I/O: mereka selesai di dalam `execute`. `question` tidak — ia
+  harus BERHENTI di tengah dan menunggu manusia mengetik. Mesin izin sudah punya
+  bentuk itu (`ask()` menerbitkan event lalu menunggu `respond`), tapi jawabannya
+  bertipe tiga pilihan tetap: `once`, `always`, `reject`.
+
+  Membuat `question` berarti kanal kedua dengan jawaban BEBAS: event baru,
+  route server baru, dan penanganan input di TUI. Yang terakhir bukan tempelan —
+  TUI harus tahu bahwa ia sedang dalam keadaan "sedang ditanya" dan mengarahkan
+  ketikan ke sana, bukan ke prompt.
+
+  Memaksanya masuk lewat dialog izin yang ada akan menghasilkan `question` yang
+  cuma bisa ya/tidak, sementara kegunaannya yang disebut gap 16 justru
+  disambiguasi: *"dua berkas cocok dengan deskripsi Anda, yang mana?"* Tool
+  bernama `question` yang tidak bisa menanyakan pertanyaan itu lebih buruk
+  daripada tidak ada — ia menutup butirnya di atas kertas dan membiarkan
+  masalahnya hidup.
+
+Jadi angka 20 dicapai dengan `question`, dan `question` adalah pekerjaan TUI,
+bukan pekerjaan tool.
