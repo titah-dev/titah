@@ -4,6 +4,14 @@ Ditulis 2026-08-11, terhadap `main` @ `b334908`.
 Gate saat analisis ini dibuat: `npm run typecheck` bersih, `npm run build` bersih,
 `npm test` **511/511 lulus**.
 
+**Diperbarui 2026-08-12** terhadap `main` @ `b6100bf` — typecheck bersih,
+`npm test` **606/606 lulus**, `src/` 11.553 baris (dari 10.425). Butir 1 dan 2
+tutup, diverifikasi ulang ke source dan bukan disimpulkan dari catatan commit.
+Sisanya masih terbuka: nol kecocokan untuk `maxRetries`, `mcp`, `cacheControl`,
+sistem hook, dan `background` di `tool/bash.ts`. Satu temuan baru masuk sebagai
+butir 10b, dan urutan rekomendasi di bawah ikut berubah karena dua teratasnya
+sudah selesai.
+
 Dokumen ini bukan daftar keinginan. Tiap butir menyebut berkas dan barisnya, dan
 kenapa ketiadaannya terasa saat agent dipakai untuk kerja panjang — bukan saat
 demo.
@@ -28,7 +36,24 @@ menjangkau lebih jauh, dan bisa diperluas tanpa mengubah source.
 Empat butir ini satu tema: Titah kuat untuk giliran pendek, dan rapuh begitu
 tugasnya berjam-jam. Inilah pembeda paling nyata dengan Claude Code.
 
-### 1. Tidak ada auto-compaction, dan tidak ada anggaran konteks
+Dua dari empat sudah tutup per 2026-08-12. Yang tersisa di tier ini adalah butir
+3 dan 4.
+
+### 1. Tidak ada auto-compaction, dan tidak ada anggaran konteks — **TUTUP**
+
+> Ditutup 2026-08-12. `src/core/auto-compact.ts` (11 KB) sekarang memegang
+> orkestrasinya, `compaction.{auto,reserved,tailTurns,prune}` ada di config, dan
+> jendela konteks dideklarasikan per model — tidak pernah ditebak, karena
+> menebak ke atas berarti provider memotong diam-diam. Pemadatan juga berjalan
+> di tengah giliran lewat `prepareStep`, bukan cuma di antara giliran.
+>
+> Yang mahal ternyata bukan meringkasnya, melainkan **akuntansinya**. Empat
+> ronde review adversarial menghasilkan 20 temuan, dan diagnosis yang berulang
+> di tiap ronde sama: temuan paling serius selalu berupa batas atau kredit yang
+> memercayai angka yang dihitung di tempat lain. Rinciannya di
+> `docs/superpowers/specs/2026-08-12-compaction-hardening-design.md`.
+>
+> Teks di bawah dipertahankan sebagai catatan keadaan sebelumnya.
 
 `src/core/compact.ts` tidak mengandung satu pun kata `token`, `threshold`, atau
 `auto`. Ringkasan hanya jalan lewat `/compact` manual (`src/core/agent.ts:706`).
@@ -41,7 +66,15 @@ salah setelah rusak.
 
 Ini kekurangan nomor satu. Semua sisanya bisa dihindari; yang ini tidak.
 
-### 2. `MAX_STEPS = 20` dipatok mati, dan diamnya menyesatkan
+### 2. `MAX_STEPS = 20` dipatok mati, dan diamnya menyesatkan — **TUTUP**
+
+> Ditutup 2026-08-12. `agent.steps` bisa disetel per agent, dan `MAX_STEPS`
+> tinggal jadi bawaan: `const maxSteps = agentDef?.steps ?? MAX_STEPS`
+> (`src/core/agent.ts:461`). Batasnya juga tidak lagi diam — `lastStep`
+> (`:491`) memaksa jawaban teks saat langkah terakhir tercapai, jadi pesan yang
+> menyalahkan model itu tidak muncul lagi untuk sebab yang keliru.
+>
+> Teks di bawah dipertahankan sebagai catatan keadaan sebelumnya.
 
 `src/core/agent.ts:51` dan `:342`. Tidak ada override per-agent, tidak ada di
 config, dan **tidak ada satu pun tempat yang memeriksa apakah batas itu
@@ -143,6 +176,42 @@ boleh memakai langganan berbayar saya" tidak bisa dinyatakan. Dan begitu tool we
 atau MCP masuk (butir 5 dan 6), model izin ini akan kekurangan sumbu justru pada
 hal yang paling perlu dibatasi.
 
+### 10b. Dan satu-satunya sumbu yang bisa diperhalus, tidak memperhalus apa pun
+
+Ditemukan 2026-08-12, saat menyusun allowlist untuk config sungguhan.
+
+Yang dicocokkan ke allowlist **bukan perintahnya**, melainkan `"<kata-pertama> *"`
+— `allowlistPattern` di `src/core/tool/bash.ts:28` mengambil kata pertama lalu
+menempelkan ` *`. Dicocokkan oleh `matchesPattern` (`src/core/permission.ts:134`)
+yang menerjemahkan `*` menjadi `.*`.
+
+Dua akibatnya, keduanya diverifikasi terhadap kode hasil build:
+
+```
+TANYA  pola="git status*"  perintah="git status"                     → dicocokkan ke "git *"
+IZIN   pola="git *"        perintah="git status && rm -rf ~/penting" → dicocokkan ke "git *"
+```
+
+Baris pertama: pola setingkat sub-perintah **tidak pernah cocok dengan apa pun**.
+Ia tidak ditolak, tidak diperingatkan — ia hanya tidak pernah menyala. User yang
+menulis `"git status*"` percaya sudah mengizinkan sesuatu yang sempit, padahal
+tidak mengizinkan apa-apa, dan satu-satunya gejalanya adalah dialog izin yang
+tetap muncul.
+
+Baris kedua lebih serius: pola yang **cocok** memberi izin ke seluruh executable
+beserta apa pun yang dirantai di belakangnya, karena hanya kata pertama yang
+pernah diperiksa. Komentar di `bash.ts:24-26` berbunyi *"bukan izin buta untuk
+seluruh shell"* — rantai `&&` membatalkan maksud itu.
+
+Pembandingnya menunjukkan ini memang bisa dilakukan dengan benar: Claude Code
+menerima pola yang bentuknya persis sama, `--allowedTools "Bash(git *)"`, tapi
+memeriksa perintah yang dirantai alih-alih berhenti di kata pertama.
+
+Ini beda jenis dari butir 10. Butir 10 adalah sumbu yang belum ada — user tahu
+ia tidak punya. Yang ini adalah sumbu yang ada dan berperilaku lebih longgar
+daripada yang dijanjikan bentuknya sendiri, dan itu lebih buruk daripada
+ketiadaan.
+
 ### 11. Agent tidak ditemukan dari registry mana pun
 
 Skill dibaca dari `~/.claude` dan `~/.config/opencode` (`src/core/skill-sources.ts`),
@@ -195,12 +264,11 @@ penjadwalan sub-agent saat ini dinilai dengan kesan, bukan angka.
 
 ## Kalau harus memilih
 
-Urutan yang saya rekomendasikan, dan alasannya bukan "yang paling mudah":
+**Urutan asli (2026-08-11).** Dua teratasnya sudah selesai; disimpan supaya
+alasan pemilihannya bisa dinilai belakangan.
 
-1. **Auto-compaction + anggaran konteks** (butir 1). Satu-satunya butir yang
-   membuat Titah gagal dengan cara yang tidak bisa dihindari user.
-2. **Batas langkah: bisa diatur, dan bicara saat tercapai** (butir 2). Kecil,
-   dan menghapus pesan error yang aktif menyesatkan.
+1. ~~Auto-compaction + anggaran konteks (butir 1)~~ — selesai.
+2. ~~Batas langkah: bisa diatur, dan bicara saat tercapai (butir 2)~~ — selesai.
 3. **Bash background/persisten** (butir 4). Membuka satu kelas tugas utuh yang
    sekarang mustahil.
 4. **MCP** (butir 5). Pekerjaan paling besar, hasil paling luas, dan fondasinya
@@ -210,6 +278,28 @@ Urutan yang saya rekomendasikan, dan alasannya bukan "yang paling mudah":
 
 Butir 13 (prompt caching) di luar urutan — kerjakan kapan saja, biayanya sejam
 dan hasilnya langsung terasa di tagihan.
+
+**Urutan yang berlaku sekarang (2026-08-12).** Berubah karena dua teratas tutup,
+dan karena dua hal terukur muncul saat Titah dipakai dengan config sungguhan:
+
+1. **Perbaiki pencocokan allowlist** (butir 10b). Naik ke nomor satu bukan
+   karena besar, tapi karena ini satu-satunya butir yang membuat Titah **kurang
+   aman daripada yang dijanjikan configny sendiri**. Semua butir lain adalah
+   ketiadaan yang jujur; yang ini janji yang tidak ditepati.
+2. **Prompt caching Anthropic** (butir 13). Keluar dari "di luar urutan" dan
+   masuk ke nomor dua, karena sekarang ada angkanya: prompt kosong dengan 29
+   skill terdaftar sudah memakan **6120 token input** sebelum satu berkas pun
+   dibaca. Tiap giliran membayar itu ulang.
+3. **Bash background/persisten** (butir 4). Tidak berubah alasannya.
+4. **Tempat menaruh rencana yang bertahan lintas step** (butir 12, dan issue #5
+   yang desainnya sudah ada). **Naik**, dan justru *karena* butir 1 tutup:
+   sekarang transkrip memang benar-benar diringkas, jadi rencana yang cuma hidup
+   di transkrip memang akan hilang. Dulu ini risiko teoretis; sekarang ini
+   konsekuensi langsung dari fitur yang baru dipasang.
+5. **MCP** (butir 5). Tetap terbesar, tetap terakhir dari yang berbobot.
+
+Yang turun: hooks (butir 9). Bukan karena kurang berguna, tapi karena empat di
+atasnya sekarang punya bukti pemakaian dan hooks belum.
 
 ## Yang sengaja TIDAK saya masukkan
 
