@@ -12,6 +12,14 @@ export interface ToolContext {
   config: Config
   /** Terisi kalau sesi ini sendiri adalah sesi anak — lihat `Session.parentID`. */
   parentSessionID?: string
+  /**
+   * Jendela konteks model yang menjalankan giliran ini, kalau dideklarasikan.
+   *
+   * `undefined` berarti user belum mendeklarasikannya, dan ia tetap `undefined`
+   * di sini — tidak ditebak, sama seperti di seluruh sisa Titah. Dipakai `plan`
+   * untuk membatasi dirinya relatif jendela (issue #5).
+   */
+  contextWindow?: number
 }
 
 export interface ToolResult {

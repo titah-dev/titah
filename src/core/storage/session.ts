@@ -359,11 +359,23 @@ export function latestCompaction(sessionID: string): Compaction | undefined {
 }
 
 /**
- * Ringkasan sebagai pasangan user+assistant, bukan satu pesan user.
+ * Pasangan user+assistant untuk satu blok yang dilindungi.
  *
- * Ekor yang dipertahankan selalu diawali pesan user, jadi tanpa pasangan itu
- * akan ada dua pesan user berturut-turut — sesuatu yang ditolak sebagian
- * provider dan diam-diam digabung oleh sebagian yang lain.
+ * Pasangan, bukan satu pesan user, dan alasannya struktural: ekor yang
+ * dipertahankan selalu diawali pesan user, jadi satu pesan user sendirian di
+ * sini menghasilkan dua pesan user berturut-turut — ditolak sebagian provider,
+ * diam-diam digabung oleh sebagian yang lain. Berlaku sama untuk ringkasan
+ * maupun rencana, jadi keduanya memakai fungsi yang sama.
+ */
+function protectedPair(content: string, acknowledgement: string): ModelMessage[] {
+  return [
+    { role: "user", content },
+    { role: "assistant", content: acknowledgement },
+  ]
+}
+
+/**
+ * Ringkasan sebagai pasangan user+assistant, bukan satu pesan user.
  *
  * Diekspor supaya pemadatan bisa MENGUKUR permintaan dalam bentuk yang sama
  * persis dengan yang nanti dikirim. Dua salinan bentuk ini berarti yang diukur
@@ -371,21 +383,86 @@ export function latestCompaction(sessionID: string): Compaction | undefined {
  * permintaan meluap.
  */
 export function summaryPair(summary: string): ModelMessage[] {
-  return [
-    { role: "user", content: summary },
-    { role: "assistant", content: "Understood. I will continue from that summary." },
-  ]
+  return protectedPair(summary, "Understood. I will continue from that summary.")
 }
 
 /**
- * Riwayat SEPERTI YANG DILIHAT MODEL: ringkasan di depan, lalu pesan yang belum
- * dipadatkan apa adanya.
+ * Rencana yang ditulis model untuk dirinya sendiri (issue #5).
+ *
+ * Teks kosong berarti tidak ada rencana, dan barisnya dihapus alih-alih
+ * menyimpan string kosong — supaya "tidak punya rencana" dan "punya rencana
+ * kosong" tidak jadi dua keadaan yang harus dibedakan di tiap pembaca.
+ */
+export function savePlan(sessionID: string, text: string): void {
+  const trimmed = text.trim()
+  if (trimmed === "") {
+    database().prepare("DELETE FROM plan WHERE session_id = ?").run(sessionID)
+    return
+  }
+  database()
+    .prepare("INSERT OR REPLACE INTO plan (session_id, text, updated) VALUES (?, ?, ?)")
+    .run(sessionID, trimmed, Date.now())
+}
+
+export interface Plan {
+  text: string
+  updated: number
+}
+
+export function readPlan(sessionID: string): Plan | undefined {
+  return database()
+    .prepare("SELECT text, updated FROM plan WHERE session_id = ?")
+    .get(sessionID) as Plan | undefined
+}
+
+/** Blok rencana seperti yang dilihat model, atau kosong kalau belum ada. */
+export function planPair(sessionID: string): ModelMessage[] {
+  const plan = readPlan(sessionID)
+  if (!plan) return []
+  return protectedPair(
+    `<plan>\n${plan.text}\n</plan>\n\nThis is your own working plan, carried across compaction. ` +
+      "Update it with the plan tool as steps complete — a stale plan is worse than none.",
+    "Understood. I will keep that plan updated as I work.",
+  )
+}
+
+/**
+ * Bentuk permintaan, SATU definisi: ringkasan (kalau ada), lalu rencana, lalu ekor.
+ *
+ * Rencana diletakkan SESUDAH ringkasan dan SEBELUM ekor. Sesudah, karena
+ * ringkasan adalah latar dan rencana adalah niat yang berlaku terhadap latar
+ * itu; sebelum ekor, karena ekor adalah percakapan yang sedang berjalan dan
+ * rencana harus sudah berlaku ketika ia dibaca.
+ *
+ * Fungsi ini ada karena bentuk itu sempat ditulis DUA kali: sekali di
+ * `listModelMessages` yang MENGIRIM, sekali di `measure` (auto-compact.ts) yang
+ * MENGUKUR. `summaryPair` sudah pernah diekstrak untuk alasan yang sama, dan
+ * penambahan rencana langsung membuktikan alasan itu lagi — rencana masuk ke
+ * yang mengirim dan luput dari yang mengukur, sehingga yang diukur bukan yang
+ * dikirim, dan selisihnya baru terlihat ketika sebuah permintaan meluap.
+ *
+ * Dengan satu definisi, keduanya tidak bisa berbeda lagi.
+ */
+export function requestShape(
+  summary: string | undefined,
+  plan: ModelMessage[],
+  tail: ModelMessage[],
+): ModelMessage[] {
+  return [...(summary === undefined ? [] : summaryPair(summary)), ...plan, ...tail]
+}
+
+/**
+ * Riwayat SEPERTI YANG DILIHAT MODEL.
+ *
+ * Rencana ikut dikirim meski belum pernah ada pemadatan — ia bukan pelengkap
+ * ringkasan, ia berdiri sendiri.
  */
 export function listModelMessages(sessionID: string): ModelMessage[] {
   const rows = listModelRows(sessionID)
+  const plan = planPair(sessionID)
   const compaction = latestCompaction(sessionID)
-  if (!compaction) return rows.map((row) => row.message)
+  if (!compaction) return requestShape(undefined, plan, rows.map((row) => row.message))
 
   const tail = rows.filter((row) => row.seq > compaction.seq).map((row) => row.message)
-  return [...summaryPair(compaction.summary), ...tail]
+  return requestShape(compaction.summary, plan, tail)
 }

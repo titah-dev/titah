@@ -8,6 +8,7 @@ import { writeTool } from "./write.ts"
 import { bashTool } from "./bash.ts"
 import { skillTool } from "./skill.ts"
 import { taskTool } from "./task.ts"
+import { planTool } from "./plan.ts"
 
 /**
  * Tool baca berjalan tanpa izin. Tool yang mengubah sesuatu (`mutates: true`)
@@ -44,6 +45,7 @@ export function allTools(): TitahTool[] {
     bashTool,
     skillTool,
     taskTool,
+    planTool,
   ]
   return cached
 }
@@ -52,5 +54,16 @@ export function toolByName(name: string): TitahTool | undefined {
   return allTools().find((tool) => tool.name === name)
 }
 
-export { readTool, listTool, globTool, grepTool, editTool, writeTool, bashTool, skillTool, taskTool }
+export {
+  readTool,
+  listTool,
+  globTool,
+  grepTool,
+  editTool,
+  writeTool,
+  bashTool,
+  skillTool,
+  taskTool,
+  planTool,
+}
 export * from "./types.ts"
