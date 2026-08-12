@@ -724,6 +724,16 @@ What it does, precisely:
 - If pruning outside the kept tail and summarising are both still not enough, old
   tool output **inside** the tail is pruned too, as a last resort. Pruning never
   removes a message, so nothing is orphaned; the model can re-read the file.
+  That last resort is measured against the **window itself**, not the threshold:
+  `reserved` is headroom for the answer, not a wall, and a result that still
+  fits is delivered rather than thrown away. A 22 KB file on an 8k window
+  reaches the model; a 30 KB one cannot and is replaced by a marker saying so.
+- The trigger counts what has **already arrived**. A tool result that landed
+  after the last measurement is part of the next request whether or not the
+  provider has counted it yet, so it is added before comparing against the
+  threshold. Without that, a single result larger than the growth margin slipped
+  in unnoticed and the next request was already over the window — measured at
+  110% of an 8k window with a 30 KB read.
 - A failed compaction — a broken `smallModel`, a provider error — never fails
   the turn. That step's compaction is simply skipped and the turn continues
   with whatever context it already had.

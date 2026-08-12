@@ -257,10 +257,11 @@ export function listMessages(sessionID: string): Message[] {
  * sempat mengukur apa pun, dan memakai angkanya akan mematikan pemadatan
  * otomatis sampai ada giliran yang sukses.
  *
- * Dicari dari BELAKANG lalu berhenti di temuan pertama. Jalur ini dilewati tiap
- * giliran; membaca seluruh riwayat UI lalu mem-parse JSON setiap pesan hanya
- * untuk satu angka membuat biayanya tumbuh bersama panjang sesi, padahal
- * jawabannya hampir selalu ada di pesan assistant paling akhir.
+ * Dicari dari BELAKANG lalu berhenti di temuan pertama. Yang dihemat adalah
+ * JSON.parse-nya SAJA: barisnya tetap diambil semua oleh `.all()`, jadi ini
+ * bukan pencarian yang murah secara I/O — hanya pencarian yang berhenti
+ * membongkar setiap pesan sesi hanya untuk satu angka, yang jawabannya hampir
+ * selalu ada di pesan assistant paling akhir.
  */
 export function lastContextTokens(sessionID: string): number | undefined {
   const rows = database()

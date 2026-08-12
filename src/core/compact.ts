@@ -381,6 +381,34 @@ export function effectiveGrowth(budget: number, growth: number): number {
 }
 
 /**
+ * Ukuran konteks yang AKAN dikirim: yang terakhir terukur, DITAMBAH yang sudah
+ * menempel sesudah pengukuran itu.
+ *
+ * Dua besaran yang gampang tertukar, dan pernah tertukar:
+ *
+ *   - `lastStepTokens` — FAKTA dari provider, tapi tentang permintaan yang
+ *     SUDAH lewat. Ia belum memuat hasil tool yang baru saja tiba.
+ *   - `arrivedTokens` — juga FAKTA, tapi tentang pesan yang sudah ada di tangan
+ *     dan pasti ikut di permintaan berikutnya. Karena itu ia TIDAK dijepit:
+ *     menjepitnya berarti berpura-pura sesuatu yang sudah ada lebih kecil
+ *     daripada sebenarnya.
+ *   - `growthMargin` di `overBudget` — TAKSIRAN tentang langkah yang belum
+ *     terjadi. Itu yang dijepit, karena ia spekulasi.
+ *
+ * Terukur: satu hasil `read` 28 KB (≈7.000 token) tiba saat langkah sebelumnya
+ * baru memakai 322 token. Tanpa menjumlahkan yang baru tiba, ambang membandingkan
+ * 322 dengan 4.608 dan memutuskan semuanya baik-baik saja — permintaan
+ * berikutnya berangkat dengan 8.354 token pada jendela 8192, dan begitu
+ * seterusnya di 29 dari 30 langkah.
+ */
+export function projectedContext(
+  lastStepTokens: number | undefined,
+  arrivedTokens: number,
+): number | undefined {
+  return lastStepTokens === undefined ? undefined : lastStepTokens + arrivedTokens
+}
+
+/**
  * Apakah konteks sudah cukup penuh untuk dipadatkan.
  *
  * `lastStepTokens` WAJIB input token satu langkah, bukan `totalUsage` yang

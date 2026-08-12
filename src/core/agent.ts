@@ -18,6 +18,7 @@ import {
   MID_TURN_KEEP,
   overBudget,
   planCompaction,
+  projectedContext,
   renderTranscript,
   tailBudgetBytes,
   wrapSummary,
@@ -453,13 +454,24 @@ export async function prompt(input: PromptInput): Promise<Message> {
         // berlaku baik pemadatan berhasil, dilewati, MAUPUN melempar error.
         const lastStep = stepNumber >= maxSteps - 1
         try {
-          // Hasil tool langkah yang BARU selesai, ditakar sekali di sini dan
-          // diingat sebagai margin pertumbuhan — lihat `largestToolResult`.
+          // Pesan langkah yang BARU selesai ditakar sekali di sini, untuk dua
+          // besaran yang BEDA dan sempat tertukar:
+          //
+          //   - `arrived` — SELURUH pesan langkah itu. Mereka sudah di tangan
+          //     dan pasti ikut di permintaan berikutnya, sementara `used` masih
+          //     mengukur permintaan SEBELUMNYA. Ini fakta, jadi tidak dijepit.
+          //   - `largestToolResult` — hasil tool TERBESAR sejauh giliran ini,
+          //     dipakai memesan tempat untuk langkah yang BELUM terjadi. Ini
+          //     taksiran, jadi `effectiveGrowth` menjepitnya.
+          //
           // Cukup langkah terakhir saja: tiap panggilan prepareStep melihat
           // tepat satu langkah baru di ujung `steps`.
+          let arrived = 0
           for (const message of steps.at(-1)?.response.messages ?? []) {
+            const bytes = messageBytes(message)
+            arrived += growthTokens(bytes)
             if (message.role !== "tool") continue
-            largestToolResult = Math.max(largestToolResult, growthTokens(messageBytes(message)))
+            largestToolResult = Math.max(largestToolResult, growthTokens(bytes))
           }
 
           // `config.compaction.auto` dicek DI SINI, bukan diserahkan ke
@@ -469,7 +481,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
           const used = steps.at(-1)?.usage?.inputTokens
           if (
             !config.compaction.auto ||
-            !overBudget(used, contextWindow, config.compaction.reserved, largestToolResult)
+            !overBudget(
+              projectedContext(used, arrived),
+              contextWindow,
+              config.compaction.reserved,
+              largestToolResult,
+            )
           ) {
             return lastStep ? { activeTools: [] } : {}
           }
@@ -491,6 +508,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             compaction: config.compaction,
             contextWindow,
             lastStepTokens: used,
+            arrivedTokens: arrived,
             summarise,
             focus: text,
             midTurn: {

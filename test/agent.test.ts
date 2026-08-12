@@ -18,8 +18,16 @@ process.env.TITAH_DB = path.join(root, "agent.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver, abort } = await import("../src/core/agent.ts")
-const { createSession, latestCompaction, listMessages, listModelMessages, listModelRows } =
-  await import("../src/core/storage/session.ts")
+const {
+  createSession,
+  latestCompaction,
+  listChildSessions,
+  listMessages,
+  listModelMessages,
+  listModelRows,
+} = await import("../src/core/storage/session.ts")
+const { runSubagent } = await import("../src/core/subagent.ts")
+const { Config } = await import("../src/core/schema.ts")
 const { bus } = await import("../src/core/event.ts")
 const { loadedSkillIds } = await import("../src/core/tool/skill.ts")
 const { overBudget } = await import("../src/core/compact.ts")
@@ -1054,19 +1062,28 @@ test("smallModel yang salah TIDAK menghalangi prune mid-turn, dan resolvernya ti
   // jadi penanda PRUNED; dengan resolusi eager, `smallCalls` jadi 1 dan
   // penandanya tidak pernah muncul — isi 20 KB tetap utuh di storage.
   //
-  // Angka pemicunya 5000, bukan 7900 seperti versi pertama fixture ini.
-  // Klaim yang dijaga TIDAK berubah ("prune saja cukup ⇒ resolver smallModel
-  // tidak pernah disentuh"); yang berubah cuma aritmetika ambang di
-  // sekelilingnya. Margin pertumbuhan satu langkah (F3) menurunkan ambang
-  // mid-turn dari 6144 menjadi 6144 − min(20 KB/4, 6144/4) = 4608, dan pada
-  // ambang itu 7900 − 2500 (≈20.000 byte terbebas ÷ 8) = 5400 MASIH di atas
-  // ambang, jadi pemadatan benar melanjutkan ke peringkasan dan premis
-  // "prune saja cukup" lenyap. 5000 mengembalikan premis itu: 5000 ≥ 4608
-  // tetap memicu, dan 5000 − 2500 = 2500 sudah di bawah 4608 sehingga
-  // peringkas memang tidak pernah dibutuhkan. Tiga usage kecil di depannya
-  // (2000/2500/3000) tetap di bawah 4608, jadi pemicunya tetap satu kali di
-  // langkah yang sama seperti sebelumnya.
-  const dir = projectWith(windowConfig(8192, { smallModel: "rusak/kecil" }))
+  // Jendelanya 32768 dan pemicunya 20000 — versi pertama fixture ini memakai
+  // 8192/7900, versi kedua 8192/5000. Klaim yang dijaga TIDAK pernah berubah
+  // ("prune saja cukup ⇒ resolver smallModel tidak pernah disentuh"); yang
+  // berubah hanya aritmetika ambang di sekelilingnya, dua kali, dan keduanya
+  // karena perbaikan yang memang mengubah kapan pemadatan menyala.
+  //
+  // Terakhir: pemicu kini menjumlahkan hasil tool yang BARU TIBA ke ukuran
+  // konteks (residu F1). Pada jendela 8192, baca 20 KB itu sendiri ≈5.000
+  // token, jadi begitu ia tiba konteks proyeksinya 7.000 — di atas ambang —
+  // dan pemadatan menyala di langkah PERTAMA, saat belum ada apa pun di luar
+  // potongan untuk diprune. Satu-satunya obat yang tersisa di situ adalah
+  // peringkas, jadi premis "prune saja cukup" tidak bisa lagi dibangun pada
+  // jendela sekecil itu dengan berkas sebesar itu: 20 KB adalah sepertiga
+  // jendela 8192.
+  //
+  // Pada 32768 proporsinya kembali realistis (≈5.000 token dari anggaran
+  // 24.576, ambang 24.576 − min(5.000, 6.144) = 19.576). Tiga usage di
+  // depannya (2000/2500/3000, masing-masing ditambah hasil tool langkahnya)
+  // tetap jauh di bawah ambang, pemicunya tetap satu kali di langkah yang
+  // sama, dan 20000 − 2500 (≈20.000 byte terbebas ÷ 8) = 17.500 sudah di
+  // bawah 19.576 — peringkas memang tidak pernah dibutuhkan.
+  const dir = projectWith(windowConfig(32768, { smallModel: "rusak/kecil" }))
   const lines = Array.from(
     { length: 400 },
     (_, i) => `konten pruning baris nomor ${i} diisi supaya panjang`,
@@ -1093,7 +1110,7 @@ test("smallModel yang salah TIDAK menghalangi prune mid-turn, dan resolvernya ti
         ],
         [
           { type: "tool-call", toolCallId: "b4", toolName: "read", input: '{"path":"filler.txt"}' },
-          { type: "finish", finishReason: "tool-calls", usage: usageWith(5000) },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(20000) },
         ],
         textChunk("jawaban", usageWith(130)),
       ]
@@ -1150,13 +1167,14 @@ test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvern
   // memakai closure yang SAMA, tapi memperbaiki satu tanpa yang lain akan
   // lolos tanpa terdeteksi kalau cuma ada satu test.
   //
-  // Giliran 1: satu baca berkas besar dengan usage RENDAH (2000, di bawah
-  // 6144 — sengaja supaya mid-turn TIDAK memicu apa pun di giliran ini
-  // sendiri, dan isi besarnya tetap UTUH tersimpan sampai giliran 2
-  // memeriksanya), lalu teks penutup dengan usage TINGGI (7900). Usage
-  // langkah TERAKHIR itulah yang jadi `usage.context` yang dibaca giliran
-  // berikutnya (lihat test "usage.context adalah input langkah TERAKHIR..."
-  // di atas untuk mekanismenya).
+  // Giliran 1: satu baca berkas besar dengan usage RENDAH (2000 — sengaja
+  // supaya mid-turn TIDAK memicu apa pun di giliran ini sendiri, bahkan
+  // setelah hasil 20 KB itu ikut dihitung: 2000 + ≈5.000 = 7.000, jauh di
+  // bawah ambang mid-turn 19.576 pada jendela ini; isi besarnya lalu tetap
+  // UTUH tersimpan sampai giliran 2 memeriksanya), lalu teks penutup dengan
+  // usage TINGGI (25000). Usage langkah TERAKHIR itulah yang jadi
+  // `usage.context` yang dibaca giliran berikutnya (lihat test "usage.context
+  // adalah input langkah TERAKHIR..." di atas untuk mekanismenya).
   //
   // Giliran 2: giliran SEDERHANA tanpa tool sama sekali. Pemicunya adalah
   // pengecekan ANTAR-giliran di AWAL prompt() — BUKAN apa pun di dalam
@@ -1166,8 +1184,15 @@ test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvern
   // lihat komentar `tailStart` di compact.ts), sehingga prune menyasar baca
   // besar itu dan membebaskan cukup byte untuk lolos ambang TANPA pernah
   // memanggil peringkas.
+  // 32768, bukan 8192, dan angka giliran satu ikut naik — alasannya identik
+  // dengan fixture mid-turn tepat di atas: dengan hasil tool yang baru tiba
+  // ikut dihitung, baca 20 KB pada jendela 8192 menyalakan pemadatan MID-TURN
+  // di giliran satu, dan giliran itu lalu menyentuh resolver smallModel
+  // sebelum pemeriksaan ANTAR-giliran yang justru diuji di sini sempat
+  // berjalan. Pada 32768 giliran satu tetap tenang, dan pemicunya kembali
+  // murni pemeriksaan antar-giliran di awal giliran dua.
   const dir = projectWith(
-    windowConfig(8192, {
+    windowConfig(32768, {
       compaction: { auto: true, reserved: 8192, tailTurns: 0, prune: true },
       smallModel: "rusak/kecil",
     }),
@@ -1187,7 +1212,7 @@ test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvern
           { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"big.txt"}' },
           { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
         ],
-        textChunk("jawaban1", usageWith(7900)),
+        textChunk("jawaban1", usageWith(25000)),
       ]
       const parts = sequences[Math.min(model1Calls, sequences.length - 1)] as LanguageModelV4StreamPart[]
       model1Calls += 1
@@ -1221,7 +1246,7 @@ test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvern
   // pengecekan antar-giliran sama sekali, dan seluruh assertion di bawah
   // lolos karena tidak ada apa pun yang diperiksa.
   assert.equal(turn1.error, undefined)
-  assert.equal(turn1.usage?.context, 7900)
+  assert.equal(turn1.usage?.context, 25000)
 
   currentModel = model2
   const turn2 = await prompt({ sessionID: session.id, text: "lanjutkan" })
@@ -1431,6 +1456,150 @@ test("focus giliran diteruskan ke peringkas di KEDUA jalur, antar-giliran maupun
   )
 })
 
+/**
+ * Model palsu yang melaporkan inputTokens DARI UKURAN PROMPT SUNGGUHAN.
+ *
+ * Dengan angka usage tetap, pemadatan yang tidak bekerja tetap terlihat rapi —
+ * itu sebabnya residu F1 lolos dari seluruh suite. Bentuk ini sama dengan
+ * harness pengukuran yang menemukannya. Mengembalikan seri konteks per langkah.
+ */
+function sizedModel(file: string, steps: number): number[] {
+  const series: number[] = []
+  let calls = 0
+  const model = new MockLanguageModelV4({
+    doStream: async (options) => {
+      const serialised = JSON.stringify(options.prompt)
+      const tokens = Math.round(Buffer.byteLength(serialised) / 4)
+
+      // Peringkas dilayani mock yang SAMA. Menjawabnya dengan teks kosong akan
+      // diam-diam membuat setiap peringkasan jadi no-op, dan testnya lalu
+      // mengukur sistem yang berbeda dari yang dikira.
+      if (serialised.includes("You compress a coding session")) {
+        return {
+          stream: simulateReadableStream({ chunks: textChunk("Ringkasan.", usageWith(tokens)) }),
+        }
+      }
+
+      series.push(tokens)
+      calls += 1
+      return {
+        stream: simulateReadableStream({
+          chunks:
+            calls >= steps
+              ? textChunk("selesai", usageWith(tokens))
+              : ([
+                  { type: "stream-start", warnings: [] },
+                  {
+                    type: "tool-call",
+                    toolCallId: `r${calls}`,
+                    toolName: "read",
+                    input: JSON.stringify({ path: file }),
+                  },
+                  { type: "finish", finishReason: "tool-calls", usage: usageWith(tokens) },
+                ] as LanguageModelV4StreamPart[]),
+        }),
+      }
+    },
+  })
+  restore?.()
+  restore = setModelResolver(() => model)
+  return series
+}
+
+/** Berkas berisi baris-baris yang terasa nyata, sebesar `kb` kilobyte. */
+function bigFile(dir: string, name: string, kb: number): void {
+  const line = "baris berkas besar nomor xxxx yang cukup panjang untuk terasa nyata"
+  const lines: string[] = []
+  for (let i = 0, acc = 0; acc < kb * 1024; i += 1) {
+    lines.push(`${i} ${line}`)
+    acc += line.length + 6
+  }
+  fs.writeFileSync(path.join(dir, name), lines.join("\n"))
+}
+
+const WINDOW = 8192
+
+test("satu hasil tool yang jauh lebih besar dari anggaran tidak pernah membuat permintaan melewati jendela", async () => {
+  // Residu F1, sumbu yang tidak pernah diukur: UKURAN satu hasil tool. Batas
+  // ekor menutup sumbu "berapa langkah"; sumbu ini terbuka lebar. Terukur pada
+  // jendela 8192 dengan default penuh: 22 KB aman, 24 KB aman, 26 KB meluap di
+  // 11 dari 30 langkah, 28 KB di 29 dari 30, dan 30-32 KB memuncak di 8.998
+  // token — 110% jendela. Fixture lama duduk persis di bawah batas itu.
+  //
+  // Mekanismenya dua lapis. Saat hasil besar BARU TIBA, `used` masih angka
+  // langkah sebelumnya yang kecil, dan margin pertumbuhan dijepit seperempat
+  // anggaran (1.536) melawan hasil ~7.500 token — jadi pemicu diam, dan
+  // permintaan berikutnya sudah di atas jendela. Sesudah itu, satu-satunya obat
+  // yang bisa menjangkau hasil itu (memangkas ekor) bergantung pada pertanyaan
+  // "masih kelebihan?" yang MENGKREDITKAN byte yang terbebas tanpa pernah
+  // MENDEBIT hasil yang baru tiba — jawabannya "sudah muat", dan ekornya tidak
+  // pernah tersentuh.
+  const dir = projectWith(windowConfig(WINDOW, { agent: { pembaca: { steps: 8 } } }))
+  bigFile(dir, "raksasa.txt", 30)
+  const session = createSession(dir)
+  const series = sizedModel("raksasa.txt", 8)
+
+  const turn = await prompt({ sessionID: session.id, text: "baca raksasa berulang", agent: "pembaca" })
+  assert.equal(turn.error, undefined)
+
+  // Positif dulu, tiga-tiganya perlu sebelum assertion negatif berarti apa pun:
+  //  1. gilirannya sungguh menempuh beberapa langkah;
+  //  2. bahannya sungguh lebih besar dari anggaran (6144) — kalau tidak, tidak
+  //     ada tekanan sama sekali dan "tidak meluap" tidak membuktikan apa pun;
+  //  3. ekornya sungguh dipangkas — jadi luapannya dicegah oleh obat yang
+  //     dimaksud, bukan karena hasil besarnya kebetulan tidak pernah tiba.
+  assert.ok(series.length >= 4, `hanya ${series.length} langkah — fixture tidak menekan apa pun`)
+  const isiTokens = Math.ceil(fs.statSync(path.join(dir, "raksasa.txt")).size / 4)
+  assert.ok(isiTokens > 6144, `bahan cuma ${isiTokens} token, tidak melebihi anggaran`)
+  assert.ok(
+    listModelRows(session.id).some((row) =>
+      JSON.stringify(row.message).includes("output was dropped to free context"),
+    ),
+    "ekor semestinya sungguh dipangkas",
+  )
+
+  // Baru klaimnya: TIDAK SATU PUN permintaan melewati jendela.
+  const over = series.filter((tokens) => tokens > WINDOW)
+  assert.deepEqual(
+    over,
+    [],
+    `permintaan melewati jendela ${WINDOW}: ${over.join(", ")} (seri: ${series.join(", ")})`,
+  )
+})
+
+test("hasil tool yang MASIH MUAT tetap sampai ke model — obatnya tidak boleh kebablasan", async () => {
+  // Pasangan wajib test di atas. Obat untuk luapan adalah membuang isi ekor,
+  // dan itu tindakan paling mahal yang punya: model kehilangan hasil yang baru
+  // saja ia minta. Karena itu ambangnya diukur terhadap JENDELA, bukan
+  // anggaran — `reserved` adalah kelapangan untuk jawaban, bukan dinding.
+  //
+  // Terukur, dan inilah kenapa bedanya penting: baca 22 KB menghasilkan ekor
+  // ~6.300 token, DI ATAS anggaran 6.144 tapi DI BAWAH jendela 8.192. Diukur
+  // terhadap anggaran, berkas yang sebenarnya muat itu dibuang di setiap
+  // langkah (puncak konteks jatuh ke ~1.200) dan model tidak pernah melihat
+  // isi berkas yang ia baca sendiri.
+  const dir = projectWith(windowConfig(WINDOW, { agent: { pembaca: { steps: 6 } } }))
+  bigFile(dir, "sedang.txt", 22)
+  const session = createSession(dir)
+  const series = sizedModel("sedang.txt", 6)
+
+  const turn = await prompt({ sessionID: session.id, text: "baca sedang berulang", agent: "pembaca" })
+  assert.equal(turn.error, undefined)
+  assert.ok(series.length >= 4, `hanya ${series.length} langkah`)
+
+  // Klaimnya: isi berkas itu SUNGGUH sampai ke model — sekurang-kurangnya satu
+  // permintaan membawa lebih dari anggaran, yang mustahil kalau ekornya selalu
+  // dipangkas lebih dulu.
+  assert.ok(
+    series.some((tokens) => tokens > 6144),
+    `puncak cuma ${Math.max(...series)} — isi berkas yang masih muat tidak pernah sampai ke model (seri: ${series.join(", ")})`,
+  )
+
+  // Dan tetap tanpa luapan.
+  const over = series.filter((tokens) => tokens > WINDOW)
+  assert.deepEqual(over, [], `permintaan melewati jendela: ${over.join(", ")}`)
+})
+
 test("margin pertumbuhan satu langkah memicu pemadatan SEBELUM hasil tool berikutnya meluap, dan tidak bocor ke giliran lain", async () => {
   // Pemicu membaca usage langkah SEBELUMNYA, jadi ia bisa lolos di ambang−1
   // sementara langkah berikutnya tetap menempelkan satu hasil tool utuh.
@@ -1462,22 +1631,133 @@ test("margin pertumbuhan satu langkah memicu pemadatan SEBELUM hasil tool beriku
   // Giliran kedua: hasil tool KECIL saja. Kalau `largestToolResult` bocor dari
   // giliran sebelumnya, ambangnya tetap tertarik ke 4608 dan giliran ini ikut
   // memadatkan padahal tidak ada yang besar di dalamnya.
-  const model2 = recordingModel([
-    [
-      { type: "tool-call", toolCallId: "m2", toolName: "read", input: '{"path":"kecil.txt"}' },
-      { type: "finish", finishReason: "tool-calls", usage: usageWith(5000) },
-    ],
-    textChunk("selesai dua", usageWith(120)),
-  ])
+  //
+  // Yang diperiksa adalah FLUSH mid-turn, bukan batas air pemadatan. Versi
+  // pertama test ini menegaskan batas airnya tidak bergerak — dan itu VAKUM:
+  // di giliran dua tidak ada apa pun untuk diringkas, jadi `autoCompact`
+  // pulang dengan `{ran: true, changed: false}` dan batas airnya memang tidak
+  // bisa bergerak, bocor atau tidak. Dibuktikan: menjadikan
+  // `largestToolResult` variabel module-level yang tidak pernah direset —
+  // kebocoran yang sungguhan, lintas giliran DAN lintas induk/anak —
+  // meninggalkan berkas test ini hijau seluruhnya.
+  //
+  // Flush bergerak: ia jalan tepat ketika ambang terlewati, sebelum
+  // `autoCompact` sempat memutuskan apa pun. Dibaca dari DALAM langkah kedua,
+  // pola yang sama dengan test `compaction.auto: false` di atas.
+  const baris = listModelRows(session.id).length
+  let rowsAtStep2 = -1
+  let calls2 = 0
+  const model2 = new MockLanguageModelV4({
+    doStream: async () => {
+      calls2 += 1
+      if (calls2 === 1) {
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "stream-start", warnings: [] },
+              { type: "tool-call", toolCallId: "m2", toolName: "read", input: '{"path":"kecil.txt"}' },
+              // 5000: di bawah ambang giliran ini (6144 − hasil kecil ≈ 6100),
+              // tapi di ATAS ambang bocoran (6144 − 1536 = 4608).
+              { type: "finish", finishReason: "tool-calls", usage: usageWith(5000) },
+            ] as LanguageModelV4StreamPart[],
+          }),
+        }
+      }
+      if (rowsAtStep2 === -1) rowsAtStep2 = listModelRows(session.id).length
+      return { stream: simulateReadableStream({ chunks: textChunk("selesai dua", usageWith(120)) }) }
+    },
+  })
+  restore?.()
+  restore = setModelResolver(() => model2)
   await prompt({ sessionID: session.id, text: "baca kecil", agent: "pembaca" })
 
-  // Positif dulu: giliran dua memang menempuh langkah-langkahnya, jadi
-  // `prepareStep` sungguh dievaluasi di sana.
-  assert.ok(model2.doStreamCalls.length >= 2)
+  // Positif dulu: giliran dua memang menempuh dua langkah, jadi `prepareStep`
+  // sungguh dievaluasi di sana dan probe-nya sungguh terisi.
+  assert.ok(calls2 >= 2, "giliran dua harus menempuh dua langkah")
+  assert.notEqual(rowsAtStep2, -1, "probe di langkah kedua harus benar-benar terbaca")
   assert.equal(
-    latestCompaction(session.id)?.seq,
-    compaction.seq,
-    "margin giliran sebelumnya tidak boleh ikut menurunkan ambang giliran ini",
+    rowsAtStep2,
+    baris,
+    "margin giliran sebelumnya tidak boleh ikut menurunkan ambang giliran ini — " +
+      "tidak ada yang boleh diflush di tengah giliran dua",
+  )
+})
+
+test("margin pertumbuhan tidak bocor dari sesi INDUK ke sesi anaknya", async () => {
+  // Sisi kedua klaim "per giliran", dan sebelumnya tidak punya test sama
+  // sekali. Sub-agent punya riwayat, model, dan jendela sendiri; hasil tool
+  // raksasa yang dibaca INDUK tidak boleh menarik ambang anaknya ke bawah dan
+  // membuat anak itu memadatkan konteksnya sendiri yang masih lapang.
+  //
+  // Diuji lewat `runSubagent` sungguhan — jalur yang sama yang dipakai tool
+  // `task` — bukan lewat `prompt()` pada sesi anak yang dirakit tangan, supaya
+  // yang teruji adalah rakitan yang benar-benar dipakai produksi.
+  const dir = projectWith(windowConfig(8192, { agent: { anak: { mode: "subagent", steps: 4 } } }))
+  const lines = Array.from({ length: 400 }, (_, i) => `baris berkas besar nomor ${i}`)
+  fs.writeFileSync(path.join(dir, "besar.txt"), lines.join("\n"))
+  fs.writeFileSync(path.join(dir, "kecil.txt"), "sedikit saja\n")
+  const parent = createSession(dir)
+
+  let main = 0
+  let parentRowsAtStep2 = -1
+  let childRowsAtStep2 = -1
+  const model = new MockLanguageModelV4({
+    doStream: async (options) => {
+      // Peringkas dilayani mock yang sama; ia tidak boleh ikut menggeser
+      // urutan langkah di bawah.
+      if (JSON.stringify(options.prompt).includes("You compress a coding session")) {
+        return { stream: simulateReadableStream({ chunks: textChunk("Ringkasan.", usageWith(20)) }) }
+      }
+      main += 1
+      const read = (id: string, file: string, used: number): LanguageModelV4StreamPart[] => [
+        { type: "stream-start", warnings: [] },
+        { type: "tool-call", toolCallId: id, toolName: "read", input: JSON.stringify({ path: file }) },
+        { type: "finish", finishReason: "tool-calls", usage: usageWith(used) },
+      ]
+
+      if (main === 1) return { stream: simulateReadableStream({ chunks: read("p1", "besar.txt", 2000) }) }
+      if (main === 2) {
+        parentRowsAtStep2 = listModelRows(parent.id).length
+        return { stream: simulateReadableStream({ chunks: textChunk("induk selesai", usageWith(120)) }) }
+      }
+      if (main === 3) return { stream: simulateReadableStream({ chunks: read("a1", "kecil.txt", 5000) }) }
+      const child = listChildSessions(parent.id)[0]
+      if (child && childRowsAtStep2 === -1) childRowsAtStep2 = listModelRows(child.id).length
+      return { stream: simulateReadableStream({ chunks: textChunk("anak selesai", usageWith(120)) }) }
+    },
+  })
+  restore?.()
+  restore = setModelResolver(() => model)
+
+  await prompt({ sessionID: parent.id, text: "baca besar dulu" })
+
+  // Positif dulu, di INDUK: hasil 20 KB itu sungguh menurunkan ambang dan
+  // membuat induk memflush di tengah gilirannya. Tanpa ini, `0` pada anak di
+  // bawah bisa berarti "marginnya memang tidak pernah bekerja di mana pun".
+  assert.equal(parentRowsAtStep2, 3, "induk semestinya memflush mid-turn karena hasil 20 KB itu")
+
+  const result = await runSubagent({
+    parentSessionID: parent.id,
+    agentID: "anak",
+    instruction: "baca berkas kecil",
+    cwd: dir,
+    config: Config.parse({
+      model: "mock/m",
+      provider: { mock: { models: { m: { contextWindow: 8192 } } } },
+      agent: { anak: { mode: "subagent", steps: 4 } },
+    }),
+    signal: new AbortController().signal,
+  })
+  assert.equal(result.status, "done", `sesi anak harus selesai: ${result.answer}`)
+
+  // Baru klaimnya: di anak, ambangnya kembali penuh (6144 dikurangi hasil
+  // KECIL-nya sendiri), jadi 5000 tidak memicu apa pun dan tidak ada baris
+  // yang diflush di tengah giliran anak.
+  assert.notEqual(childRowsAtStep2, -1, "probe di langkah kedua anak harus terbaca")
+  assert.equal(
+    childRowsAtStep2,
+    0,
+    "hasil tool raksasa milik induk tidak boleh menurunkan ambang sesi anaknya",
   )
 })
 

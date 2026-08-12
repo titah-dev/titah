@@ -319,6 +319,52 @@ Two changes, both of them:
 After both, the same measurement peaks at **7,780 tokens — under the window for
 the whole turn — with one `smallModel` call instead of sixteen.**
 
+### Amended again: the size of a single result
+
+The two changes above closed the *step-count* axis and left the *result-size*
+axis open. Measured on the same 8192-token window with full defaults: 22 KB
+peaks at 7,752 with no overflow, 26 KB overflows on 11 of 30 steps, 28 KB on 29
+of 30, and 30–32 KB peaks at 8,998 — 110% of the window.
+
+The mechanism has two halves, and both come from comparing a **stale** number
+against the budget:
+
+1. When the large result first arrives, `lastStepTokens` is still the *previous*
+   step's count and does not include it. The growth margin was supposed to cover
+   this, but it is capped at a quarter of the budget — 1,536 tokens against a
+   result of roughly 7,500 — so the trigger stays silent and the next request is
+   already over the window.
+2. Once the trigger does fire, the last-resort tail prune is gated on a
+   "still over budget?" question that **credits** the bytes pruning freed while
+   never **debiting** the result that just arrived. It answers "it fits", and the
+   one remedy that could reach that result never runs.
+
+Both are fixed by projecting the next request instead of reusing the last
+measurement: `projected = lastStepTokens + arrivedTokens`, where `arrivedTokens`
+is the size of the messages produced by the step that just finished. It is a
+measured fact about messages already in hand, so unlike the growth margin it is
+**not** capped — capping it would be pretending something that exists is smaller
+than it is.
+
+A third correction fell out of the same trace. The last-resort prune destroys
+content the model just asked for, so its threshold is now the **context window
+itself**, not the budget — deliberately skipping both the growth margin
+(speculation may buy cheap remedies, not destructive ones) and `reserved`
+(headroom for the answer, not a wall). Measured: a 22 KB read produces a tail of
+about 6,300 tokens — above the 6,144 budget but below the window. Judged against
+the budget it was discarded on every step and the model never saw the file it
+had just read; judged against the window it arrives intact.
+
+Finally, when the tail *alone* already fills the window, the tail is pruned
+before the summariser is called rather than after: summarisation can only free
+what lies before the cut, so if what lies after it already fills the window,
+the call is knowably wasted.
+
+After all four, no request exceeds the window at any result size: 22 KB peaks at
+6,755 with the file delivered, 26 KB alternates 7,895 / 501 with the file
+delivered every other step, and 28–32 KB — which cannot fit at all — is replaced
+by the pruned marker, peaking at 501.
+
 ### Preserving the running instruction
 
 The instruction that started the turn is passed to `compactPrompt()` as the

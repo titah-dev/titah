@@ -2,9 +2,12 @@ import {
   COMPACT_SYSTEM,
   compactPrompt,
   estimateTokens,
+  growthTokens,
+  messageBytes,
   midTurnCut,
   overBudget,
   planAtCut,
+  projectedContext,
   pruneToolOutputs,
   renderTranscript,
   tailStart,
@@ -35,6 +38,17 @@ export interface AutoCompactInput {
   midTurn?: { keepMessages: number; budgetBytes: number }
   /** Tempat yang dipesan untuk pertumbuhan satu langkah — lihat `overBudget`. */
   growthMargin?: number
+  /**
+   * Token yang sudah menempel SETELAH `lastStepTokens` diukur, dan karena itu
+   * pasti ikut di permintaan berikutnya — lihat `projectedContext`.
+   *
+   * Dipakai baik oleh pemicu maupun oleh keputusan "masih kelebihan?" di bawah.
+   * Tanpanya keduanya menilai ukuran konteks dari angka yang sudah basi:
+   * penghematan dikreditkan, tapi hasil tool yang baru tiba tidak pernah
+   * didebitkan, sehingga upaya terakhir (memangkas ekor) — satu-satunya
+   * mekanisme yang bisa menjangkau hasil itu — tidak pernah dijalankan.
+   */
+  arrivedTokens?: number
 }
 
 export interface AutoCompactResult {
@@ -68,7 +82,10 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   const { compaction, sessionID } = input
   if (!compaction.auto) return IDLE
   const growth = input.growthMargin ?? 0
-  if (!overBudget(input.lastStepTokens, input.contextWindow, compaction.reserved, growth)) {
+  // Ukuran konteks yang akan dikirim, bukan yang terakhir terukur — hasil tool
+  // yang baru tiba sudah ada di tangan dan pasti ikut berangkat.
+  const projected = projectedContext(input.lastStepTokens, input.arrivedTokens ?? 0)
+  if (!overBudget(projected, input.contextWindow, compaction.reserved, growth)) {
     return IDLE
   }
 
@@ -103,13 +120,54 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
 
   // Estimasi HANYA untuk keputusan tingkat kedua ini. Pemicunya sendiri tetap
   // memakai angka yang dilaporkan provider, tidak pernah taksiran.
-  const stillOver = (freedBytes: number): boolean =>
-    overBudget(
-      (input.lastStepTokens ?? 0) - estimateTokens(freedBytes),
-      input.contextWindow,
-      compaction.reserved,
-      growth,
-    )
+  //
+  // Basisnya `projected`, BUKAN `lastStepTokens`: mengkreditkan byte yang
+  // terbebas sambil tidak pernah mendebit hasil tool yang baru tiba membuat
+  // jawabannya selalu "sudah muat" justru pada kasus yang paling tidak muat.
+  const remaining = (freedBytes: number): number =>
+    (projected ?? 0) - estimateTokens(freedBytes)
+
+  /**
+   * Masih perlu tindakan yang MURAH (prune riwayat lama, lalu ringkas)?
+   *
+   * Memakai margin pertumbuhan: di sinilah F3 hidup — berhenti tepat di bibir
+   * anggaran berarti langkah berikutnya meluap lagi.
+   */
+  const needsMore = (freedBytes: number): boolean =>
+    overBudget(remaining(freedBytes), input.contextWindow, compaction.reserved, growth)
+
+  /**
+   * Sungguh-sungguh tidak MUAT — diukur terhadap JENDELA, bukan anggaran.
+   *
+   * Ini satu-satunya yang boleh membenarkan tindakan yang MAHAL: membuang isi
+   * ekor, yaitu hasil tool yang baru saja diminta model. Karena itu ambangnya
+   * paling tinggi dari ketiganya, dan sengaja melewati dua hal:
+   *
+   *   - margin pertumbuhan, karena ia spekulasi tentang langkah yang BELUM
+   *     terjadi. Spekulasi boleh membeli pemadatan yang murah; ia tidak boleh
+   *     membeli penghancuran sesuatu yang sudah ada dan masih muat.
+   *   - `reserved`, karena itu kelapangan untuk jawaban, bukan dinding. Di
+   *     bawah jendela permintaannya masih terlayani — sempit, tapi terlayani.
+   *     Di ATAS jendela provider memotong diam-diam dan model menjawab yakin
+   *     tentang bahan yang tidak pernah dilihatnya. Hanya yang kedua yang lebih
+   *     buruk daripada kehilangan isi ekor.
+   *
+   * Terukur, dan inilah yang menentukan angkanya: satu berkas 22 KB pada
+   * jendela 8192 menghasilkan ekor ~6.300 token — DI ATAS anggaran (6.144) tapi
+   * DI BAWAH jendela. Diukur terhadap anggaran, berkas yang sebenarnya muat itu
+   * ikut dibuang di setiap langkah dan model tidak pernah melihat isi berkas
+   * yang ia baca sendiri; diukur terhadap jendela, ia sampai utuh.
+   */
+  const doesNotFit = (freedBytes: number): boolean =>
+    input.contextWindow !== undefined && remaining(freedBytes) >= input.contextWindow
+
+  /** Ukuran ekor apa adanya — yang akan dikirim utuh, berapa pun besarnya. */
+  const tailTokens = (): number =>
+    growthTokens(current.slice(cut).reduce((sum, message) => sum + messageBytes(message), 0))
+
+  const pruneTail = (): void => {
+    if (compaction.prune) prune(cut, current.length)
+  }
 
   const done = (summarised: boolean): AutoCompactResult => ({
     ran: true,
@@ -118,7 +176,16 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
     changed: prunedBytes > 0 || summarised,
   })
 
-  if (!stillOver(prunedBytes)) return done(false)
+  // Ekor yang SENDIRIAN saja sudah mengisi jendela tidak bisa ditolong
+  // peringkasan: ringkasan sependek apa pun tetap ditempelkan DI ATAS ekor itu.
+  // Memangkasnya sebelum memanggil peringkas bukan pelanggaran urutan "yang
+  // murah dulu" — ia menghindari satu panggilan model yang sudah pasti sia-sia.
+  // Peringkasan hanya bisa membebaskan bagian SEBELUM potong; kalau bagian
+  // sesudahnya saja sudah sebesar jendela, tidak ada yang tersisa untuk
+  // ditolong.
+  if (input.contextWindow !== undefined && tailTokens() >= input.contextWindow) pruneTail()
+
+  if (!needsMore(prunedBytes)) return done(false)
 
   // Batas potong yang SAMA dengan yang dipakai prune — satu aturan, bukan dua.
   const plan = planAtCut(rows, cut)
@@ -145,13 +212,14 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   // Upaya terakhir: pangkas hasil tool DI DALAM ekor juga.
   //
   // Ekor dipertahankan apa adanya justru supaya model bisa melanjutkan, tapi
-  // satu hasil tool yang lebih besar dari seluruh anggaran membuat ekor itu
-  // sendiri jadi penyebab luapan — dan tidak ada pemotongan maupun peringkasan
-  // yang bisa menjangkaunya. Aman dilakukan karena prune tidak pernah MENGHAPUS
-  // pesan: tidak ada hasil yang jadi yatim, dan model bisa membaca ulang
-  // berkasnya. Baru dijalankan paling akhir, setelah dua mekanisme yang lebih
-  // murah terbukti tidak cukup.
-  if (compaction.prune && stillOver(prunedBytes + summaryFreed)) prune(cut, current.length)
+  // satu hasil tool yang besar membuat ekor itu sendiri jadi penyebab luapan —
+  // dan tidak ada pemotongan maupun peringkasan yang bisa menjangkaunya. Aman
+  // dilakukan karena prune tidak pernah MENGHAPUS pesan: tidak ada hasil yang
+  // jadi yatim, dan model bisa membaca ulang berkasnya.
+  //
+  // `doesNotFit`, bukan `needsMore`: setelah semua yang murah dijalankan, hanya
+  // ketidakmuatan yang SUNGGUHAN boleh membuang isi ekor.
+  if (doesNotFit(prunedBytes + summaryFreed)) pruneTail()
 
   return done(summarised)
 }
