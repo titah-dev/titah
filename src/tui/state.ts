@@ -1,6 +1,7 @@
 import type { Event, SubagentState } from "../core/event.ts"
 import type { Message, Session } from "../core/message.ts"
 import type { PermissionRequest } from "../core/permission.ts"
+import type { QuestionRequest } from "../core/question.ts"
 
 /**
  * Reducer state TUI, sengaja dipisah dari komponen Ink supaya bisa diuji tanpa
@@ -15,6 +16,16 @@ export interface TuiState {
   /** Kabar yang BUKAN kegagalan — ditampilkan pelan, tidak merah. */
   notice?: string
   permission?: PermissionRequest
+  /**
+   * Pertanyaan model yang sedang menunggu jawaban.
+   *
+   * Tidak ada antrean seperti `permissionQueue`, dan itu disengaja: model hanya
+   * bisa memanggil satu tool sekaligus, jadi dua pertanyaan bersamaan berarti
+   * dua sub-agent bertanya — dan menumpuknya akan membuat user menjawab
+   * pertanyaan kedua sambil mengira ia menjawab yang pertama. Yang datang
+   * belakangan menunggu di sisi core, bukan di layar.
+   */
+  question?: QuestionRequest
   /** Antrean izin, kalau satu giliran meminta beberapa sekaligus. */
   permissionQueue: PermissionRequest[]
   subagents: SubagentState[]
@@ -117,6 +128,12 @@ export function reduce(state: TuiState, event: TuiAction): TuiState {
 
     case "text.delta":
       return { ...state, messages: appendDelta(state.messages, event.messageID, event.text) }
+
+    case "question.request":
+      return { ...state, question: event.request }
+
+    case "question.resolved":
+      return state.question?.id === event.questionID ? { ...state, question: undefined } : state
 
     case "permission.request": {
       if (state.permission) {

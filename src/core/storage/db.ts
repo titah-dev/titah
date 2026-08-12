@@ -93,6 +93,33 @@ const MIGRATIONS: string[] = [
      text       TEXT    NOT NULL,
      updated    INTEGER NOT NULL
    );`,
+
+  /*
+   * Memory-Augmented Generation: fakta yang bertahan LINTAS SESI.
+   *
+   * Kuncinya PROYEK, bukan sesi — dan itulah satu-satunya hal yang
+   * membedakannya dari `plan` di atas. `plan` adalah niat untuk pekerjaan yang
+   * sedang berjalan dan mati bersama sesinya; ini fakta tentang proyeknya yang
+   * masih benar besok pagi.
+   *
+   * Tabel sendiri, dengan alasan yang sama seperti `plan`: pemadatan hanya
+   * menyentuh `model_message`, jadi ia tidak bisa menjangkau yang ini.
+   *
+   * DITAMBAHKAN DI UJUNG, dan itu wajib. `migrate` menjalankan migrasi
+   * berdasarkan INDEKS lewat `PRAGMA user_version` — menyisipkan satu di tengah
+   * akan membuat database yang sudah ada melewatinya lalu mencoba menjalankan
+   * migrasi berikutnya yang SUDAH pernah dijalankan, dan gagal dengan "table
+   * already exists" di mesin yang justru paling tidak boleh rusak: mesin yang
+   * sudah dipakai.
+   */
+  `CREATE TABLE memory (
+     id      TEXT    PRIMARY KEY,
+     project TEXT    NOT NULL,
+     text    TEXT    NOT NULL,
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE INDEX memory_project ON memory(project, created);`,
 ]
 
 export function database(): DatabaseSync {

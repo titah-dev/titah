@@ -328,6 +328,8 @@ snapshots resend every part each time.
 | `bash_output` | Read what a background process printed since last look | — |
 | `bash_stop` | Stop a background process and its whole group | — |
 | `diagnostics` | Run `diagnostics.command` and return its output | `bash` |
+| `memory` | Record a durable project fact, recalled into every request | — |
+| `question` | Ask the user and wait for their answer | — |
 
 All filesystem access is confined to the session working directory — paths that
 escape it are refused. Tool output larger than 32 KB is written to
@@ -368,6 +370,19 @@ Background processes do not survive Titah exiting.
 never guesses one: a wrongly guessed checker fails in ways that read far worse
 than "not configured". A non-zero exit is a **finding**, not a tool failure —
 otherwise "three type errors" would look exactly like "the checker is broken".
+
+`memory` and `plan` differ on exactly one axis: **how long the fact stays true.**
+`plan` is intent for the work in progress and dies with the session; `memory` is
+a fact about the project that is still true tomorrow, in a different session.
+Both are stored outside `model_message`, so compaction cannot reach either.
+
+Memory is recalled **eagerly** — the whole store, every request — rather than
+retrieved. With a 32-fact cap that is cheaper than a retrieval step that can
+pick wrong, and when retrieval picks wrong the missing fact leaves no trace.
+
+`question` is the only tool that stops and waits for a human. With no client
+connected it does not hang: it returns "nobody answered, continue with your best
+assumption and say what you assumed", which is what headless and CI need.
 
 `edit` fails hard on purpose: if `oldString` is missing or appears more than
 once, the tool refuses and **writes nothing**. Refusing is far better than

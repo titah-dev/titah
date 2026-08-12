@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net"
 import { abort, isRunning, prompt, AgentError } from "../core/agent.ts"
 import { bus, type Event } from "../core/event.ts"
 import { listPending, respond, type PermissionDecision } from "../core/permission.ts"
+import { answerQuestion, cancelQuestion, listPendingQuestions } from "../core/question.ts"
 import { undo, UndoError } from "../core/undo.ts"
 import { SnapshotError } from "../core/snapshot.ts"
 import {
@@ -212,6 +213,26 @@ async function handle(
 
     const handled = respond(permissionID, decision as PermissionDecision)
     if (!handled) throw new HttpError(404, `Permission request not found or already answered: ${permissionID}`)
+    return json(res, 200, { ok: true })
+  }
+
+  // /session/:id/question[/:questionID]
+  if (segments[2] === "question") {
+    if (method === "GET") return json(res, 200, listPendingQuestions(sessionID))
+    if (method !== "POST") throw new HttpError(405, `Method ${method} is not supported`)
+
+    const questionID = segments[3]
+    if (!questionID) throw new HttpError(400, "The question id is required in the path.")
+
+    const body = await readBody(req)
+    const answer = body["answer"]
+    // String KOSONG sah dan berarti "tidak menjawab" — user menekan Enter tanpa
+    // mengetik. Yang tidak sah adalah bukan string sama sekali.
+    if (typeof answer !== "string") throw new HttpError(400, 'Field "answer" must be a string.')
+
+    const handled =
+      answer.trim() === "" ? cancelQuestion(questionID) : answerQuestion(questionID, answer)
+    if (!handled) throw new HttpError(404, `Question not found or already answered: ${questionID}`)
     return json(res, 200, { ok: true })
   }
 

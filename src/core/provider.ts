@@ -163,6 +163,20 @@ export function listModels(config: Config): ModelListing[] {
  * Tidak pernah melempar: ini dipanggil di jalur panas tiap langkah, dan
  * metadata yang hilang tidak boleh menjatuhkan giliran yang sedang berjalan.
  */
+/**
+ * Paket AI SDK yang melayani model ini — satu-satunya hal yang memberi tahu
+ * apakah `cache_control` akan dipahami atau justru ditolak (lihat cag.ts).
+ */
+export function providerNpmFor(
+  config: Config,
+  modelID: string | undefined,
+): Config["provider"][string]["npm"] | undefined {
+  if (modelID === undefined) return undefined
+  const slash = modelID.indexOf("/")
+  if (slash <= 0) return undefined
+  return config.provider[modelID.slice(0, slash)]?.npm
+}
+
 export function contextWindowFor(config: Config, full?: string): number | undefined {
   const target = full ?? config.model
   if (target === undefined) return undefined

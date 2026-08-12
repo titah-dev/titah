@@ -91,6 +91,19 @@ export class Client {
     return this.#json(`/session/${sessionID}/undo`, { method: "POST" })
   }
 
+  /**
+   * Menjawab pertanyaan model. String kosong berarti "tidak menjawab" — dan itu
+   * sah: user boleh menolak memilih, dan model menerimanya sebagai izin untuk
+   * melanjutkan dengan asumsi terbaiknya.
+   */
+  answerQuestion(sessionID: string, questionID: string, answer: string): Promise<{ ok: boolean }> {
+    return this.#json(`/session/${sessionID}/question/${questionID}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ answer }),
+    })
+  }
+
   respondPermission(
     sessionID: string,
     permissionID: string,

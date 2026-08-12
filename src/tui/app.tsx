@@ -18,6 +18,7 @@ import {
   History,
   InfoPanel,
   PermissionDialog,
+  QuestionDialog,
   Popup,
   Splash,
   Working,
@@ -517,6 +518,24 @@ export function App({
 
   const submit = useCallback(() => {
     const text = draft.trim()
+
+    /*
+     * Pertanyaan yang menunggu mengalahkan segalanya, TERMASUK penjaga
+     * "sedang bekerja".
+     *
+     * Penjaga itu ada supaya user tidak mengirim prompt baru di tengah giliran.
+     * Tapi pertanyaan model hanya pernah muncul DI TENGAH giliran — kalau
+     * penjaganya berlaku di sini, Enter tidak melakukan apa-apa dan gilirannya
+     * menggantung sampai timeout, dengan jawaban sudah terketik di layar.
+     */
+    if (state.question) {
+      const question = state.question
+      setDraft("")
+      setCursor(0)
+      void client.answerQuestion(session.id, question.id, text)
+      return
+    }
+
     if (text === "" || state.status === "working") return
 
     // Perintah yang mengubah keadaan KLIEN ditangani di sini, tidak dikirim ke
@@ -711,6 +730,40 @@ export function App({
       }
       // Tombol lain jatuh ke penyunting di bawah, sehingga mengetik terus
       // mempersempit daftar alih-alih menutupnya.
+    }
+
+    /*
+     * Pertanyaan model: hanya TIGA tombol yang dibelokkan di sini.
+     *
+     * Mengetik jawabannya sengaja TIDAK ditangani di cabang ini — ia jatuh ke
+     * editor seperti biasa, jadi backspace, panah, tempelan, dan semua perilaku
+     * yang sudah ada tetap berlaku tanpa disalin ulang. Yang berbeda hanya apa
+     * yang terjadi saat Enter, dan itu ditangani di `submit`.
+     *
+     * Didahulukan atas dialog izin karena pertanyaan menerima ketikan bebas:
+     * kalau izin lebih dulu, huruf yang diketik user sebagai jawaban tertelan
+     * sebagai y/a/n, dan "yakin" berubah jadi izin yang tidak pernah diberikan.
+     */
+    if (state.question) {
+      const question = state.question
+
+      // Esc = tidak menjawab. Model menerimanya sebagai izin melanjutkan dengan
+      // asumsi terbaiknya, BUKAN sebagai penolakan.
+      if (resolve(keymap, press, false, ["session_interrupt"]) === "session_interrupt") {
+        void client.answerQuestion(session.id, question.id, "")
+        return
+      }
+
+      // Angka = pintasan pilihan, dan hanya kalau draft masih kosong. Begitu
+      // user mulai mengetik, "2" adalah bagian dari jawabannya.
+      if (question.options.length > 0 && draft === "" && /^[1-9]$/.test(input)) {
+        const chosen = question.options[Number(input) - 1]
+        if (chosen !== undefined) {
+          void client.answerQuestion(session.id, question.id, chosen)
+          return
+        }
+      }
+      // Sisanya jatuh ke bawah: user sedang mengetik jawabannya.
     }
 
     // Dialog izin memakan tombol lebih dulu — user harus menjawabnya.
@@ -983,6 +1036,10 @@ export function App({
   const lines = allLines(state.messages, expandTools)
   const editorHeight = editorRows(draft, size.rows)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
+  // Pertanyaan memakan tinggi juga, kalau tidak riwayat digambar di atasnya.
+  const questionHeight = state.question
+    ? Math.min(14, state.question.question.split("\n").length + state.question.options.length + 4)
+    : 0
   const popupHeight = popup ? Math.min(10, Math.max(1, popup.items.length)) + 3 : 0
   const workingHeight = state.status === "working" ? 1 : 0
   // Angka `SUBAGENT_PANEL_ROWS` di sini HARUS sama dengan yang dipakai
@@ -997,7 +1054,7 @@ export function App({
   const headerHeight = withMark ? markLines().length + 2 : 4
   const available = historyRows(
     size.rows,
-    editorHeight + permissionHeight + popupHeight + workingHeight + subagentPanelHeight,
+    editorHeight + permissionHeight + questionHeight + popupHeight + workingHeight + subagentPanelHeight,
     headerHeight,
   )
   const window = viewport(lines, available, scroll)
@@ -1073,6 +1130,7 @@ export function App({
           satu baris merah untuk hal yang tidak merusak apa pun mengajari user
           mengabaikan warna merah yang sungguhan. */}
       {state.notice ? <Text dimColor>· {state.notice}</Text> : null}
+      {state.question ? <QuestionDialog request={state.question} /> : null}
       {state.permission ? <PermissionDialog request={state.permission} /> : null}
 
       {subagentPanelBox}

@@ -15,6 +15,8 @@ import { patchTool } from "./patch.ts"
 import { moveTool, removeTool } from "./fileops.ts"
 import { bashOutputTool, bashStartTool, bashStopTool } from "./background.ts"
 import { diagnosticsTool } from "./diagnostics.ts"
+import { memoryTool } from "./memory.ts"
+import { questionTool } from "./question.ts"
 
 /**
  * Tool baca berjalan tanpa izin. Tool yang mengubah sesuatu (`mutates: true`)
@@ -61,6 +63,8 @@ export function allTools(): TitahTool[] {
     bashOutputTool,
     bashStopTool,
     diagnosticsTool,
+    memoryTool,
+    questionTool,
   ]
   return cached
 }
@@ -89,5 +93,7 @@ export {
   bashOutputTool,
   bashStopTool,
   diagnosticsTool,
+  memoryTool,
+  questionTool,
 }
 export * from "./types.ts"
