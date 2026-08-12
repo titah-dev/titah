@@ -226,6 +226,27 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   //
   // `doesNotFit`, bukan `needsMore`: setelah semua yang murah dijalankan, hanya
   // ketidakmuatan yang SUNGGUHAN boleh membuang isi ekor.
+
+  // Peringkasan TIDAK jadi dan tetap tidak muat: perlindungan hasil sub-agent di
+  // riwayat lama harus mengalah lebih dulu.
+  //
+  // Perlindungan itu bertumpu pada peringkas yang mewakili hasil `task`. Kalau
+  // peringkasnya gagal atau dibatalkan, tidak ada yang mewakilinya, batas air
+  // tidak maju, dan barisnya tetap dikirim — sementara `pruneTail` hanya
+  // menjangkau [cut, akhir). Satu hasil task 22 KB di riwayat lama karena itu
+  // duduk di luar jangkauan SEMUA tuas yang tersisa, padahal sebelum pengecualian
+  // ini ada ia terpangkas tanpa syarat. Pada titik ini memotong diam-diam oleh
+  // provider lebih buruk daripada kehilangan jawaban sub-agent — penilaian yang
+  // sama dengan yang sudah dipakai `pruneTail` sendiri.
+  if (
+    !summarised &&
+    compaction.prune &&
+    cut > 0 &&
+    doesNotFit(prunedBytes + summaryFreed)
+  ) {
+    prune(0, cut, false)
+  }
+
   if (doesNotFit(prunedBytes + summaryFreed)) pruneTail()
 
   return done(summarised)

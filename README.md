@@ -713,6 +713,13 @@ What it does, precisely:
 - When the context fills up, old tool output is dropped first (`prune`),
   because it is the bulk of an agentic turn and costs nothing to discard — the
   model can re-read a file. Only if that is not enough is a summary written.
+- Sub-agent results are **exempt** from ordinary pruning. The marker tells the
+  model to re-run the tool, which is right for `read` and wrong for `task`:
+  recovering a sub-agent's answer costs another full nested turn. Summarisation
+  handles them instead — lossy, but not destructive. In the last-resort tail prune
+  nothing is exempt, because a silently truncated request is worse still, but there
+  the marker says what was lost and what it costs to get back. And if summarisation
+  fails outright, the exemption yields rather than letting an oversized request go.
 - This happens **mid-turn** too, not just between turns. One long turn reading
   thirty files is the case that overflows most often, and there is no user
   message in the middle of it where a between-turns check could fire.
