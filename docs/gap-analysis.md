@@ -1,5 +1,7 @@
 # Apa yang kurang dari Titah sebagai AI agent
 
+> **Perbandingan terbaru ada di [`comparison-2026-08-13.md`](./comparison-2026-08-13.md)** — 21 tool, dan angka tool opencode di dokumen ini sudah tidak akurat untuk 1.18.4.
+
 Ditulis 2026-08-11, terhadap `main` @ `b334908`.
 Gate saat analisis ini dibuat: `npm run typecheck` bersih, `npm run build` bersih,
 `npm test` **511/511 lulus**.

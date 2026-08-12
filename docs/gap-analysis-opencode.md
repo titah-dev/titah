@@ -1,5 +1,7 @@
 # Titah vs opencode — kekurangan tambahan
 
+> **Perbandingan terbaru ada di [`comparison-2026-08-13.md`](./comparison-2026-08-13.md).** Satu koreksi penting terhadap dokumen ini: klaim "9 lawan 15" TIDAK akurat untuk opencode 1.18.4 — `list`, `patch`, `websearch`, dan `lsp` ada sebagai string di biner tapi tidak terdaftar di registry tool agent mana pun. Diukur lewat `opencode debug agent build`.
+
 Lanjutan dari [`gap-analysis.md`](./gap-analysis.md). Dokumen itu menilai Titah
 sendirian: apa yang membuatnya gagal pada tugas panjang. Dokumen ini menilainya
 terhadap pembanding terdekat.
