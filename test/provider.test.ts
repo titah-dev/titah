@@ -6,6 +6,7 @@ import {
   resolveModel,
   ProviderError,
   contextWindowFor,
+  summariserModelFor,
   undeclaredContextWindows,
 } from "../src/core/provider.ts"
 import { Config, Provider } from "../src/core/schema.ts"
@@ -17,6 +18,24 @@ const compatible = (overrides: Record<string, unknown> = {}) =>
     models: { m: {} },
     ...overrides,
   })
+
+test("model peringkas: smallModel dulu, lalu model giliran, lalu model bawaan", () => {
+  // Ronde review kedua menemukan dua ekspresi berbeda untuk satu keputusan:
+  // peringkasnya di-resolve dari `smallModel ?? input.model`, jendelanya dihitung
+  // dari `agentDef?.model ?? modelOverride`. Keduanya menyimpang persis pada
+  // kasus nyata — `subagent.ts` memanggil `prompt()` TANPA model — sehingga
+  // sebuah agent dengan `model` sendiri memberi jendela 400.000 sementara yang
+  // meringkas adalah model bawaan berjendela 8192. Satu fungsi menutup celahnya.
+  const base = { model: "ollama/besar", provider: {}, agent: {} } as unknown as Config
+
+  assert.equal(summariserModelFor(base, "openai/giliran"), "openai/giliran")
+  assert.equal(summariserModelFor(base, undefined), "ollama/besar")
+  assert.equal(
+    summariserModelFor({ ...base, smallModel: "ollama/kecil" } as Config, "openai/giliran"),
+    "ollama/kecil",
+    "smallModel selalu menang: ia memang yang menulis ringkasan",
+  )
+})
 
 test("parseModelId memisah pada slash pertama saja", () => {
   assert.deepEqual(parseModelId("ollama/qwen3.5:27b"), {

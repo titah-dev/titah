@@ -41,6 +41,9 @@ agent editors as the thing that sets it apart.
 - Old tool output is pruned before anything is summarised — free, and usually
   enough. Sub-agent (`task`) results are exempt from ordinary pruning: re-running
   one costs a whole nested turn, unlike re-reading a file.
+- The summariser's own prompt is bounded as well. A transcript larger than the
+  summariser's window is summarised in chunks and the chunk summaries summarised
+  in turn, rather than being silently truncated by the provider.
 - Tunable: `compaction.auto`, `reserved`, `tailTurns`, `prune`. `reserved` is
   capped at a quarter of the window, so the 8192 default does not swallow an 8k
   local model's entire budget.

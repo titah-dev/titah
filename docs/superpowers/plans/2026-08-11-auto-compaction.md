@@ -1990,11 +1990,11 @@ git commit -m "fix(command): stop the palette from running /compact before its f
 were behaviours no test pinned, filed as issues #1–#4. Two of them land here —
 `appendModelMessages` had no transaction, and the pruner discarded sub-agent
 results — under
-`docs/superpowers/specs/2026-08-12-storage-and-pruner-design.md`. The other two
-(the summariser's unbounded prompt, and the "was pruning enough?" decision being
-arithmetic on a stale provider number) are a separate change: three review rounds
-found further defects in that work, including a regression against `main`, so it
-is not held together with the settled half. Issue #5 (no intent state) has a
+`docs/superpowers/specs/2026-08-12-storage-and-pruner-design.md`. The other two — the
+summariser's unbounded prompt, and the "was pruning enough?" decision being
+arithmetic on a stale provider number — land in a follow-up change under
+`2026-08-12-compaction-hardening-design.md`, kept separate because three review
+rounds found further defects in that work, including a regression against `main`. Issue #5 (no intent state) has a
 design and no code: `2026-08-12-intent-state-design.md`.
 
 ---

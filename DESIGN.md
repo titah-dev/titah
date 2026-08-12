@@ -127,12 +127,12 @@ by the model's declared `contextWindow`. An undeclared window means compaction i
 off for that model — never guessed, because a wrong number is more dangerous than
 no number. Old tool output is pruned before anything is summarised, and sub-agent
 (`task`) results are exempt from that pruning: re-running one costs a whole nested
-turn, unlike re-reading a file. Design:
-`docs/superpowers/specs/2026-08-11-auto-compaction-design.md` and
-`2026-08-12-storage-and-pruner-design.md`.
-
-The summariser's own prompt is **not** bounded yet, and that is a known gap rather
-than an oversight — see issues #1 and #2.
+turn, unlike re-reading a file. The summariser's own prompt is bounded too, and a
+transcript larger than the summariser's window is summarised in chunks rather than
+silently truncated by the provider. Design:
+`docs/superpowers/specs/2026-08-11-auto-compaction-design.md`,
+`2026-08-12-storage-and-pruner-design.md`, and
+`2026-08-12-compaction-hardening-design.md`.
 
 Titah tracks execution state but has **no intent state** — the model has nowhere
 to record a plan that survives compaction. That is a known gap with a written

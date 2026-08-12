@@ -585,6 +585,23 @@ test("usage.context adalah input langkah TERAKHIR, bukan jumlah seluruh langkah"
 // sedikit bergeser.
 const COMPACTING_CONFIG = { auto: true, reserved: 1000, tailTurns: 0, prune: true }
 
+/**
+ * Prompt yang bulk-nya NYATA, bukan cuma angka usage yang besar.
+ *
+ * Pemicu pemadatan membaca angka yang dilaporkan provider — di test itu mock,
+ * jadi bisa diarang. Keputusan "prune saja cukup, atau perlu diringkas juga?"
+ * MENGUKUR permintaan yang akan dikirim (issue #2), dan pengukuran tidak bisa
+ * diarang. Riwayat dua pesan pendek karena itu tidak akan naik ke peringkasan
+ * berapa pun usage yang dilaporkan — dan itu perilaku yang benar: terukur, pada
+ * hasil 28 KB dengan jendela 8192 permintaan yang sungguh dikirim cuma 490 token
+ * sementara peringkas menyala di 29 dari 30 langkah.
+ *
+ * 30.000 byte ÷ 4 = 7.500 token, di atas anggaran 7.192 pada jendela 8192 dengan
+ * reserved 1000. Test yang menguji jalur peringkasan harus punya riwayat yang
+ * peringkasan sungguh dibutuhkan untuknya.
+ */
+const bulky = (label: string): string => `${label} ${"z".repeat(30_000)}`
+
 /** Chunk teks lengkap dengan `text-start`/`text-end` — tanpanya AI SDK menolak `text-delta` dengan "text part … not found", dan giliran itu tersimpan sebagai error tanpa baris riwayat sama sekali. */
 function textChunk(delta: string, usage: ReturnType<typeof usageWith>): LanguageModelV4StreamPart[] {
   return [
@@ -604,7 +621,7 @@ test("giliran berikutnya memadatkan sendiri saat giliran sebelumnya mengisi kont
   // panggilan peringkas sama-sama dilayani bentuk yang sama. `synthesizerFor`
   // memakai streamText, sehingga ia menghabiskan mock yang SAMA.
   recordingModel([textChunk("jawaban", usageWith(7800))])
-  await prompt({ sessionID: session.id, text: "giliran satu" })
+  await prompt({ sessionID: session.id, text: bulky("giliran satu") })
 
   await prompt({ sessionID: session.id, text: "giliran dua" })
 
@@ -663,6 +680,33 @@ test("ambang membaca usage.context (langkah TERAKHIR), bukan usage.input (jumlah
   assert.equal(latestCompaction(session.id), undefined)
 })
 
+test("prompt giliran ini ikut terukur, walau belum tertulis jadi baris", async () => {
+  // Review menemukan ini: `autoCompact` antar-giliran berjalan SEBELUM giliran
+  // ini ditulis jadi baris, jadi pesan user-nya tidak ada di `current` sama
+  // sekali. Sebuah paste berkas 30 KB sebagai prompt karena itu tidak terlihat
+  // oleh keputusan "masih perlu diringkas?" yang justru diambil karenanya.
+  //
+  // Riwayatnya SENGAJA kecil: satu-satunya yang bisa membawa permintaan ini di
+  // atas anggaran adalah prompt giliran dua. Kalau ia tidak ikut terhitung, tidak
+  // ada ringkasan yang tersimpan sama sekali.
+  const dir = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
+  const session = createSession(dir)
+
+  recordingModel([textChunk("jawaban", usageWith(7800))])
+  await prompt({ sessionID: session.id, text: "pendek" })
+
+  // Positif dulu: giliran satu memang tidak memadatkan apa pun — riwayatnya
+  // kecil, jadi tidak ada yang bisa dituduhkan ke giliran ini nanti.
+  assert.equal(latestCompaction(session.id), undefined)
+
+  await prompt({ sessionID: session.id, text: bulky("paste berkas besar") })
+
+  assert.ok(
+    latestCompaction(session.id),
+    "prompt 30 KB itu sendiri yang melewati anggaran, dan harus terhitung",
+  )
+})
+
 test("giliran ketiga TIDAK meringkas lagi setelah giliran kedua memadatkan", async () => {
   // Kalau angka pra-pemadatan disimpan alih-alih dibaca ulang tiap giliran,
   // sesi akan memadatkan berulang-ulang tanpa kemajuan — terlihat seperti model
@@ -676,7 +720,7 @@ test("giliran ketiga TIDAK meringkas lagi setelah giliran kedua memadatkan", asy
     textChunk("kecil", usageWith(50)),
   ])
 
-  await prompt({ sessionID: session.id, text: "giliran satu" })
+  await prompt({ sessionID: session.id, text: bulky("giliran satu") })
   await prompt({ sessionID: session.id, text: "giliran dua" })
   // `seq`, bukan `created`: dua pemadatan yang jatuh pada milidetik yang sama
   // punya `created` yang identik dan akan lolos secara kebetulan. `seq` cuma
@@ -731,7 +775,7 @@ test("smallModel yang salah tidak menjatuhkan giliran, dan sesi tetap menerima p
   // sini TIDAK cukup untuk membuktikan resolver smallModel belum dipanggil —
   // resolver yang dipanggil eager tapi tertangkap `try/catch` juga akan lolos
   // tanpa error. `smallCalls` di bawah yang membuktikan LAMBAT-nya sungguhan.
-  const first = await prompt({ sessionID: session.id, text: "giliran satu" })
+  const first = await prompt({ sessionID: session.id, text: bulky("giliran satu") })
   assert.equal(first.error, undefined)
   assert.match(bodyOf(first), /jawaban/)
   assert.equal(smallCalls, 0, "resolver smallModel tidak boleh dipanggil kalau tidak ada yang dipadatkan")
@@ -817,7 +861,13 @@ test("giliran multi-langkah memadatkan DI TENGAH, dan konteks yang dikirim menyu
   // atas soal kenapa itu penting untuk assertion negatif di bawah.
   fs.writeFileSync(path.join(dir, "filler.txt"), "konten aman\ntanpa jejak lama\n")
   const session = createSession(dir)
-  await prompt({ sessionID: session.id, text: "baca berulang" })
+  // Bulk-nya ada di PROMPT, bukan di hasil tool. Sejak issue #2 keputusan
+  // naik-ke-peringkasan mengukur permintaan yang akan dikirim, dan hasil tool
+  // bisa dibebaskan prune — riwayat yang bulk-nya prunable karena itu berhenti
+  // di prune dan tidak pernah butuh peringkas, yang justru perilaku benar.
+  // Teks user tidak terjangkau prune, jadi hanya peringkasan yang bisa
+  // menghilangkannya: itu yang membuat jalur mid-turn di sini sungguh teruji.
+  await prompt({ sessionID: session.id, text: bulky("baca berulang") })
 
   // Positif dulu: giliran ini memang menempuh beberapa langkah, DAN
   // pemadatan sungguh terpicu (bukan cuma "boleh saja tidak pernah tercapai
@@ -927,7 +977,11 @@ test("pemadatan mid-turn memotong MUNDUR dari pesan tool, bukan lewat begitu saj
     // `textChunk`, bukan `text-delta` telanjang — lihat komentar di test di atas.
     textChunk("selesai", usageWith(130)),
   ])
-  await prompt({ sessionID: session.id, text: "baca lagi" })
+  // Bulk di PROMPT, bukan di hasil tool: hasil tool bisa dibebaskan prune,
+  // dan sejak issue #2 keputusan naik-ke-peringkasan mengukur permintaan yang
+  // akan dikirim — jadi riwayat yang bulk-nya prunable berhenti di prune dan
+  // tidak pernah butuh peringkas. Teks user tidak terjangkau prune.
+  await prompt({ sessionID: session.id, text: bulky("baca lagi") })
   assert.ok(model2.doStreamCalls.length >= 2)
 
   // Positif: pemadatan SUNGGUH menyimpan ringkasan kali ini (cut=1, bukan
@@ -1015,7 +1069,11 @@ test("smallModel yang salah tidak menjatuhkan giliran walau pemicunya di TENGAH 
     return model
   })
 
-  const result = await prompt({ sessionID: session.id, text: "baca berulang lagi" })
+  // Bulk di PROMPT, bukan di hasil tool: hasil tool bisa dibebaskan prune,
+  // dan sejak issue #2 keputusan naik-ke-peringkasan mengukur permintaan yang
+  // akan dikirim — jadi riwayat yang bulk-nya prunable berhenti di prune dan
+  // tidak pernah butuh peringkas. Teks user tidak terjangkau prune.
+  const result = await prompt({ sessionID: session.id, text: bulky("baca berulang lagi") })
 
   // Positif dulu: resolver smallModel SUNGGUH dicoba tepat sekali — bukan
   // diam-diam tidak pernah tercapai (yang akan membuat assertion di bawah
@@ -1309,7 +1367,11 @@ test("smallModel yang MENGGANTUNG tidak mengunci sesi: Esc mengakhiri giliran da
 
   // Giliran satu mengisi konteks (7800 ≥ ambang), sehingga giliran dua
   // benar-benar sampai ke peringkas antar-giliran.
-  const first = await prompt({ sessionID: session.id, text: "giliran satu" })
+  // Bulk di giliran SATU, bukan dua: pemadatan antar-giliran mengukur riwayat
+  // yang SUDAH ada, dan prompt giliran dua baru menempel sesudah pemadatan
+  // memutuskan. Teks user pula, bukan hasil tool — hasil tool bisa dibebaskan
+  // prune, dan peringkas tidak akan pernah dibutuhkan.
+  const first = await prompt({ sessionID: session.id, text: bulky("giliran satu") })
   assert.equal(first.error, undefined)
   assert.equal(first.usage?.context, 7800)
 
@@ -1410,7 +1472,11 @@ test("focus giliran diteruskan ke peringkas di KEDUA jalur, antar-giliran maupun
   const dirBetween = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
   const between = createSession(dirBetween)
   const modelBetween = recordingModel([textChunk("jawaban", usageWith(7800))])
-  await prompt({ sessionID: between.id, text: "giliran satu" })
+  // Bulk di PROMPT, bukan di hasil tool: hasil tool bisa dibebaskan prune,
+  // dan sejak issue #2 keputusan naik-ke-peringkasan mengukur permintaan yang
+  // akan dikirim — jadi riwayat yang bulk-nya prunable berhenti di prune dan
+  // tidak pernah butuh peringkas. Teks user tidak terjangkau prune.
+  await prompt({ sessionID: between.id, text: bulky("giliran satu") })
   await prompt({ sessionID: between.id, text: "periksa modul autentikasi" })
 
   // Positif dulu: peringkas SUNGGUH dipanggil di giliran dua — tanpa ini,
@@ -1447,7 +1513,11 @@ test("focus giliran diteruskan ke peringkas di KEDUA jalur, antar-giliran maupun
     ],
     textChunk("selesai", usageWith(130)),
   ])
-  await prompt({ sessionID: mid.id, text: "telusuri berkas konfigurasi" })
+  // Bulk di PROMPT, bukan di hasil tool: hasil tool bisa dibebaskan prune,
+  // dan sejak issue #2 keputusan naik-ke-peringkasan mengukur permintaan yang
+  // akan dikirim — jadi riwayat yang bulk-nya prunable berhenti di prune dan
+  // tidak pernah butuh peringkas. Teks user tidak terjangkau prune.
+  await prompt({ sessionID: mid.id, text: bulky("telusuri berkas konfigurasi") })
 
   assert.ok(latestCompaction(mid.id), "pemadatan mid-turn seharusnya menyimpan ringkasan")
   assert.match(
@@ -1650,7 +1720,7 @@ test("margin pertumbuhan satu langkah memicu pemadatan SEBELUM hasil tool beriku
     ],
     textChunk("selesai", usageWith(120)),
   ])
-  await prompt({ sessionID: session.id, text: "baca besar", agent: "pembaca" })
+  await prompt({ sessionID: session.id, text: bulky("baca besar"), agent: "pembaca" })
 
   const compaction = latestCompaction(session.id)
   assert.ok(compaction, "margin pertumbuhan seharusnya menyalakan pemadatan di 5000")
