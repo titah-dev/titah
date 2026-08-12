@@ -1,4 +1,5 @@
 import type { Message, Session } from "./message.ts"
+import type { QuestionRequest } from "./question.ts"
 import type { PermissionRequest } from "./permission.ts"
 
 /**
@@ -38,6 +39,8 @@ export type Event =
   | { type: "session.notice"; sessionID: string; message: string }
   | { type: "permission.request"; sessionID: string; request: PermissionRequest }
   | { type: "permission.resolved"; sessionID: string; permissionID: string; granted: boolean }
+  | { type: "question.request"; sessionID: string; request: QuestionRequest }
+  | { type: "question.resolved"; sessionID: string; questionID: string }
   | { type: "subagent.updated"; sessionID: string; child: SubagentState }
 
 type Queue = {

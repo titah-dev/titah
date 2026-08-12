@@ -427,6 +427,94 @@ export function planPair(sessionID: string): ModelMessage[] {
 }
 
 /**
+ * Memory-Augmented Generation: fakta yang bertahan LINTAS SESI.
+ *
+ * Bedanya dari `plan` cuma satu, dan itu menentukan segalanya: kuncinya PROYEK,
+ * bukan sesi. `plan` adalah niat untuk pekerjaan yang sedang berjalan; ini
+ * adalah fakta tentang proyeknya yang masih benar besok pagi.
+ */
+export interface Memory {
+  id: string
+  text: string
+  created: number
+}
+
+/**
+ * Batas jumlah fakta per proyek.
+ *
+ * Memori menumpang di SETIAP permintaan, jadi ia bersaing langsung dengan
+ * percakapan. Batas ini disengaja rendah: memori yang tumbuh tanpa batas
+ * berubah jadi transkrip kedua yang tidak pernah diringkas — persis masalah
+ * yang seluruh mesin pemadatan ada untuk menyelesaikannya.
+ */
+export const MAX_MEMORIES = 32
+
+export function rememberFact(directory: string, text: string): Memory {
+  const trimmed = text.trim()
+  if (trimmed === "") throw new Error("An empty memory is not a memory.")
+  const project = projectKey(directory)
+  const now = Date.now()
+  const id = `mem_${crypto.randomUUID().slice(0, 8)}`
+
+  return transaction(() => {
+    const existing = database()
+      .prepare("SELECT COUNT(*) AS n FROM memory WHERE project = ?")
+      .get(project) as { n: number }
+    if (existing.n >= MAX_MEMORIES) {
+      // Menolak, bukan membuang yang paling lama. Memori yang diam-diam
+      // menggeser isinya sendiri adalah memori yang tidak bisa dipercaya — dan
+      // yang hilang justru fakta paling awal, yang biasanya paling mendasar.
+      throw new Error(
+        `This project already has ${existing.n} memories, the maximum. ` +
+          "Forget one before remembering something new — memory rides in every request, " +
+          "so it competes with the conversation itself.",
+      )
+    }
+    database()
+      .prepare("INSERT INTO memory (id, project, text, created, updated) VALUES (?, ?, ?, ?, ?)")
+      .run(id, project, trimmed, now, now)
+    return { id, text: trimmed, created: now }
+  })
+}
+
+export function listMemories(directory: string): Memory[] {
+  return database()
+    .prepare("SELECT id, text, created FROM memory WHERE project = ? ORDER BY created ASC")
+    .all(projectKey(directory)) as unknown as Memory[]
+}
+
+export function forgetFact(directory: string, id: string): boolean {
+  const result = database()
+    .prepare("DELETE FROM memory WHERE project = ? AND id = ?")
+    .run(projectKey(directory), id)
+  return Number(result.changes) > 0
+}
+
+/**
+ * Memori seperti yang dilihat model — SELURUHNYA, bukan hasil pencarian.
+ *
+ * Ini "eager recall", dan itu keputusan sadar. MAG klasik memasang langkah
+ * pengambilan yang memilih fakta relevan; langkah itu punya kualitasnya sendiri,
+ * dan ketika ia salah pilih, yang hilang adalah fakta yang justru dibutuhkan —
+ * tanpa satu pun tanda bahwa ada yang hilang.
+ *
+ * Dengan store yang dibatasi 32 fakta, mengirim semuanya lebih murah daripada
+ * risiko itu. Kalau batasnya suatu hari dinaikkan jauh, pengambilan jadi masuk
+ * akal; pada ukuran ini, tidak.
+ */
+export function memoryPair(directory: string): ModelMessage[] {
+  const facts = listMemories(directory)
+  if (facts.length === 0) return []
+  const body = facts.map((fact) => `- [${fact.id}] ${fact.text}`).join("\n")
+  return protectedPair(
+    `<project-memory>\n${body}\n</project-memory>\n\n` +
+      "These are facts you recorded about this project in earlier sessions. " +
+      "Correct or forget any that no longer hold — a wrong memory is worse than none.",
+    "Understood. I will treat those as established, and correct them if I find otherwise.",
+  )
+}
+
+/**
  * Bentuk permintaan, SATU definisi: ringkasan (kalau ada), lalu rencana, lalu ekor.
  *
  * Rencana diletakkan SESUDAH ringkasan dan SEBELUM ekor. Sesudah, karena
@@ -447,8 +535,28 @@ export function requestShape(
   summary: string | undefined,
   plan: ModelMessage[],
   tail: ModelMessage[],
+  memory: ModelMessage[] = [],
 ): ModelMessage[] {
-  return [...(summary === undefined ? [] : summaryPair(summary)), ...plan, ...tail]
+  /*
+   * Urutannya bukan selera: ia diurutkan dari yang PALING JARANG berubah ke
+   * yang paling sering, karena cache milik provider dikunci pada awalan yang
+   * identik byte demi byte (lihat src/core/cag.ts).
+   *
+   *   memori   — berubah beberapa kali per proyek
+   *   ringkasan — berubah saat pemadatan menyala
+   *   rencana  — berubah beberapa kali per giliran
+   *   ekor     — berubah tiap langkah
+   *
+   * Menukar memori dan rencana akan membuat setiap penulisan rencana ikut
+   * membatalkan cache memori, dan tidak ada yang akan menyadarinya selain
+   * tagihan yang tidak turun.
+   */
+  return [
+    ...memory,
+    ...(summary === undefined ? [] : summaryPair(summary)),
+    ...plan,
+    ...tail,
+  ]
 }
 
 /**
@@ -457,12 +565,59 @@ export function requestShape(
  * Rencana ikut dikirim meski belum pernah ada pemadatan — ia bukan pelengkap
  * ringkasan, ia berdiri sendiri.
  */
-export function listModelMessages(sessionID: string): ModelMessage[] {
+export interface SplitRequest {
+  /**
+   * Blok yang BERTAHAN lintas giliran: ringkasan dan rencana. Ia berubah jauh
+   * lebih jarang daripada ekor.
+   */
+  protectedBlock: ModelMessage[]
+  /** Percakapan yang sedang berjalan, tumbuh tiap langkah. */
+  tail: ModelMessage[]
+}
+
+/**
+ * Riwayat yang sama, tapi TERBELAH pada batas stabil/volatil.
+ *
+ * Pemisahan ini ada demi CAG (`src/core/cag.ts`): cache milik provider dikunci
+ * pada awalan yang identik byte demi byte, jadi yang menentukan bukan APA yang
+ * dikirim melainkan URUTANNYA. Pemanggil yang perlu menaruh titik potong cache
+ * di antara keduanya tidak bisa melakukannya pada satu array yang sudah
+ * digabung.
+ *
+ * `listModelMessages` di bawah tetap ada dan tetap menjadi gabungan persis dari
+ * keduanya — itu yang membuat pengukuran dan pengiriman tidak bisa menyimpang.
+ */
+export function splitModelRequest(sessionID: string): SplitRequest {
   const rows = listModelRows(sessionID)
   const plan = planPair(sessionID)
+  const memory = memoryPairForSession(sessionID)
   const compaction = latestCompaction(sessionID)
-  if (!compaction) return requestShape(undefined, plan, rows.map((row) => row.message))
 
-  const tail = rows.filter((row) => row.seq > compaction.seq).map((row) => row.message)
-  return requestShape(compaction.summary, plan, tail)
+  if (!compaction) {
+    return {
+      protectedBlock: requestShape(undefined, plan, [], memory),
+      tail: rows.map((row) => row.message),
+    }
+  }
+  return {
+    protectedBlock: requestShape(compaction.summary, plan, [], memory),
+    tail: rows.filter((row) => row.seq > compaction.seq).map((row) => row.message),
+  }
+}
+
+/**
+ * Memori proyek untuk sebuah SESI — sesi tahu direktorinya, memori dikunci
+ * direktori. Sesi yang hilang berarti tidak ada memori, bukan error: itu
+ * terjadi pada sesi yang baru dibuat di dalam transaksi yang sama.
+ */
+function memoryPairForSession(sessionID: string): ModelMessage[] {
+  const row = database()
+    .prepare("SELECT directory FROM session WHERE id = ?")
+    .get(sessionID) as { directory: string } | undefined
+  return row ? memoryPair(row.directory) : []
+}
+
+export function listModelMessages(sessionID: string): ModelMessage[] {
+  const { protectedBlock, tail } = splitModelRequest(sessionID)
+  return [...protectedBlock, ...tail]
 }

@@ -11,7 +11,11 @@ import {
   summariserModelFor,
   summariserWindowFor,
   turnModelFor,
+  providerNpmFor,
 } from "./provider.ts"
+import { buildCachedRequest, shouldCache } from "./cag.ts"
+import { askUser, NoOneToAsk } from "./question.ts"
+import { setQuestionAsker } from "./tool/question.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -56,6 +60,7 @@ import {
   createMessage,
   getSession,
   listModelMessages,
+  splitModelRequest,
   saveMessage,
   touchSession,
 } from "./storage/session.ts"
@@ -436,8 +441,27 @@ export async function prompt(input: PromptInput): Promise<Message> {
       // `finally`-nya menjangkaunya apa pun yang dilempar di sini.
     }
 
-    const history = listModelMessages(session.id)
-    const messages: ModelMessage[] = [...history, userTurn]
+    /*
+     * CAG: permintaan dirakit stabil→volatil, dan `system` ikut MASUK sebagai
+     * pesan pertama alih-alih parameter tersendiri.
+     *
+     * Itu bukan kosmetik. `cache_control` melekat pada blok pesan, dan system
+     * prompt yang dikirim lewat parameter terpisah tidak punya tempat untuk
+     * membawanya — jadi bagian terbesar dan paling stabil dari permintaan
+     * justru bagian yang tidak bisa ditandai. Lihat src/core/cag.ts.
+     */
+    const split = splitModelRequest(session.id)
+    const cacheDecision = shouldCache({
+      npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",
+      systemText: system,
+      historyLength: split.tail.length,
+    })
+    const cached = buildCachedRequest({
+      protectedBlock: split.protectedBlock,
+      tail: [...split.tail, userTurn],
+      decision: cacheDecision,
+    })
+    const messages: ModelMessage[] = cached.messages
 
     // Berapa pesan giliran ini yang SUDAH tertulis jadi baris. Pemadatan mid-turn
     // harus menuliskannya lebih dulu supaya mesin pemadatan berbasis baris bisa
@@ -459,6 +483,37 @@ export async function prompt(input: PromptInput): Promise<Message> {
     // Per-agent, karena satu angka global tidak bisa pas untuk scout (butuh
     // sedikit iterasi) maupun refactor (butuh banyak) sekaligus.
     const maxSteps = agentDef?.steps ?? MAX_STEPS
+
+    /*
+     * Asker dipasang PER GILIRAN, tepat sebelum tool dibangun.
+     *
+     * Yang dibutuhkannya semuanya milik giliran ini: berapa klien yang
+     * mendengarkan, sesi mana yang stream-nya dilanggan (untuk sub-agent itu
+     * sesi INDUK — lihat komentar `streamSessionID` di permission.ts), agent
+     * mana yang bertanya, dan sinyal pembatalannya. Tool tidak bisa tahu satu
+     * pun dari itu, dan menebaknya berarti pertanyaan sub-agent disiarkan ke
+     * stream yang tidak didengarkan siapa pun lalu menggantung.
+     */
+    setQuestionAsker(async (ask) => {
+      try {
+        return await askUser({
+          sessionID: session.id,
+          question: ask.question,
+          options: ask.options,
+          listeners: bus.listenerCount(streamSessionID),
+          signal: controller.signal,
+          ...(agentID ? { agent: agentID } : {}),
+          streamSessionID,
+        })
+      } catch (error) {
+        // Tidak ada klien: JANGAN menggantung, dan jangan pula memperlakukannya
+        // sebagai penolakan. `undefined` berarti "tidak dijawab", dan tool
+        // menerjemahkannya jadi instruksi untuk melanjutkan dengan asumsi
+        // terbaik — yang tepat untuk mode headless dan CI.
+        if (error instanceof NoOneToAsk) return undefined
+        throw error
+      }
+    })
 
     const result = streamText({
       model,
@@ -566,9 +621,28 @@ export async function prompt(input: PromptInput): Promise<Message> {
           // ulang cuma menyamarkan kegagalan itu sebagai keberhasilan.
           if (!compacted.changed) return lastStep ? { activeTools: [] } : {}
 
-          return lastStep
-            ? { activeTools: [], messages: listModelMessages(session.id) }
-            : { messages: listModelMessages(session.id) }
+          /*
+           * Dirakit ulang lewat jalur CAG yang SAMA, bukan lewat
+           * `listModelMessages` langsung.
+           *
+           * Riwayatnya baru saja berubah, jadi titik potong cache harus
+           * dipasang ulang pada batas stabil yang BARU. Mengembalikan daftar
+           * mentah akan menaruh tanda pada pesan yang sudah bukan ujung awalan
+           * lagi — cache ditulis di tempat yang tidak akan pernah cocok, dan
+           * satu-satunya gejalanya adalah tagihan yang tidak turun.
+           */
+          const after = splitModelRequest(session.id)
+          const rebuilt = buildCachedRequest({
+            protectedBlock: after.protectedBlock,
+            tail: after.tail,
+            decision: shouldCache({
+              npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",
+              systemText: system,
+              historyLength: after.tail.length,
+            }),
+          }).messages
+
+          return lastStep ? { activeTools: [], messages: rebuilt } : { messages: rebuilt }
         } catch {
           // Gagal memadatkan DI TENGAH giliran berarti "lewati pemadatan
           // langkah ini", bukan "jatuhkan seluruh giliran yang sudah

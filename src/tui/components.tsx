@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import { Box, Text } from "ink"
 import type { Session } from "../core/message.ts"
+import type { QuestionRequest } from "../core/question.ts"
 import type { PermissionRequest } from "../core/permission.ts"
 import { logoLines, markLines } from "./logo.ts"
 import type { Line, LineKind } from "./layout.ts"
@@ -190,6 +191,43 @@ export function PermissionDialog({ request }: { request: PermissionRequest }) {
         <Text color="green">[y]</Text> allow once {"  "}
         <Text color="green">[a]</Text> always ({request.pattern}) {"  "}
         <Text color="red">[n]</Text> deny
+      </Text>
+    </Box>
+  )
+}
+
+/**
+ * Pertanyaan model, menunggu jawaban user.
+ *
+ * Bingkainya biru, bukan kuning: kuning milik dialog izin, dan dua hal yang
+ * menuntut tindakan berbeda tidak boleh terlihat sama saat jam dua pagi.
+ *
+ * Pilihan bernomor hanya PINTASAN. Jawaban bebas tetap diterima — daftar
+ * pilihan buatan model tidak selalu memuat jawaban yang benar, dan memaksa user
+ * memilih dari daftar yang salah adalah cara mengubah pertanyaan jadi tebakan
+ * yang ditandatangani orang lain.
+ */
+export function QuestionDialog({ request }: { request: QuestionRequest }) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexShrink={0}>
+      <Text color="cyan" bold>
+        {request.agent ? `${request.agent} · ` : ""}
+        Question
+      </Text>
+      {request.question
+        .split("\n")
+        .slice(0, 6)
+        .map((line, index) => (
+          <Text key={index}>{line}</Text>
+        ))}
+      {request.options.slice(0, 9).map((option, index) => (
+        <Text key={option}>
+          <Text color="cyan">[{index + 1}]</Text> {option}
+        </Text>
+      ))}
+      <Text dimColor>
+        {request.options.length > 0 ? "press a number, or " : ""}
+        type an answer and press enter · esc to skip
       </Text>
     </Box>
   )
