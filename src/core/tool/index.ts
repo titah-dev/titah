@@ -9,6 +9,12 @@ import { bashTool } from "./bash.ts"
 import { skillTool } from "./skill.ts"
 import { taskTool } from "./task.ts"
 import { planTool } from "./plan.ts"
+import { webfetchTool } from "./webfetch.ts"
+import { websearchTool } from "./websearch.ts"
+import { patchTool } from "./patch.ts"
+import { moveTool, removeTool } from "./fileops.ts"
+import { bashOutputTool, bashStartTool, bashStopTool } from "./background.ts"
+import { diagnosticsTool } from "./diagnostics.ts"
 
 /**
  * Tool baca berjalan tanpa izin. Tool yang mengubah sesuatu (`mutates: true`)
@@ -46,6 +52,15 @@ export function allTools(): TitahTool[] {
     skillTool,
     taskTool,
     planTool,
+    webfetchTool,
+    websearchTool,
+    patchTool,
+    moveTool,
+    removeTool,
+    bashStartTool,
+    bashOutputTool,
+    bashStopTool,
+    diagnosticsTool,
   ]
   return cached
 }
@@ -65,5 +80,14 @@ export {
   skillTool,
   taskTool,
   planTool,
+  webfetchTool,
+  websearchTool,
+  patchTool,
+  moveTool,
+  removeTool,
+  bashStartTool,
+  bashOutputTool,
+  bashStopTool,
+  diagnosticsTool,
 }
 export * from "./types.ts"

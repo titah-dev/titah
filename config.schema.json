@@ -242,6 +242,22 @@
                   "deny"
                 ]
               },
+              "network": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
+              "delete": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
               "allowlist": {
                 "type": "array",
                 "items": {
@@ -354,6 +370,8 @@
         "edit": "ask",
         "write": "ask",
         "bash": "ask",
+        "network": "ask",
+        "delete": "ask",
         "allowlist": []
       },
       "type": "object",
@@ -385,6 +403,24 @@
             "deny"
           ]
         },
+        "network": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
+        "delete": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
         "allowlist": {
           "default": [],
           "description": "Command patterns that are always allowed, e.g. \"git *\"",
@@ -395,6 +431,41 @@
         }
       },
       "description": "Deny by default. With no client connected, every ask becomes a deny."
+    },
+    "search": {
+      "default": {
+        "backend": "ddg"
+      },
+      "type": "object",
+      "properties": {
+        "backend": {
+          "default": "ddg",
+          "type": "string",
+          "enum": [
+            "ddg",
+            "brave",
+            "tavily"
+          ]
+        },
+        "apiKey": {
+          "description": "Required by brave and tavily. Prefer `${env:VAR_NAME}` over a literal.",
+          "type": "string"
+        }
+      },
+      "description": "Web search backend for the `websearch` tool"
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Checker to run, e.g. \"npm run typecheck\" or \"cargo clippy\""
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "description": "Project checker for the `diagnostics` tool"
     },
     "compaction": {
       "default": {

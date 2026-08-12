@@ -1902,7 +1902,12 @@ test("flash panel tetap terlihat walau turn sedang bekerja — defect 1 followup
     await tick(1)
     h.stdin.press("[B") // panah bawah — buka panel
     await tick()
-    assert.match(h.frame(), /sub-agents/, "panel harus terbuka dulu")
+    // Situs KEDUA dari flake yang sama, dan terukur: 3 gagal dari 11 ketika
+    // suite lain berjalan bersamaan, 0 dari 10 ketika sendirian. Frame yang
+    // tertangkap saat gagal menunjukkan leader `ctrl+x` masih terpasang dan
+    // panelnya belum sempat dirender. `tick()` menunggu DURASI; yang
+    // dibutuhkan di sini menunggu KONDISI. Lihat `frameEventually`.
+    await frameEventually(h, /sub-agents/, "panel harus terbuka dulu")
 
     h.clear()
     h.stdin.press("z") // tombol yang tidak dikenal panel — memicu flash penuntun
