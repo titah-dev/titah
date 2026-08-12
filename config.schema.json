@@ -412,7 +412,7 @@
         },
         "reserved": {
           "default": 8192,
-          "description": "Tokens held back from the window, covering the next response and the summarisation call itself",
+          "description": "Tokens held back from the window for the next response and for the summarisation call. It does NOT cover the growth of the next step: one more tool result is budgeted separately, from the largest one seen so far in the running turn. Capped at a quarter of the window in use.",
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991

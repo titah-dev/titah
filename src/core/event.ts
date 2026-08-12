@@ -25,6 +25,17 @@ export type Event =
   | { type: "text.delta"; sessionID: string; messageID: string; text: string }
   | { type: "session.idle"; sessionID: string }
   | { type: "session.error"; sessionID: string; message: string }
+  /**
+   * Kabar yang bukan kegagalan.
+   *
+   * Sengaja BUKAN `session.error`: di seluruh Titah event itu berarti
+   * "gilirannya gagal" — klien menampilkannya merah dan user membaca giliran
+   * yang justru berhasil sebagai giliran yang rusak. Sudah pernah dicoba dan
+   * dicabut lagi. Kanal ini ada supaya hal seperti "auto-compaction mati karena
+   * contextWindow model ini belum dideklarasikan" bisa dikatakan sekali,
+   * pelan, tanpa berpura-pura sebagai error.
+   */
+  | { type: "session.notice"; sessionID: string; message: string }
   | { type: "permission.request"; sessionID: string; request: PermissionRequest }
   | { type: "permission.resolved"; sessionID: string; permissionID: string; granted: boolean }
   | { type: "subagent.updated"; sessionID: string; child: SubagentState }

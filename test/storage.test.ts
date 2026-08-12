@@ -23,6 +23,7 @@ const {
   listModelRows,
   listSessions,
   isEmptySession,
+  lastContextTokens,
   discardIfEmpty,
   pruneEmptySessions,
   pruneSessions,
@@ -115,6 +116,29 @@ test("saveMessage menimpa isi pesan yang sama, bukan menambah baris", () => {
   const messages = listMessages(session.id)
   assert.equal(messages.length, 1)
   assert.equal(messages[0]?.usage?.output, 20)
+})
+
+test("lastContextTokens mengambil pengukuran TERAKHIR yang sungguh ada, melompati yang tanpa angka", () => {
+  // Giliran yang gagal atau dibatalkan tidak pernah sempat mengukur apa pun.
+  // Memakai pesan assistant terakhir apa adanya akan mematikan pemadatan
+  // otomatis sampai ada giliran yang sukses lagi.
+  const session = createSession("/proyek/konteks")
+
+  const diukur = createMessage(session.id, "assistant", [])
+  diukur.usage = { input: 100, output: 5, context: 4321 }
+  saveMessage(diukur)
+
+  // Positif dulu: angkanya memang terbaca ketika ia pesan terakhir.
+  assert.equal(lastContextTokens(session.id), 4321)
+
+  // Lalu satu giliran yang gagal: pesan assistant TANPA usage sama sekali.
+  createMessage(session.id, "user", [{ type: "text", text: "lagi" }])
+  createMessage(session.id, "assistant", [])
+  assert.equal(lastContextTokens(session.id), 4321, "yang tanpa angka harus dilompati")
+
+  // Dan sesi yang belum pernah mengukur apa pun tidak mengarang angka.
+  const kosong = createSession("/proyek/konteks-kosong")
+  assert.equal(lastContextTokens(kosong.id), undefined)
 })
 
 test("riwayat format AI SDK disimpan terpisah dan urut", () => {

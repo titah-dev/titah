@@ -36,6 +36,18 @@ const bigResult = (id: string): ModelMessage => ({
     },
   ],
 })
+/** Hasil tool kecil, tapi tetap lebih besar dari penanda prune (97 byte). */
+const smallResult = (id: string): ModelMessage => ({
+  role: "tool",
+  content: [
+    {
+      type: "tool-result",
+      toolCallId: id,
+      toolName: "read",
+      output: { type: "text", value: `isi ekor ${"y".repeat(200)}` },
+    },
+  ],
+})
 const call = (id: string): ModelMessage => ({
   role: "assistant",
   content: [{ type: "tool-call", toolCallId: id, toolName: "read", input: {} }],
@@ -53,6 +65,166 @@ function seed(): string {
   ])
   return session.id
 }
+
+test("compaction.auto: false tidak menjalankan apa pun, walau jauh di atas ambang", async () => {
+  // Saklarnya tidak terpatok sama sekali sebelumnya: menghapus penjaga
+  // `if (!compaction.auto) return IDLE` meninggalkan seluruh suite hijau,
+  // padahal "compaction.auto: false berperilaku persis seperti sebelum rencana
+  // ini" adalah salah satu syarat kelulusan rencananya sendiri.
+  const sessionID = seed()
+  const before = listModelRows(sessionID)
+
+  // Positif dulu, di atas DATA YANG SAMA: dengan auto: true, angka-angka ini
+  // sungguh memadatkan. Tanpa ini, `ran === false` di bawah bisa saja benar
+  // karena fixture-nya memang tidak pernah melewati ambang.
+  const proof = await autoCompact({
+    sessionID,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => "RINGKASAN",
+  })
+  assert.equal(proof.ran, true)
+  assert.equal(proof.summarised, true)
+
+  // Baru negatif, di sesi yang baru disemai persis sama.
+  const off = seed()
+  const offBefore = listModelRows(off)
+  const result = await autoCompact({
+    sessionID: off,
+    compaction: { ...CONFIG, auto: false },
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => {
+      throw new Error("peringkas tidak boleh dipanggil saat auto mati")
+    },
+  })
+
+  assert.equal(result.ran, false)
+  assert.equal(result.changed, false)
+  assert.deepEqual(listModelRows(off), offBefore)
+  assert.equal(latestCompaction(off), undefined)
+  assert.deepEqual(before.length, 6)
+})
+
+test("hasil tool yang lebih besar dari seluruh anggaran TETAP terpangkas, walau ia ada di ekor", async () => {
+  // F1: dengan `midTurnKeep` berbasis jumlah pesan, riwayat sependek ini
+  // memberi potong = 0 — prune dilewati (`cut === 0`) dan peringkas tidak
+  // menyentuh ekor karena ekor memang dipertahankan apa adanya. Hasilnya satu
+  // hasil `read` 22 KB duduk di konteks sepanjang giliran, dan tiap panggilan
+  // smallModel sesudahnya membakar kuota tanpa mengubah apa pun. Terukur:
+  // konteks memuncak di 19.407 token pada jendela 8192.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "baca berkas besar" },
+    call("a"),
+    bigResult("a"), // 20 KB — jauh lebih besar dari seluruh anggaran
+  ])
+
+  // Positif dulu: barisnya memang berisi 20 KB itu sebelum apa pun dijalankan.
+  const before = listModelRows(session.id)
+  assert.equal(before.length, 3)
+  assert.match(JSON.stringify(before[2]?.message), /x{1000,}/)
+
+  // Anggaran ekor 500 byte memaksa `midTurnCut` menyisakan satu pesan saja,
+  // lalu mundur ke pemanggilnya — potongnya jatuh di 1, dan hasil 20 KB itu
+  // berada DI DALAM ekor, tempat yang dulu tidak terjangkau apa pun.
+  let summarised = 0
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    midTurn: { keepMessages: 6, budgetBytes: 500 },
+    summarise: async () => {
+      summarised += 1
+      return "RINGKASAN"
+    },
+  })
+
+  assert.equal(result.ran, true)
+  assert.equal(result.changed, true)
+  // Peringkas sungguh dipakai untuk bagian di luar ekor — bukti bahwa
+  // pemangkasan ekor di bawah adalah upaya TERAKHIR, bukan pengganti keduanya.
+  assert.equal(summarised, 1)
+
+  // Inti klaimnya: isi 20 KB itu sudah tidak ada lagi di baris mana pun.
+  const after = listModelRows(session.id)
+  assert.equal(after.length, 3, "prune tidak boleh MENGHAPUS pesan — hasil yatim ditolak provider")
+  assert.equal(after[2]?.message.role, "tool")
+  assert.doesNotMatch(JSON.stringify(after[2]?.message), /x{1000,}/)
+  assert.match(JSON.stringify(after[2]?.message), /output was dropped/)
+})
+
+test("pemangkasan ekor TIDAK dilakukan kalau prune di luar ekor sudah cukup", async () => {
+  // Pasangan negatif test di atas: ekor dipertahankan apa adanya justru supaya
+  // model bisa melanjutkan, jadi menyentuhnya ketika tidak perlu akan membuat
+  // model membaca ulang berkas tanpa alasan — mahal, dan persis kebalikan dari
+  // tujuan fitur ini. Karena itu ia UPAYA TERAKHIR, bukan langkah biasa.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "baca dua berkas" },
+    call("a"),
+    bigResult("a"), // 20 KB, DI LUAR ekor — ini yang seharusnya cukup diprune
+    call("b"),
+    smallResult("b"), // di DALAM ekor, dan cukup besar untuk bisa diprune
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    // 3000 memicu (ambang 900), tapi ~20.000 byte yang dibebaskan prune
+    // (÷8 = 2500 token) sudah menjatuhkannya ke 500 — di bawah ambang.
+    lastStepTokens: 3000,
+    midTurn: { keepMessages: 2, budgetBytes: 1_000_000 },
+    summarise: async () => {
+      throw new Error("prune di luar ekor sudah cukup, peringkas tidak boleh dipanggil")
+    },
+  })
+
+  assert.equal(result.ran, true)
+  assert.equal(result.summarised, false)
+
+  const after = listModelRows(session.id)
+  // Positif dulu: prune SUNGGUH jalan pada data ini — tanpa ini, assertion
+  // negatif di bawah lolos bahkan kalau prune tidak pernah dipanggil sama
+  // sekali.
+  assert.match(JSON.stringify(after[2]?.message), /output was dropped/)
+  // Baru negatif: hasil di dalam ekor tetap utuh.
+  assert.match(JSON.stringify(after[4]?.message), /isi ekor/, "ekor tidak boleh disentuh di sini")
+})
+
+test("changed membedakan pemadatan yang menolong dari yang tidak bisa berbuat apa-apa", async () => {
+  // `ran` saja tidak cukup: pemanggil mid-turn memakainya untuk memutuskan
+  // apakah riwayat perlu disusun ulang, dan pemadatan yang menyala tanpa
+  // membebaskan apa pun lalu dilaporkan sebagai keberhasilan — bagian dari
+  // alasan kenapa F1 tidak terlihat begitu lama.
+  const session = createSession(root)
+  // Hanya pesan teks: tidak ada output tool untuk diprune, dan dengan
+  // tailTurns: 1 tidak ada apa pun sebelum giliran terakhir untuk diringkas.
+  appendModelMessages(session.id, [
+    { role: "user", content: "halo" },
+    { role: "assistant", content: "hai" },
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => {
+      throw new Error("tidak ada yang bisa diringkas di sini")
+    },
+  })
+
+  // Positif dulu: pemicunya SUNGGUH menyala — kalau tidak, `changed: false`
+  // di bawah lolos untuk alasan yang salah.
+  assert.equal(result.ran, true)
+  assert.equal(result.changed, false)
+  assert.equal(result.prunedBytes, 0)
+  assert.equal(result.summarised, false)
+})
 
 test("di bawah ambang, tidak melakukan apa pun", async () => {
   const sessionID = seed()

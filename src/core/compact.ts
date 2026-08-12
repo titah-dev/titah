@@ -64,6 +64,29 @@ export function estimateTokens(bytes: number): number {
   return Math.floor(bytes / BYTES_PER_TOKEN)
 }
 
+/**
+ * Rasio byte→token untuk hal yang harus ditaksir TERLALU BESAR, bukan terlalu
+ * kecil — kebalikan arah dari `BYTES_PER_TOKEN`.
+ *
+ * Dipakai dua tempat: ukuran ekor mid-turn dan margin pertumbuhan satu langkah.
+ * Keduanya BATAS, bukan penghematan, jadi arah amannya terbalik: meremehkan
+ * ukuran sebuah hasil tool berarti membiarkan ekor yang terlalu gemuk atau
+ * margin yang terlalu tipis, dan permintaan kebesaran tetap terkirim. Empat
+ * byte per token adalah angka teks nyata; delapan hanya aman ketika salahnya
+ * berarti satu panggilan smallModel yang mubazir.
+ */
+export const REAL_BYTES_PER_TOKEN = 4
+
+/** Taksiran token yang sengaja tidak meremehkan — lihat `REAL_BYTES_PER_TOKEN`. */
+export function growthTokens(bytes: number): number {
+  return Math.ceil(bytes / REAL_BYTES_PER_TOKEN)
+}
+
+/** Ukuran satu pesan seperti yang benar-benar dikirim, dalam byte JSON. */
+export function messageBytes(message: ModelMessage): number {
+  return Buffer.byteLength(JSON.stringify(message))
+}
+
 /** Penanda yang menggantikan output tool yang dibuang. */
 const PRUNED = "[output was dropped to free context — re-run the tool if you need it]"
 
@@ -79,7 +102,8 @@ const PRUNED = "[output was dropped to free context — re-run the tool if you n
 const MARKER_BYTES = Buffer.byteLength(JSON.stringify({ type: "text", value: PRUNED }))
 
 /**
- * Membuang output hasil tool SEBELUM `upTo`, tanpa menghapus satu pesan pun.
+ * Membuang output hasil tool di rentang `[from, upTo)`, tanpa menghapus satu
+ * pesan pun.
  *
  * Pesan `tool` yang dihapus akan meninggalkan tool-call tanpa hasilnya, dan
  * provider menolak riwayat semacam itu. Karena itu yang diganti hanya ISI-nya.
@@ -88,15 +112,21 @@ const MARKER_BYTES = Buffer.byteLength(JSON.stringify({ type: "text", value: PRU
  * giliran agentic output tool memang bagian terbesar konteks. Risikonya model
  * membaca ulang berkas — itu bisa dipulihkan, beda dari ringkasan yang
  * diam-diam menjatuhkan sebuah keputusan.
+ *
+ * `from` ada karena ekor pun kadang harus dipangkas sebagai upaya terakhir:
+ * satu hasil tool yang lebih besar dari seluruh anggaran tidak bisa ditolong
+ * oleh pemotongan mana pun, dan karena prune tidak pernah MENGHAPUS pesan, ia
+ * tetap aman dilakukan di dalam ekor.
  */
 export function pruneToolOutputs(
   messages: ModelMessage[],
   upTo: number,
+  from = 0,
 ): { messages: ModelMessage[]; bytesFreed: number } {
   let bytesFreed = 0
 
   const out = messages.map((message, index) => {
-    if (index >= upTo) return message
+    if (index < from || index >= upTo) return message
     if (message.role !== "tool" || typeof message.content === "string") return message
 
     const parts = message.content as { type: string; [key: string]: unknown }[]
@@ -124,28 +154,84 @@ export function pruneToolOutputs(
 }
 
 /**
- * Berapa pesan terakhir yang dipertahankan saat memadatkan DI TENGAH giliran.
+ * Batas ATAS jumlah pesan yang dipertahankan saat memadatkan DI TENGAH giliran.
  *
  * Bukan giliran, karena di tengah giliran tidak ada batas giliran untuk
  * dihitung. Enam cukup untuk menyisakan beberapa hasil tool terakhir, yang
  * biasanya persis yang sedang dipakai model untuk memutuskan langkah berikutnya.
+ *
+ * Ini SEKADAR batas atas, bukan target: ekor kecil tidak boleh tumbuh jadi enam
+ * hanya karena murah. Batas sesungguhnya adalah ukuran — lihat `TAIL_FRACTION`.
  */
 export const MID_TURN_KEEP = 6
 
 /**
+ * Bagian anggaran yang paling banyak boleh ditempati EKOR mid-turn: seperempat.
+ *
+ * Menghitung ekor dalam PESAN saja tidak membatasi apa pun, karena satu pesan
+ * bisa berisi hasil `read` 22 KB. Terukur: satu berkas 22 KB dibaca berulang
+ * pada jendela 8192 membuat konteks yang dikirim memuncak di 19.407 token —
+ * 2,4x jendelanya — dan bertahan di sana sepanjang giliran, karena ekor enam
+ * pesan itu sendiri sudah lebih besar dari seluruh jendela. Prune tidak
+ * menjangkaunya (potongnya nol) dan peringkas tidak menyentuhnya (ia memang
+ * dipertahankan apa adanya), jadi setiap panggilan smallModel sesudahnya
+ * membakar kuota tanpa mengubah apa pun.
+ *
+ * Seperempat, sama dengan `RESERVE_FRACTION`: sisanya (tiga perempat) harus
+ * memuat ringkasan, system prompt, DAN pertumbuhan langkah berikutnya. Ekor
+ * yang boleh menelan setengah anggaran membuat pemadatan cuma memindahkan
+ * masalahnya satu langkah ke depan. Angkanya sengaja sama supaya user yang
+ * membaca salah satunya tidak perlu menghafal dua bentuk yang berbeda.
+ */
+export const TAIL_FRACTION = 4
+
+/** Anggaran konteks yang benar-benar boleh dipakai, dalam token. */
+export function budgetTokens(contextWindow: number, reserved: number): number {
+  return contextWindow - effectiveReserved(contextWindow, reserved)
+}
+
+/** Ukuran maksimum ekor mid-turn, dalam byte — lihat `TAIL_FRACTION`. */
+export function tailBudgetBytes(contextWindow: number, reserved: number): number {
+  const tokens = Math.floor(budgetTokens(contextWindow, reserved) / TAIL_FRACTION)
+  return Math.max(0, tokens) * REAL_BYTES_PER_TOKEN
+}
+
+/**
  * Batas potong untuk pemadatan di tengah giliran.
  *
- * Aturannya satu: JANGAN memotong di pesan `tool`. Pesan itu memuat hasil dari
- * tool-call di pesan sebelumnya; memotong di situ meninggalkan hasil tanpa
- * panggilannya, dan provider menolak riwayat seperti itu dengan error yang
- * tidak menyebut pemadatan sama sekali. Memotong di pesan `assistant` yang
+ * Dua batas sekaligus, dan yang lebih ketat menang: paling banyak
+ * `keepMessages` pesan, DAN paling banyak `budgetBytes` byte. Satu pesan
+ * terakhir SELALU dipertahankan berapa pun besarnya — tanpanya model tidak
+ * punya apa pun untuk melanjutkan, dan hasil tool yang kebesaran itu toh masih
+ * bisa dipangkas isinya belakangan (`pruneToolOutputs` dengan `from`).
+ *
+ * Aturan lama tetap berlaku: JANGAN memotong di pesan `tool`. Pesan itu memuat
+ * hasil dari tool-call di pesan sebelumnya; memotong di situ meninggalkan hasil
+ * tanpa panggilannya, dan provider menolak riwayat seperti itu dengan error
+ * yang tidak menyebut pemadatan sama sekali. Memotong di pesan `assistant` yang
  * berisi tool-call justru aman, karena hasilnya menyusul dan ikut disimpan.
  *
  * Selalu MUNDUR ke indeks aman, tidak pernah maju: maju berarti membuang lebih
  * banyak dari yang diminta.
  */
-export function midTurnCut(messages: ModelMessage[], keepMessages: number): number {
-  let cut = Math.max(0, messages.length - keepMessages)
+export function midTurnCut(
+  messages: ModelMessage[],
+  keepMessages: number,
+  budgetBytes = Number.POSITIVE_INFINITY,
+): number {
+  let cut = messages.length
+  let bytes = 0
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const kept = messages.length - index
+    if (kept > keepMessages) break
+    bytes += messageBytes(messages[index] as ModelMessage)
+    // `kept > 1`: pesan pertama lolos tanpa diukur, itulah jaminan
+    // "selalu sisakan satu".
+    if (kept > 1 && bytes > budgetBytes) break
+    cut = index
+  }
+
   while (cut > 0 && messages[cut]?.role === "tool") cut -= 1
   return cut
 }
@@ -279,12 +365,35 @@ export function effectiveReserved(contextWindow: number, reserved: number): numb
 }
 
 /**
+ * Batas atas margin pertumbuhan: seperempat anggaran, angka yang sama dengan
+ * `RESERVE_FRACTION` dan `TAIL_FRACTION`.
+ *
+ * Tanpa batas ini, satu hasil tool raksasa menarik ambang ke bawah sampai
+ * hampir nol dan pemadatan menyala di TIAP langkah walau konteksnya masih
+ * lapang — dan tiap nyala yang tidak menemukan apa pun untuk dibuang tetap
+ * membayar satu panggilan peringkas. Pertumbuhan sebesar itu pun memang tidak
+ * bisa ditolong: hasil yang lebih besar dari seperempat anggaran tetap tidak
+ * muat sesudah pemadatan mana pun, jadi memesan tempat untuknya cuma
+ * memindahkan luapan, bukan mencegahnya.
+ */
+export function effectiveGrowth(budget: number, growth: number): number {
+  return Math.min(growth, Math.floor(budget / RESERVE_FRACTION))
+}
+
+/**
  * Apakah konteks sudah cukup penuh untuk dipadatkan.
  *
  * `lastStepTokens` WAJIB input token satu langkah, bukan `totalUsage` yang
  * menjumlahkan seluruh langkah. Giliran 20 langkah dengan konteks tetap 15k
  * melaporkan totalUsage ~300k; memakainya di sini memicu pemadatan terus-menerus
  * sambil terlihat persis seperti fitur yang sedang bekerja.
+ *
+ * `growthMargin` memesan tempat untuk SATU langkah berikutnya. Pemicunya
+ * membaca angka langkah SEBELUMNYA, jadi tanpa margin ia bisa lolos di
+ * ambang−1 lalu langkah sesudahnya menempelkan satu hasil tool utuh. Terukur:
+ * jendela 8192, ambang 6144, langkah pertama berhenti di 6142, satu baca 6 KB
+ * menyusul, dan konteks berikutnya mendarat 257 token dari bibir jendela —
+ * tanpa satu pun pemadatan pernah menyala.
  *
  * Batas yang tidak dideklarasikan berarti mati, bukan ditebak — lihat
  * `contextWindowFor`.
@@ -293,9 +402,11 @@ export function overBudget(
   lastStepTokens: number | undefined,
   contextWindow: number | undefined,
   reserved: number,
+  growthMargin = 0,
 ): boolean {
   if (lastStepTokens === undefined || contextWindow === undefined) return false
-  return lastStepTokens >= contextWindow - effectiveReserved(contextWindow, reserved)
+  const budget = budgetTokens(contextWindow, reserved)
+  return lastStepTokens >= budget - effectiveGrowth(budget, growthMargin)
 }
 
 /**

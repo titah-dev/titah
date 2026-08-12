@@ -12,6 +12,8 @@ export interface TuiState {
   messages: Message[]
   status: "idle" | "working"
   error?: string
+  /** Kabar yang BUKAN kegagalan — ditampilkan pelan, tidak merah. */
+  notice?: string
   permission?: PermissionRequest
   /** Antrean izin, kalau satu giliran meminta beberapa sekaligus. */
   permissionQueue: PermissionRequest[]
@@ -69,9 +71,11 @@ export function reduce(state: TuiState, event: TuiAction): TuiState {
 
   // Error itu tentang giliran yang SUDAH lewat. Membiarkannya tergantung di atas
   // prompt saat user mengirim perintah berikutnya membuatnya terbaca seolah
-  // perintah baru itu yang gagal.
+  // perintah baru itu yang gagal. Kabar biasa ikut dibersihkan di sini: ia
+  // sudah terbaca begitu user mengetik lagi, dan baris yang menetap selamanya
+  // berhenti dibaca orang.
   if (event.type === "notice.clear") {
-    return { ...state, error: undefined }
+    return { ...state, error: undefined, notice: undefined }
   }
 
   /*
@@ -138,6 +142,9 @@ export function reduce(state: TuiState, event: TuiAction): TuiState {
 
     case "session.error":
       return { ...state, error: event.message }
+
+    case "session.notice":
+      return { ...state, notice: event.message }
 
     case "session.idle":
       // Dialog izin yang masih tergantung saat giliran selesai sudah tidak

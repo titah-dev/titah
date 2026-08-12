@@ -110,7 +110,9 @@ Auto-compaction is off **for that model**, and three things say so:
 - **`reserved`** — tokens held back from the window. It must cover two things
   that are absolute rather than proportional: the next response, and the
   summarisation call itself. This is why `reserved` is a token count and not a
-  percentage.
+  percentage. It does **not** cover the growth of the next step — that is a
+  separate, automatic margin (section 3), because it is a property of the running
+  turn rather than of the configuration.
 - **`tailTurns`** — how many recent user turns survive verbatim. Replaces
   `KEEP_TAIL = 4`.
 - **`prune`** — enable the cheap mechanism (section 4). Defaults to `true`;
@@ -151,11 +153,30 @@ The input tokens of the **last step**:
 ### The threshold
 
 ```
-trigger  ⇔  lastStepInputTokens ≥ contextWindow − reserved
+trigger  ⇔  lastStepInputTokens ≥ contextWindow − reserved − growthMargin
 ```
 
 Both compaction paths use this one predicate. It is a pure function and is
 tested as one.
+
+**Amended after the whole-branch review.** The predicate first shipped without
+`growthMargin`, and that gap was measured: `prepareStep` reads the **previous**
+step's usage, so on an 8192-token window with a 6144 threshold it passed at
+6142, and the very next step appended a whole 6 KB tool result, landing 257
+tokens from the edge of the window without compaction ever firing.
+
+`growthMargin` is the **largest tool result seen so far in the running turn**,
+converted to tokens at the realistic 4-bytes-per-token ratio rather than the
+conservative one used for savings — the safe direction is reversed for a budget.
+It is per-turn state: it starts at zero for every turn and never crosses between
+turns, or between a parent session and a child. It is capped at a quarter of the
+available budget, because a result larger than that will not fit after any
+compaction, so reserving room for it would move the overflow rather than prevent
+it.
+
+`reserved` and `growthMargin` are therefore two separate jobs, and the config
+documents them as such: `reserved` covers the next *response* and the
+summarisation call; `growthMargin` covers the next *step's* input.
 
 ### Resetting after compaction
 
@@ -266,6 +287,37 @@ Cutting at a `tool` message leaves a tool result whose `tool-call` was dropped,
 and providers reject that with an error that never mentions compaction. Cutting
 at an `assistant` message that contains tool calls is safe, because their results
 follow it and are kept.
+
+### The tail is bounded by size, not only by count
+
+**Amended after the whole-branch review.** The mid-turn tail first shipped as a
+message count (`MID_TURN_KEEP = 6`) with no size bound at all, and that count
+bounds nothing when a single message holds a 22 KB `read`. Measured end to end:
+one 22 KB file read in a loop on a declared 8192-token window, stock defaults,
+`steps: 20` — the context sent peaked at **19,407 tokens, 2.4× the window**, and
+stayed there for the whole turn, plus roughly sixteen `smallModel` calls that
+changed nothing. The kept tail was unreachable by both mechanisms: pruning is
+skipped when the cut is `0`, and pruning only ever touched indices *below* the
+cut.
+
+Two changes, both of them:
+
+1. **The tail has a byte budget: a quarter of the available budget** — the same
+   fraction as `RESERVE_FRACTION`, leaving three quarters for the summary, the
+   system prompt, and the next step's growth. The message count survives as an
+   *upper* bound, so a small tail does not grow just because it is cheap, and at
+   least one message is always kept, or the model has nothing to continue from.
+   The backward walk to a non-`tool` index is applied after both bounds, so the
+   structural invariant above is unchanged.
+
+2. **Pruning may reach into the tail as a last resort** — after pruning outside
+   the cut and after summarising, if the context is *still* over budget. This is
+   safe for the same reason pruning is safe anywhere: it never removes a message,
+   so nothing is orphaned, and the model can re-read the file. It runs last,
+   after both cheaper mechanisms have been shown to be insufficient.
+
+After both, the same measurement peaks at **7,780 tokens — under the window for
+the whole turn — with one `smallModel` call instead of sixteen.**
 
 ### Preserving the running instruction
 

@@ -149,6 +149,23 @@ test("session.idle membersihkan dialog izin yang masih menggantung", () => {
   assert.deepEqual(state.permissionQueue, [])
 })
 
+test("session.notice disimpan terpisah dari error, dan dibersihkan saat prompt berikutnya", () => {
+  // Kanal yang bukan-kegagalan. Dipisah dari `error` justru supaya klien bisa
+  // menampilkannya dengan pelan: satu baris merah untuk hal yang tidak
+  // merusak apa pun mengajari user mengabaikan merah yang sungguhan.
+  const state = reduce(initialState, {
+    type: "session.notice",
+    sessionID: session.id,
+    message: "Automatic compaction is off",
+  })
+  assert.equal(state.notice, "Automatic compaction is off")
+  // Positif dulu di atas, baru negatif: ia TIDAK menyamar sebagai error.
+  assert.equal(state.error, undefined)
+
+  const cleared = reduce(state, { type: "notice.clear" })
+  assert.equal(cleared.notice, undefined)
+})
+
 test("session.error disimpan untuk ditampilkan", () => {
   const state = reduce(initialState, {
     type: "session.error",

@@ -207,7 +207,10 @@ export const Compaction = z
       .min(0)
       .default(8192)
       .describe(
-        "Tokens held back from the window, covering the next response and the summarisation call itself",
+        "Tokens held back from the window for the next response and for the summarisation call. " +
+          "It does NOT cover the growth of the next step: one more tool result is budgeted " +
+          "separately, from the largest one seen so far in the running turn. " +
+          "Capped at a quarter of the window in use.",
       ),
     tailTurns: z
       .number()

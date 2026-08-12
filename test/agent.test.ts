@@ -22,6 +22,7 @@ const { createSession, latestCompaction, listMessages, listModelMessages, listMo
   await import("../src/core/storage/session.ts")
 const { bus } = await import("../src/core/event.ts")
 const { loadedSkillIds } = await import("../src/core/tool/skill.ts")
+const { overBudget } = await import("../src/core/compact.ts")
 
 const project = path.join(root, "proyek")
 // Proyek terpisah supaya titah.json di sini tidak memengaruhi test lain yang
@@ -1044,18 +1045,27 @@ test("smallModel yang salah TIDAK menghalangi prune mid-turn, dan resolvernya ti
   // di storage/blob.ts, supaya isinya tersimpan UTUH, tidak dipotong lebih
   // dulu oleh mekanisme lain — kalau tidak, angka byte yang dibebaskan
   // prune jadi tidak bisa dihitung tangan). Tiga baca kecil susulan
-  // menaikkan usage sampai memicu (7900 ≥ 6144, ambang yang sama dengan
-  // test "giliran multi-langkah..." di atas). `midTurnCut(9, 6) = 3`
-  // memotong PERSIS di pasangan baca besar itu (indeks sama seperti test
-  // "giliran multi-langkah..."), dan prune membebaskan sekitar 20.000 byte
-  // — jauh di atas ~14.048 byte (1.756 token × 8) yang dibutuhkan agar
-  // `remaining` jatuh di bawah 6144 — sehingga `autoCompact` pulang di
-  // jalur PRUNE-SAJA (src/core/auto-compact.ts:83-85) tanpa PERNAH
-  // memanggil `summarise`. Diverifikasi lewat probe manual sebelum ditulis
-  // ke sini (lihat task-6-report.md ronde 2): dengan closure lambat,
-  // `smallCalls` tetap 0 dan baris baca besar berubah jadi penanda PRUNED;
-  // dengan resolusi eager, `smallCalls` jadi 1 dan penandanya tidak pernah
-  // muncul — isi 20 KB tetap utuh di storage.
+  // menaikkan usage sampai memicu. `midTurnCut(9, 6, anggaran) = 3` memotong
+  // PERSIS di pasangan baca besar itu (indeks sama seperti test "giliran
+  // multi-langkah..."), dan prune membebaskan sekitar 20.000 byte —
+  // sehingga `autoCompact` pulang di jalur PRUNE-SAJA tanpa PERNAH memanggil
+  // `summarise`. Diverifikasi lewat probe manual sebelum ditulis ke sini:
+  // dengan closure lambat, `smallCalls` tetap 0 dan baris baca besar berubah
+  // jadi penanda PRUNED; dengan resolusi eager, `smallCalls` jadi 1 dan
+  // penandanya tidak pernah muncul — isi 20 KB tetap utuh di storage.
+  //
+  // Angka pemicunya 5000, bukan 7900 seperti versi pertama fixture ini.
+  // Klaim yang dijaga TIDAK berubah ("prune saja cukup ⇒ resolver smallModel
+  // tidak pernah disentuh"); yang berubah cuma aritmetika ambang di
+  // sekelilingnya. Margin pertumbuhan satu langkah (F3) menurunkan ambang
+  // mid-turn dari 6144 menjadi 6144 − min(20 KB/4, 6144/4) = 4608, dan pada
+  // ambang itu 7900 − 2500 (≈20.000 byte terbebas ÷ 8) = 5400 MASIH di atas
+  // ambang, jadi pemadatan benar melanjutkan ke peringkasan dan premis
+  // "prune saja cukup" lenyap. 5000 mengembalikan premis itu: 5000 ≥ 4608
+  // tetap memicu, dan 5000 − 2500 = 2500 sudah di bawah 4608 sehingga
+  // peringkas memang tidak pernah dibutuhkan. Tiga usage kecil di depannya
+  // (2000/2500/3000) tetap di bawah 4608, jadi pemicunya tetap satu kali di
+  // langkah yang sama seperti sebelumnya.
   const dir = projectWith(windowConfig(8192, { smallModel: "rusak/kecil" }))
   const lines = Array.from(
     { length: 400 },
@@ -1083,7 +1093,7 @@ test("smallModel yang salah TIDAK menghalangi prune mid-turn, dan resolvernya ti
         ],
         [
           { type: "tool-call", toolCallId: "b4", toolName: "read", input: '{"path":"filler.txt"}' },
-          { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+          { type: "finish", finishReason: "tool-calls", usage: usageWith(5000) },
         ],
         textChunk("jawaban", usageWith(130)),
       ]
@@ -1233,6 +1243,291 @@ test("smallModel yang salah TIDAK menghalangi prune ANTAR-giliran, dan resolvern
     JSON.stringify(row.message).includes("output was dropped to free context"),
   )
   assert.ok(pruned, "hasil baca berkas besar semestinya sudah dipangkas jadi penanda PRUNED")
+})
+
+// `timeout` eksplisit: tanpa sinyal batal yang diteruskan, kegagalan yang
+// dijaga test ini berbentuk GANTUNG SELAMANYA, bukan assertion yang merah.
+// Suite yang menggantung tanpa batas tidak bisa dibaca siapa pun sebagai
+// kegagalan; dua puluh detik mengubahnya jadi kegagalan yang jelas.
+test("smallModel yang MENGGANTUNG tidak mengunci sesi: Esc mengakhiri giliran dan prompt berikutnya diterima", { timeout: 20_000 }, async () => {
+  // Defect kritis: `synthesizerFor` tidak menerima `abortSignal` sama sekali,
+  // jadi `controller.signal` tidak pernah sampai ke peringkas. Diprobe:
+  // `abort()` mengembalikan true — UI percaya giliran sudah dibatalkan —
+  // sementara `prompt()` masih menggantung beberapa detik kemudian, dan setiap
+  // `prompt()` sesudahnya melempar "This session is already processing another
+  // turn." untuk sisa umur proses.
+  //
+  // Ini BUKAN masalah lama yang kebetulan terbawa: sebelum pemadatan otomatis,
+  // `summarise` hanya jalan ketika user mengetik `/compact` — ia yang memilih
+  // menunggunya. Sekarang ia jalan tanpa diminta.
+  const dir = projectWith(
+    windowConfig(8192, { compaction: COMPACTING_CONFIG, smallModel: "gantung/kecil" }),
+  )
+  const session = createSession(dir)
+
+  const main = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: simulateReadableStream({ chunks: textChunk("jawaban", usageWith(7800)) }),
+    }),
+  })
+  // TIDAK PERNAH selesai sendiri. Satu-satunya jalan keluarnya adalah
+  // `abortSignal` — persis provider sungguhan yang menggantung, dan persis
+  // sinyal yang dulu tidak pernah diteruskan.
+  const hung = new MockLanguageModelV4({
+    doStream: async ({ abortSignal }) =>
+      new Promise((_resolve, reject) => {
+        abortSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+      }),
+  })
+  restore?.()
+  restore = setModelResolver((_config, full) => (full === "gantung/kecil" ? hung : main))
+
+  // Giliran satu mengisi konteks (7800 ≥ ambang), sehingga giliran dua
+  // benar-benar sampai ke peringkas antar-giliran.
+  const first = await prompt({ sessionID: session.id, text: "giliran satu" })
+  assert.equal(first.error, undefined)
+  assert.equal(first.usage?.context, 7800)
+
+  const pending = prompt({ sessionID: session.id, text: "giliran dua" })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  // Positif dulu: giliran dua memang SEDANG berjalan dan sungguh menggantung
+  // di peringkas — kalau ia sudah selesai duluan, seluruh test ini tidak
+  // menguji apa pun.
+  assert.equal(abort(session.id), true, "giliran dua harus masih berjalan saat dibatalkan")
+
+  // Inti klaimnya: `prompt()` SELESAI. Sebelum perbaikan, baris ini
+  // menggantung selamanya.
+  const second = await pending
+  assert.match(second.error ?? "", /Cancelled by user/)
+
+  // Dan sesinya menerima giliran berikutnya. Kalau `running` bocor, baris ini
+  // melempar AgentError alih-alih berjalan.
+  const thirdPending = prompt({ sessionID: session.id, text: "giliran tiga" })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(
+    abort(session.id),
+    true,
+    "giliran tiga harus benar-benar BERJALAN — sesi yang terkunci tidak punya apa pun untuk dibatalkan",
+  )
+  const third = await thirdPending
+  assert.match(third.error ?? "", /Cancelled by user/)
+})
+
+test("compaction.auto: false mematikan pemadatan mid-turn DI TITIK PANGGILNYA, bukan cuma di dalam autoCompact", async () => {
+  // Dua penjaga, dua titik panggil, dan sebelumnya tidak satu pun terpatok:
+  // menghapus penjaga di auto-compact.ts, atau yang di agent.ts, atau keduanya,
+  // meninggalkan 572/572 hijau. Penjaga di agent.ts punya efek yang TIDAK
+  // dimiliki penjaga di dalam autoCompact: ia mencegah flush mid-turn menulis
+  // baris lebih awal.
+  //
+  // Jumlah baris di AKHIR giliran tidak bisa membedakannya — baris yang sama
+  // toh ditulis di akhir giliran oleh jalur biasa. Yang membedakan adalah
+  // KAPAN: flush mid-turn menuliskannya SEBELUM langkah kedua dimulai. Jadi
+  // yang diperiksa di sini adalah isi storage pada saat langkah kedua berjalan,
+  // dibaca dari dalam `doStream` langkah itu sendiri.
+  const run = async (auto: boolean): Promise<number> => {
+    const dir = projectWith(windowConfig(8192, { compaction: { ...COMPACTING_CONFIG, auto } }))
+    const session = createSession(dir)
+    let calls = 0
+    let rowsAtSecondStep = -1
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1
+        if (calls === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "stream-start", warnings: [] },
+                {
+                  type: "tool-call",
+                  toolCallId: "g1",
+                  toolName: "read",
+                  input: '{"path":"halo.txt"}',
+                },
+                // 7900 melewati ambang, jadi flush mid-turn semestinya jalan
+                // tepat sebelum langkah kedua ini.
+                { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+              ] as LanguageModelV4StreamPart[],
+            }),
+          }
+        }
+        if (rowsAtSecondStep === -1) rowsAtSecondStep = listModelRows(session.id).length
+        return { stream: simulateReadableStream({ chunks: textChunk("jawaban", usageWith(120)) }) }
+      },
+    })
+    restore?.()
+    restore = setModelResolver(() => model)
+    const turn = await prompt({ sessionID: session.id, text: "baca sekali" })
+    assert.equal(turn.error, undefined)
+    assert.ok(calls >= 2, "giliran harus menempuh dua langkah supaya ada yang bisa diamati")
+    return rowsAtSecondStep
+  }
+
+  // Positif dulu: dengan auto: true, flush mid-turn SUNGGUH sudah menuliskan
+  // tiga baris (user, panggilan, hasil) saat langkah kedua dimulai.
+  assert.equal(await run(true), 3, "auto: true harus memflush mid-turn")
+
+  // Baru negatif, dengan fixture yang persis sama: auto: false berarti storage
+  // masih kosong saat langkah kedua berjalan — perilakunya persis seperti
+  // sebelum fitur ini ada.
+  assert.equal(await run(false), 0, "auto: false tidak boleh menulis apa pun mid-turn")
+})
+
+test("focus giliran diteruskan ke peringkas di KEDUA jalur, antar-giliran maupun mid-turn", async () => {
+  // `test/auto-compact.test.ts` cuma memastikan runner meneruskan focus yang
+  // DIBERIKAN padanya; tidak ada yang memastikan agent.ts sungguh memberinya.
+  // Membuang `focus: text` dari salah satu (atau kedua) pemanggilan di
+  // agent.ts meninggalkan suite hijau, dan ringkasan diam-diam berhenti
+  // menghormati apa yang sedang dikerjakan user.
+
+  // --- jalur antar-giliran ---
+  const dirBetween = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
+  const between = createSession(dirBetween)
+  const modelBetween = recordingModel([textChunk("jawaban", usageWith(7800))])
+  await prompt({ sessionID: between.id, text: "giliran satu" })
+  await prompt({ sessionID: between.id, text: "periksa modul autentikasi" })
+
+  // Positif dulu: peringkas SUNGGUH dipanggil di giliran dua — tanpa ini,
+  // pencarian di bawah bisa gagal karena tidak ada panggilan peringkas sama
+  // sekali, bukan karena focus-nya hilang.
+  assert.ok(latestCompaction(between.id), "giliran dua seharusnya memadatkan")
+  assert.match(
+    JSON.stringify(modelBetween.doStreamCalls.map((call) => call.prompt)),
+    /pay particular attention to: periksa modul autentikasi/,
+  )
+
+  // --- jalur mid-turn ---
+  // Fixture empat baca yang sama dengan test "giliran multi-langkah..." di
+  // atas: cut=3, ada yang benar-benar dibuang, jadi peringkas sungguh dipanggil.
+  const dirMid = projectWith(windowConfig(8192))
+  fs.writeFileSync(path.join(dirMid, "filler.txt"), "konten aman\n")
+  const mid = createSession(dirMid)
+  const modelMid = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "f1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "f2", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2500) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "f3", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(3000) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "f4", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+    ],
+    textChunk("selesai", usageWith(130)),
+  ])
+  await prompt({ sessionID: mid.id, text: "telusuri berkas konfigurasi" })
+
+  assert.ok(latestCompaction(mid.id), "pemadatan mid-turn seharusnya menyimpan ringkasan")
+  assert.match(
+    JSON.stringify(modelMid.doStreamCalls.map((call) => call.prompt)),
+    /pay particular attention to: telusuri berkas konfigurasi/,
+  )
+})
+
+test("margin pertumbuhan satu langkah memicu pemadatan SEBELUM hasil tool berikutnya meluap, dan tidak bocor ke giliran lain", async () => {
+  // Pemicu membaca usage langkah SEBELUMNYA, jadi ia bisa lolos di ambang−1
+  // sementara langkah berikutnya tetap menempelkan satu hasil tool utuh.
+  // Terukur: jendela 8192, margin 2048, satu baca 6 KB memakan 1.923 token
+  // darinya, dan konteksnya mendarat 178 token dari bibir jendela.
+  const dir = projectWith(windowConfig(8192, { agent: { pembaca: { steps: 4 } } }))
+  const lines = Array.from({ length: 400 }, (_, i) => `baris berkas besar nomor ${i}`)
+  fs.writeFileSync(path.join(dir, "besar.txt"), lines.join("\n"))
+  fs.writeFileSync(path.join(dir, "kecil.txt"), "sedikit saja\n")
+  const session = createSession(dir)
+
+  // Positif dulu, dan inilah yang membuat test ini sungguh menguji marginnya:
+  // 5000 memang di BAWAH ambang polos (8192 − 2048 = 6144). Kalau ambangnya
+  // dihitung tanpa margin, giliran ini tidak akan memadatkan apa pun.
+  assert.equal(overBudget(5000, 8192, 8192), false)
+
+  recordingModel([
+    [
+      { type: "tool-call", toolCallId: "m1", toolName: "read", input: '{"path":"besar.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(5000) },
+    ],
+    textChunk("selesai", usageWith(120)),
+  ])
+  await prompt({ sessionID: session.id, text: "baca besar", agent: "pembaca" })
+
+  const compaction = latestCompaction(session.id)
+  assert.ok(compaction, "margin pertumbuhan seharusnya menyalakan pemadatan di 5000")
+
+  // Giliran kedua: hasil tool KECIL saja. Kalau `largestToolResult` bocor dari
+  // giliran sebelumnya, ambangnya tetap tertarik ke 4608 dan giliran ini ikut
+  // memadatkan padahal tidak ada yang besar di dalamnya.
+  const model2 = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "m2", toolName: "read", input: '{"path":"kecil.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(5000) },
+    ],
+    textChunk("selesai dua", usageWith(120)),
+  ])
+  await prompt({ sessionID: session.id, text: "baca kecil", agent: "pembaca" })
+
+  // Positif dulu: giliran dua memang menempuh langkah-langkahnya, jadi
+  // `prepareStep` sungguh dievaluasi di sana.
+  assert.ok(model2.doStreamCalls.length >= 2)
+  assert.equal(
+    latestCompaction(session.id)?.seq,
+    compaction.seq,
+    "margin giliran sebelumnya tidak boleh ikut menurunkan ambang giliran ini",
+  )
+})
+
+test("model tanpa contextWindow mengabarkannya SEKALI per sesi, lewat kanal yang bukan error", async () => {
+  // Spesifikasinya menjanjikan tiga hal berbicara saat jendela tidak
+  // dideklarasikan: `titah doctor`, peringatan sekali per sesi di TUI, dan
+  // `/compact` yang tetap jalan. Hanya doctor yang pernah dibangun, sehingga
+  // yang tersisa adalah "mati diam-diam" — persis yang tabel keputusan
+  // spesifikasi itu tolak.
+  //
+  // `session.error` SENGAJA tidak dipakai: di seluruh Titah ia berarti giliran
+  // GAGAL, dan giliran ini justru berhasil. Ronde sebelumnya sudah pernah
+  // mencabut kekeliruan itu sekali.
+  const collectAll = (sessionID: string) => {
+    const events: Event[] = []
+    const controller = new AbortController()
+    const stream = bus.subscribe({ sessionID, signal: controller.signal })
+    void (async () => {
+      for await (const event of stream) events.push(event)
+    })()
+    return { events, stop: () => controller.abort() }
+  }
+
+  // Tanpa `contextWindow` di mana pun: model dideklarasikan, batasnya tidak.
+  const dir = projectWith({
+    model: "mock/m",
+    provider: { mock: { models: { m: {} } } },
+  })
+  const session = createSession(dir)
+  const seen = collectAll(session.id)
+  recordingModel([textChunk("jawaban", usageWith(10))])
+
+  await prompt({ sessionID: session.id, text: "giliran satu" })
+  await prompt({ sessionID: session.id, text: "giliran dua" })
+  seen.stop()
+
+  const notices = seen.events.filter((event) => event.type === "session.notice")
+  assert.equal(notices.length, 1, "sekali per SESI, bukan sekali per giliran")
+  assert.match(notices[0]?.type === "session.notice" ? notices[0].message : "", /contextWindow/)
+  assert.match(notices[0]?.type === "session.notice" ? notices[0].message : "", /compaction is off/)
+  // Baru negatif: ia tidak menyamar sebagai kegagalan giliran.
+  assert.equal(seen.events.filter((event) => event.type === "session.error").length, 0)
+
+  // Dan sesi yang modelnya MENYATAKAN batasnya tidak diberi kabar apa pun.
+  const declared = createSession(projectWith(windowConfig(32768)))
+  const quiet = collectAll(declared.id)
+  recordingModel([textChunk("jawaban", usageWith(10))])
+  await prompt({ sessionID: declared.id, text: "giliran satu" })
+  quiet.stop()
+  assert.equal(quiet.events.filter((event) => event.type === "session.notice").length, 0)
 })
 
 test("steps agent membatasi jumlah langkah giliran", async () => {

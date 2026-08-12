@@ -153,10 +153,19 @@ export async function runConsensus(options: ConsensusOptions): Promise<Consensus
  * (termasuk 9router di mesin pengembang) selalu membalas dalam bentuk SSE meski
  * diminta non-streaming, sehingga `generateText` gagal dengan "Invalid JSON
  * response". Seluruh jalur lain di Titah sudah streaming — ini yang tertinggal.
+ *
+ * `abortSignal` WAJIB diteruskan oleh pemanggil yang gilirannya bisa dibatalkan.
+ * Sejak pemadatan berjalan otomatis, panggilan ini tidak lagi diminta user:
+ * smallModel yang menggantung tanpanya membuat `Esc` mengembalikan "berhasil
+ * dibatalkan" sementara gilirannya tetap hidup, dan sesi itu menolak SETIAP
+ * prompt berikutnya sepanjang umur proses.
  */
-export function synthesizerFor(model: Parameters<typeof streamText>[0]["model"]) {
+export function synthesizerFor(
+  model: Parameters<typeof streamText>[0]["model"],
+  abortSignal?: AbortSignal,
+) {
   return async (system: string, prompt: string): Promise<string> => {
-    const result = streamText({ model, system, prompt })
+    const result = streamText({ model, system, prompt, ...(abortSignal ? { abortSignal } : {}) })
     let text = ""
     for await (const chunk of result.textStream) text += chunk
     return text.trim()

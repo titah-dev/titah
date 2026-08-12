@@ -665,7 +665,9 @@ is guessed. Declare it per model:
 ```
 
 Without it, automatic compaction is off for that model — `titah doctor` lists
-every model missing one. `/compact` still works either way.
+every model missing one, and the TUI says so once per session, quietly. That
+notice is information, not a failure: the turn runs normally. `/compact` still
+works either way.
 
 Tuning, with the defaults shown:
 
@@ -678,13 +680,25 @@ Tuning, with the defaults shown:
 }
 ```
 
-`reserved` is a headroom, not a hard token count: the threshold that triggers
-compaction is `contextWindow - reserved`, capped so `reserved` can never take
-more than a quarter of the window. Without that cap, the 8192 default would
-equal the whole window on a common 8k local model, push the threshold to zero,
-and fire compaction on every single turn regardless of how little context was
-actually in use. `titah doctor` reports every model where the cap is biting,
-and the `reserved` value actually in effect for it.
+`reserved` is a headroom, not a hard token count. It covers **two** things, both
+of which are absolute rather than proportional to the conversation: the next
+response, and the summarisation call itself. It does **not** cover the growth of
+the next step — one more tool result. That is budgeted separately and
+automatically, from the largest tool result seen so far in the running turn, and
+it is forgotten as soon as the turn ends. The trigger is therefore
+
+```
+contextWindow - reserved - (largest tool result this turn)
+```
+
+with both subtractions capped at a quarter of the window each. Without the cap on
+`reserved`, the 8192 default would equal the whole window on a common 8k local
+model, push the threshold to zero, and fire compaction on every single turn
+regardless of how little context was actually in use. The cap on the growth
+margin exists for the mirror-image reason: a single result larger than a quarter
+of the budget will not fit after any compaction, so reserving room for it would
+move the overflow rather than prevent it. `titah doctor` reports every model
+where the `reserved` cap is biting, and the value actually in effect for it.
 
 What it does, precisely:
 
@@ -702,9 +716,23 @@ What it does, precisely:
 - This happens **mid-turn** too, not just between turns. One long turn reading
   thirty files is the case that overflows most often, and there is no user
   message in the middle of it where a between-turns check could fire.
+- Mid-turn, the recent messages kept verbatim are bounded by **size**, not only
+  by how many there are: at most a quarter of the available budget, and at least
+  one message whatever its size. Counting messages alone bounds nothing when one
+  `read` of a 22 KB file *is* a message — measured, that single case sent 2.4×
+  the window for an entire turn.
+- If pruning outside the kept tail and summarising are both still not enough, old
+  tool output **inside** the tail is pruned too, as a last resort. Pruning never
+  removes a message, so nothing is orphaned; the model can re-read the file.
 - A failed compaction — a broken `smallModel`, a provider error — never fails
   the turn. That step's compaction is simply skipped and the turn continues
   with whatever context it already had.
+- The summary is written by `smallModel` when one is configured, falling back to
+  the turn's model. `/compact` makes the same choice, so a session's automatic
+  and manual summaries are never written by two different models.
+- Compaction is cancellable. Because it now runs unbidden, `Esc` reaches the
+  summariser itself — a `smallModel` that hangs ends the turn instead of holding
+  the session open.
 
 The summariser is instructed, above everything else, never to invent: identifiers
 are copied verbatim, and anything it cannot confirm is recorded as unresolved. A

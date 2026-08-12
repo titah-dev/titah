@@ -1069,6 +1069,10 @@ export function App({
       />
 
       {state.error ? <Text color="red">⚠ {state.error}</Text> : null}
+      {/* Redup dan tanpa warna peringatan: ini informasi, bukan kegagalan, dan
+          satu baris merah untuk hal yang tidak merusak apa pun mengajari user
+          mengabaikan warna merah yang sungguhan. */}
+      {state.notice ? <Text dimColor>· {state.notice}</Text> : null}
       {state.permission ? <PermissionDialog request={state.permission} /> : null}
 
       {subagentPanelBox}

@@ -2,21 +2,28 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import type { ModelMessage } from "ai"
 import {
+  budgetTokens,
   BYTES_PER_TOKEN,
   COMPACT_SYSTEM,
   compactPrompt,
+  effectiveGrowth,
   effectiveReserved,
   estimateTokens,
+  growthTokens,
   KEEP_TURNS,
+  messageBytes,
   MID_TURN_KEEP,
   midTurnCut,
   overBudget,
   planAtCut,
   planCompaction,
   pruneToolOutputs,
+  REAL_BYTES_PER_TOKEN,
   renderMessage,
   renderTranscript,
   reservedCollisions,
+  tailBudgetBytes,
+  TAIL_FRACTION,
   tailStart,
   wrapSummary,
 } from "../src/core/compact.ts"
@@ -328,6 +335,175 @@ test("BYTES_PER_TOKEN bawaan adalah 8", () => {
 
 test("MID_TURN_KEEP bawaan adalah 6", () => {
   assert.equal(MID_TURN_KEEP, 6)
+})
+
+test("TAIL_FRACTION bawaan adalah 4, dan anggaran ekor dihitung darinya", () => {
+  // Dipatok seperti KEEP_TURNS dan BYTES_PER_TOKEN: angka ini yang menentukan
+  // seberapa gemuk ekor mid-turn boleh jadi, dan tanpa patokan ia bisa bergeser
+  // tanpa ada yang menyadarinya sebagai keputusan.
+  assert.equal(TAIL_FRACTION, 4)
+  // Anggaran = seperempat token yang tersedia, dikonversi ke byte lewat rasio
+  // teks NYATA. Pada jendela 8192 dengan reserved bawaan 8192: anggaran token
+  // 8192 − min(8192, 2048) = 6144, seperempatnya 1536, dikali 4 byte = 6144.
+  assert.equal(budgetTokens(8192, 8192), 6144)
+  assert.equal(tailBudgetBytes(8192, 8192), 6144)
+})
+
+test("REAL_BYTES_PER_TOKEN menaksir TERLALU BESAR — arah yang berlawanan dengan BYTES_PER_TOKEN", () => {
+  // Dua rasio, dua arah aman, dan tertukarnya adalah bug senyap. Untuk BATAS
+  // (ekor, margin pertumbuhan) meremehkan ukuran berarti membiarkan permintaan
+  // kebesaran terkirim; untuk PENGHEMATAN meremehkan cuma berarti satu
+  // panggilan smallModel yang mubazir.
+  assert.equal(REAL_BYTES_PER_TOKEN, 4)
+  assert.ok(growthTokens(40_000) > estimateTokens(40_000))
+})
+
+test("ekor mid-turn dibatasi UKURAN, bukan cuma jumlah pesan", () => {
+  // Ini kegagalan yang terukur: satu berkas 22 KB dibaca berulang pada jendela
+  // 8192 membuat konteks yang dikirim memuncak di 19.407 token — 2,4x
+  // jendelanya — karena "enam pesan terakhir" tidak membatasi apa pun ketika
+  // satu pesan saja berisi 22 KB.
+  const big = (id: string): ModelMessage => ({
+    role: "tool",
+    content: [
+      {
+        type: "tool-result",
+        toolCallId: id,
+        toolName: "read",
+        output: { type: "text", value: "x".repeat(5_000) },
+      },
+    ],
+  })
+  const messages = [
+    user("kerjakan"),
+    toolCall("a"),
+    big("a"),
+    toolCall("b"),
+    big("b"),
+    toolCall("c"),
+    big("c"),
+  ]
+
+  // Positif dulu: dengan anggaran yang longgar, batas JUMLAH yang berlaku —
+  // tujuh pesan, MID_TURN_KEEP enam, jadi potongnya di indeks 1. Tanpa baris
+  // ini, assertion di bawah tidak bisa membedakan "dibatasi ukuran" dari
+  // "fungsinya memang selalu memotong di dekat ujung".
+  assert.equal(midTurnCut(messages, MID_TURN_KEEP, 1_000_000), 1)
+
+  // Baru batas ukurannya: satu hasil 5 KB saja sudah melewati anggaran 6 KB
+  // begitu ditemani pasangannya, jadi ekornya menyusut ke pasangan terakhir.
+  const cut = midTurnCut(messages, MID_TURN_KEEP, 6_144)
+  assert.equal(cut, 5)
+  assert.notEqual(messages[cut]?.role, "tool")
+
+  // Dan ekornya memang muat: itu klaim yang sesungguhnya dijaga.
+  const tailBytes = messages.slice(cut).reduce((sum, message) => sum + messageBytes(message), 0)
+  assert.ok(tailBytes <= 6_144 * 2, `ekor ${tailBytes} byte masih jauh melampaui anggaran`)
+})
+
+test("ekor mid-turn SELALU menyisakan sekurang-kurangnya satu pesan", () => {
+  // Tanpa jaminan ini, satu hasil tool yang lebih besar dari seluruh anggaran
+  // membuat ekornya kosong — dan model tidak punya apa pun untuk melanjutkan.
+  const huge: ModelMessage = {
+    role: "assistant",
+    content: "y".repeat(50_000),
+  }
+  const messages = [user("kerjakan"), toolCall("a"), toolResult("a"), huge]
+
+  // Positif dulu: pesan itu memang jauh lebih besar dari anggarannya.
+  assert.ok(messageBytes(huge) > 100)
+  assert.equal(midTurnCut(messages, MID_TURN_KEEP, 100), 3)
+})
+
+test("jumlah pesan tetap BATAS ATAS — ekor kecil tidak tumbuh cuma karena murah", () => {
+  // Anggaran raksasa tidak boleh membuat ekor menelan seluruh riwayat: hanya
+  // sepuluh pesan terakhir yang relevan untuk langkah berikutnya, sisanya
+  // adalah persis yang seharusnya diringkas.
+  const messages = Array.from({ length: 20 }, (_, i) => assistant(`langkah ${i}`))
+  assert.equal(midTurnCut(messages, MID_TURN_KEEP, Number.MAX_SAFE_INTEGER), 14)
+})
+
+test("potong mid-turn mundur melewati DUA pesan tool berurutan", () => {
+  // Jalan-mundurnya `while`, bukan `if`. Tidak ada fixture ujung-ke-ujung yang
+  // membangun dua pesan `tool` bersebelahan, jadi arah ini hanya bisa dijaga
+  // dari input sintetis — dan `if` diam-diam mendarat di pesan tool kedua,
+  // meninggalkan hasil yatim yang ditolak provider.
+  const messages = [user("kerjakan"), toolCall("a"), toolResult("a"), toolResult("b")]
+
+  // Positif dulu: dua pesan terakhir memang sama-sama `tool`, kalau tidak
+  // seluruh premis test ini kosong.
+  assert.equal(messages[2]?.role, "tool")
+  assert.equal(messages[3]?.role, "tool")
+
+  const cut = midTurnCut(messages, 1)
+  assert.equal(cut, 1, "harus mundur DUA kali, sampai pesan assistant pemanggilnya")
+  assert.notEqual(messages[cut]?.role, "tool")
+})
+
+test("margin pertumbuhan menurunkan ambang, dan dijepit seperempat anggaran", () => {
+  // Pemicunya membaca angka langkah SEBELUMNYA, jadi tanpa margin ia lolos di
+  // ambang−1 lalu langkah berikutnya menempelkan satu hasil tool utuh.
+  // Terukur: jendela 8192, ambang 6144, langkah berhenti di 6142, satu baca
+  // 6 KB menyusul, konteks berikutnya mendarat 257 token dari bibir jendela.
+
+  // Positif dulu: tanpa margin, 6142 memang LOLOS ambang 6144.
+  assert.equal(overBudget(6142, 8192, 8192), false)
+  // Baru dengan margin: satu hasil 6 KB (≈1.500 token) menariknya ke bawah.
+  assert.equal(overBudget(6142, 8192, 8192, 1_500), true)
+
+  // Jepitannya: margin tidak pernah lebih dari seperempat anggaran, kalau
+  // tidak satu hasil raksasa menarik ambang sampai hampir nol dan pemadatan
+  // menyala di tiap langkah walau konteksnya masih lapang.
+  assert.equal(effectiveGrowth(6144, 999_999), 1536)
+  assert.equal(effectiveGrowth(6144, 500), 500)
+  // 6144 − 1536 = 4608 adalah ambang terendah yang mungkin pada jendela ini.
+  assert.equal(overBudget(4607, 8192, 8192, 999_999), false)
+  assert.equal(overBudget(4608, 8192, 8192, 999_999), true)
+})
+
+test("prune bisa menjangkau ke DALAM ekor lewat `from`", () => {
+  // Upaya terakhir: hasil tool yang lebih besar dari seluruh anggaran tidak
+  // bisa ditolong pemotongan mana pun, dan prune aman di sana karena ia tidak
+  // pernah MENGHAPUS pesan — tidak ada hasil yang jadi yatim.
+  const messages = [user("satu"), toolCall("a"), toolResult("a"), toolCall("b"), toolResult("b")]
+
+  // Positif dulu: rentang bawaan (0..2) memang menyentuh hasil PERTAMA saja.
+  const outside = pruneToolOutputs(messages, 3)
+  assert.match(JSON.stringify(outside.messages[2]), /output was dropped/)
+  assert.doesNotMatch(JSON.stringify(outside.messages[4]), /output was dropped/)
+
+  // Baru ke dalam ekor: `from: 3` melewati hasil pertama dan menyasar yang di
+  // dalam ekor.
+  const inside = pruneToolOutputs(messages, messages.length, 3)
+  assert.ok(inside.bytesFreed > 0)
+  assert.match(JSON.stringify(inside.messages[4]), /output was dropped/)
+  assert.doesNotMatch(JSON.stringify(inside.messages[2]), /output was dropped/)
+})
+
+test("bytesFreed dihitung BERSIH dari penanda, bukan kotor", () => {
+  // Perbaikan ini pernah tidak terpatok sama sekali: mengembalikan
+  // `bytesFreed += removed` (kotor) meninggalkan seluruh suite hijau.
+  // Arahnya yang dilarang — melebih-lebihkan penghematan membuat pemanggil
+  // melewatkan peringkasan yang justru dibutuhkan.
+  //
+  // 97 byte adalah ukuran JSON penanda itu sendiri; angkanya ditulis di sini
+  // apa adanya, bukan diimpor, supaya test ini tidak ikut bergeser bersama
+  // konstanta yang seharusnya ia jaga.
+  const MARKER = 97
+  const output = { type: "text", value: "z".repeat(80) }
+  const message: ModelMessage = {
+    role: "tool",
+    content: [{ type: "tool-result", toolCallId: "a", toolName: "read", output }],
+  }
+  const removed = Buffer.byteLength(JSON.stringify(output))
+
+  // Positif dulu: outputnya memang SEDIKIT lebih besar dari penanda — di
+  // bawahnya prune melewatinya dan test tidak menguji apa pun.
+  assert.ok(removed > MARKER, `output ${removed} byte harus lebih besar dari penanda ${MARKER}`)
+  assert.ok(removed < MARKER * 2, "sengaja hanya sedikit lebih besar, supaya selisihnya kentara")
+
+  const { bytesFreed } = pruneToolOutputs([toolCall("a"), message], 2)
+  assert.equal(bytesFreed, removed - MARKER)
 })
 
 test("pruner mengganti output tool dengan penanda, TIDAK menghapus pesannya", () => {

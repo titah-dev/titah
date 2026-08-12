@@ -251,6 +251,31 @@ export function listMessages(sessionID: string): Message[] {
 }
 
 /**
+ * Ukuran konteks yang terakhir SUNGGUH terukur di sesi ini.
+ *
+ * Bukan sekadar pesan terakhir: giliran yang gagal atau dibatalkan tidak pernah
+ * sempat mengukur apa pun, dan memakai angkanya akan mematikan pemadatan
+ * otomatis sampai ada giliran yang sukses.
+ *
+ * Dicari dari BELAKANG lalu berhenti di temuan pertama. Jalur ini dilewati tiap
+ * giliran; membaca seluruh riwayat UI lalu mem-parse JSON setiap pesan hanya
+ * untuk satu angka membuat biayanya tumbuh bersama panjang sesi, padahal
+ * jawabannya hampir selalu ada di pesan assistant paling akhir.
+ */
+export function lastContextTokens(sessionID: string): number | undefined {
+  const rows = database()
+    .prepare(
+      "SELECT data FROM message WHERE session_id = ? AND role = 'assistant' ORDER BY seq DESC",
+    )
+    .all(sessionID) as { data: string }[]
+  for (const row of rows) {
+    const context = (JSON.parse(row.data) as Message).usage?.context
+    if (context !== undefined) return context
+  }
+  return undefined
+}
+
+/**
  * Riwayat dalam format AI SDK. Disimpan apa adanya dari `response.messages`
  * supaya kita tidak pernah merakit ulang pasangan tool-call/tool-result dengan
  * tangan — sumber bug yang mahal dan senyap.

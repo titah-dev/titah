@@ -100,3 +100,44 @@ test("tailTurns dari config menentukan berapa giliran yang tersisa setelah /comp
     restore()
   }
 })
+
+test("/compact meringkas dengan smallModel yang sama dengan pemadatan otomatis", async () => {
+  // Operasi yang sama persis (instruksi, prompt, pembungkus) tapi dua pilihan
+  // model: `/compact` memakai model giliran, pemadatan otomatis memakai
+  // `smallModel`. Bedanya tidak pernah didokumentasikan di mana pun, dan
+  // akibatnya dua ringkasan di SATU sesi bisa berbeda mutu tanpa penjelasan.
+  const asked: (string | undefined)[] = []
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: simulateReadableStream({ chunks: text("balasan") }),
+    }),
+  })
+  const restore = setModelResolver((_config, full) => {
+    asked.push(full)
+    return model
+  })
+  try {
+    fs.writeFileSync(
+      path.join(project, "titah.json"),
+      JSON.stringify({ smallModel: "kecil/m", compaction: { tailTurns: 1 } }),
+    )
+    const session = createSession(project)
+    await prompt({ sessionID: session.id, text: "satu" })
+    await prompt({ sessionID: session.id, text: "dua" })
+
+    // Positif dulu: `/compact` memang sungguh meringkas di sini — kalau tidak,
+    // tidak ada panggilan peringkas untuk diperiksa sama sekali.
+    const assistant = await prompt({ sessionID: session.id, text: "/compact" })
+    const body = assistant.parts.find((part) => part.type === "text")
+    assert.ok(body?.type === "text")
+    assert.match(body.text, /^Compacted \d+ messages into a summary/)
+
+    // Baru klaimnya: peringkasnya diminta ke `smallModel`, bukan model giliran.
+    // Jendela konteks tidak dideklarasikan di config ini, jadi pemadatan
+    // OTOMATIS tidak pernah menyala — satu-satunya yang bisa meminta
+    // "kecil/m" adalah `/compact` itu sendiri.
+    assert.ok(asked.includes("kecil/m"), `peringkas /compact harus memakai smallModel, dilihat: ${asked.join(", ")}`)
+  } finally {
+    restore()
+  }
+})

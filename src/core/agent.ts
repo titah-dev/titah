@@ -13,10 +13,13 @@ import { runConsensus, synthesizerFor } from "./consensus.ts"
 import {
   COMPACT_SYSTEM,
   compactPrompt,
+  growthTokens,
+  messageBytes,
   MID_TURN_KEEP,
   overBudget,
   planCompaction,
   renderTranscript,
+  tailBudgetBytes,
   wrapSummary,
 } from "./compact.ts"
 import {
@@ -38,8 +41,8 @@ import { take } from "./snapshot.ts"
 import { storeOutput } from "./storage/blob.ts"
 import {
   appendModelMessages,
+  lastContextTokens,
   latestCompaction,
-  listMessages,
   listModelRows,
   saveCompaction,
   createMessage,
@@ -87,6 +90,39 @@ export class AgentError extends Error {}
 
 /** Satu turn berjalan per sesi. Dipakai `abort()` dan penolakan prompt ganda. */
 const running = new Map<string, AbortController>()
+
+/**
+ * Sesi yang sudah diberi tahu bahwa auto-compaction mati untuk model ini.
+ *
+ * Sekali per sesi, bukan sekali per giliran: ini fakta konfigurasi yang tidak
+ * berubah di tengah jalan, dan mengulanginya tiap giliran berubah dari
+ * informasi menjadi gangguan yang orang latih diri untuk abaikan.
+ */
+const noticed = new Set<string>()
+
+/**
+ * Peringatan sekali-per-sesi bahwa jendela konteks model belum dideklarasikan.
+ *
+ * Tanpa ini "mati diam-diam" — persis yang tabel keputusan spesifikasi ini
+ * tolak — karena `titah doctor` hanya dibaca orang yang sudah curiga, dan
+ * satu-satunya gejala lain adalah sesi yang mati di tengah kerja.
+ */
+function warnUndeclaredWindow(session: Session, config: Config, modelID: string | undefined): void {
+  if (config.compaction.auto !== true) return
+  if (session.parentID !== undefined) return
+  if (noticed.has(session.id)) return
+  noticed.add(session.id)
+
+  const named = modelID ?? config.model
+  const where = named === undefined ? "" : ` for "${named}"`
+  bus.publish({
+    type: "session.notice",
+    sessionID: session.id,
+    message:
+      `Automatic compaction is off${where}: no contextWindow is declared. ` +
+      "Run `titah doctor` for the exact config path to add. /compact still works.",
+  })
+}
 
 type ModelResolver = (config: Config, id?: string) => LanguageModel
 
@@ -322,10 +358,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // terakhir yang PUNYA angka itu. Bukan sekadar yang terakhir — giliran yang
   // gagal atau dibatalkan tidak pernah sempat mengukur apa pun, dan memakainya
   // akan mematikan pemadatan otomatis sampai ada giliran yang sukses.
-  const lastMeasured = listMessages(session.id)
-    .filter((message) => message.role === "assistant" && message.usage?.context !== undefined)
-    .at(-1)
-  const contextWindow = contextWindowFor(config, agentDef?.model ?? modelOverride)
+  const lastMeasured = lastContextTokens(session.id)
+  const modelID = agentDef?.model ?? modelOverride
+  const contextWindow = contextWindowFor(config, modelID)
+  if (contextWindow === undefined) warnUndeclaredWindow(session, config, modelID)
   // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
   // hanya kalau prune saja tidak cukup sehingga ia benar-benar sampai ke
   // langkah meringkas. `smallModel` sebelum ini TIDAK PERNAH dipakai di mana
@@ -333,43 +369,60 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // tak dikenal atau kredensial hilang di sana akan melempar pada SETIAP
   // giliran kalau diresolusi di sini, termasuk giliran yang tidak punya apa
   // pun untuk dipadatkan.
+  //
+  // `controller.signal` ikut diteruskan: peringkas ini tidak diminta user, jadi
+  // satu-satunya jalan keluar dari smallModel yang menggantung adalah `Esc` —
+  // dan tanpa sinyal, `Esc` melapor berhasil sementara gilirannya tetap hidup.
   const summarise = (system: string, userPrompt: string): Promise<string> =>
-    synthesizerFor(resolver(config, config.smallModel ?? input.model))(system, userPrompt)
-  try {
-    await autoCompact({
-      sessionID: session.id,
-      compaction: config.compaction,
-      contextWindow,
-      lastStepTokens: lastMeasured?.usage?.context,
-      summarise,
-      focus: text,
-    })
-  } catch {
-    // Titik ini berada SEBELUM `try` utama di bawah, yang satu-satunya tempat
-    // `finally`-nya membersihkan `running`/`setAutoApprove` berada. Tanpa
-    // tangkapan ini, smallModel yang salah melempar DI SINI, `finally` tidak
-    // pernah tercapai, dan sesi terkunci "sedang memproses" SELAMANYA untuk
-    // sisa umur proses — giliran berikutnya pun ditolak. Gagal memadatkan
-    // berarti "lewati pemadatan giliran ini", bukan "gagalkan giliran ini" —
-    // dan SENGAJA tidak memakai `session.error`: event itu berarti giliran
-    // GAGAL, sementara giliran ini justru lanjut dan berhasil.
-  }
-
-  const history = listModelMessages(session.id)
-  const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
-  const messages: ModelMessage[] = [...history, userTurn]
-
-  // Berapa pesan giliran ini yang SUDAH tertulis jadi baris. Pemadatan mid-turn
-  // harus menuliskannya lebih dulu supaya mesin pemadatan berbasis baris bisa
-  // dipakai apa adanya; tanpa penghitung ini, penulisan di akhir giliran akan
-  // menduplikasi apa yang sudah tersimpan.
-  let flushed = 0
-
-  // Per-agent, karena satu angka global tidak bisa pas untuk scout (butuh
-  // sedikit iterasi) maupun refactor (butuh banyak) sekaligus — lihat Task 7.
-  const maxSteps = agentDef?.steps ?? MAX_STEPS
+    synthesizerFor(
+      resolver(config, config.smallModel ?? input.model),
+      controller.signal,
+    )(system, userPrompt)
 
   try {
+    try {
+      await autoCompact({
+        sessionID: session.id,
+        compaction: config.compaction,
+        contextWindow,
+        lastStepTokens: lastMeasured,
+        summarise,
+        focus: text,
+      })
+    } catch {
+      // Gagal memadatkan berarti "lewati pemadatan giliran ini", bukan
+      // "gagalkan giliran ini". SENGAJA tidak memakai `session.error`: event
+      // itu berarti giliran GAGAL, sementara giliran ini justru lanjut dan
+      // berhasil. Pembersihan `running` sendiri TIDAK bergantung pada
+      // tangkapan ini — panggilan di atas berada di dalam `try` utama, jadi
+      // `finally`-nya menjangkaunya apa pun yang dilempar di sini.
+    }
+
+    const history = listModelMessages(session.id)
+    const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
+    const messages: ModelMessage[] = [...history, userTurn]
+
+    // Berapa pesan giliran ini yang SUDAH tertulis jadi baris. Pemadatan mid-turn
+    // harus menuliskannya lebih dulu supaya mesin pemadatan berbasis baris bisa
+    // dipakai apa adanya; tanpa penghitung ini, penulisan di akhir giliran akan
+    // menduplikasi apa yang sudah tersimpan.
+    let flushed = 0
+
+    /**
+     * Hasil tool TERBESAR di giliran INI, dalam token — tempat yang dipesan
+     * untuk pertumbuhan satu langkah berikutnya.
+     *
+     * Per giliran, dan sengaja variabel lokal `prompt()`: ia tidak boleh bocor
+     * ke giliran berikutnya (giliran baru mulai dari konteks yang sudah
+     * dipadatkan) maupun antara sesi induk dan anaknya (mereka punya riwayat
+     * dan model sendiri-sendiri).
+     */
+    let largestToolResult = 0
+
+    // Per-agent, karena satu angka global tidak bisa pas untuk scout (butuh
+    // sedikit iterasi) maupun refactor (butuh banyak) sekaligus.
+    const maxSteps = agentDef?.steps ?? MAX_STEPS
+
     const result = streamText({
       model,
       system,
@@ -400,12 +453,24 @@ export async function prompt(input: PromptInput): Promise<Message> {
         // berlaku baik pemadatan berhasil, dilewati, MAUPUN melempar error.
         const lastStep = stepNumber >= maxSteps - 1
         try {
+          // Hasil tool langkah yang BARU selesai, ditakar sekali di sini dan
+          // diingat sebagai margin pertumbuhan — lihat `largestToolResult`.
+          // Cukup langkah terakhir saja: tiap panggilan prepareStep melihat
+          // tepat satu langkah baru di ujung `steps`.
+          for (const message of steps.at(-1)?.response.messages ?? []) {
+            if (message.role !== "tool") continue
+            largestToolResult = Math.max(largestToolResult, growthTokens(messageBytes(message)))
+          }
+
           // `config.compaction.auto` dicek DI SINI, bukan diserahkan ke
           // `autoCompact` saja: tanpa ini, flush di bawah masih jalan walau
           // auto-compaction dimatikan user — kerja mubazir yang murah untuk
           // dihindari lebih dulu.
           const used = steps.at(-1)?.usage?.inputTokens
-          if (!config.compaction.auto || !overBudget(used, contextWindow, config.compaction.reserved)) {
+          if (
+            !config.compaction.auto ||
+            !overBudget(used, contextWindow, config.compaction.reserved, largestToolResult)
+          ) {
             return lastStep ? { activeTools: [] } : {}
           }
 
@@ -417,8 +482,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
           flushed = soFar.length
 
           // `summarise` yang SAMA dengan jalur antar-giliran di atas — LAMBAT,
-          // bukan diresolusi di sini sebagai argumen. Resolusi eager persis
-          // bug yang Task 5 perbaiki untuk jalur antar-giliran: smallModel
+          // bukan diresolusi di sini sebagai argumen. Resolusi eager adalah bug
+          // yang sudah diperbaiki sekali untuk jalur antar-giliran: smallModel
           // yang salah akan melempar SEBELUM `autoCompact` sempat memutuskan
           // apakah ada sesuatu untuk dipadatkan sama sekali.
           const compacted = await autoCompact({
@@ -428,9 +493,18 @@ export async function prompt(input: PromptInput): Promise<Message> {
             lastStepTokens: used,
             summarise,
             focus: text,
-            midTurnKeep: MID_TURN_KEEP,
+            midTurn: {
+              keepMessages: MID_TURN_KEEP,
+              // `contextWindow` pasti terdefinisi di sini: `overBudget` di atas
+              // sudah pulang false kalau tidak.
+              budgetBytes: tailBudgetBytes(contextWindow ?? 0, config.compaction.reserved),
+            },
+            growthMargin: largestToolResult,
           })
-          if (!compacted.ran) return lastStep ? { activeTools: [] } : {}
+          // `changed`, bukan `ran`: pemadatan yang menyala tanpa membebaskan
+          // apa pun tidak punya riwayat baru untuk dikirim, dan menyusunnya
+          // ulang cuma menyamarkan kegagalan itu sebagai keberhasilan.
+          if (!compacted.changed) return lastStep ? { activeTools: [] } : {}
 
           return lastStep
             ? { activeTools: [], messages: listModelMessages(session.id) }
@@ -878,7 +952,15 @@ async function compactTurn(
       ? `${previous.summary}\n\n${renderTranscript(plan.dropped)}`
       : renderTranscript(plan.dropped)
 
-    const summarise = synthesizerFor(resolver(config, input.model))
+    // `smallModel ?? input.model` — pilihan model yang SAMA dengan pemadatan
+    // otomatis. Operasinya identik (instruksi, prompt, dan pembungkusnya sama
+    // persis), jadi dua pilihan model berarti `/compact` diam-diam menghasilkan
+    // ringkasan yang berbeda mutunya dari yang ditulis otomatis di sesi yang
+    // sama — beda yang tidak pernah bisa dijelaskan ke user.
+    const summarise = synthesizerFor(
+      resolver(config, config.smallModel ?? input.model),
+      controller.signal,
+    )
     const summary = await summarise(COMPACT_SYSTEM, compactPrompt(source, focus))
 
     if (summary.trim() === "") throw new AgentError("The model returned an empty summary.")
@@ -1013,7 +1095,7 @@ async function consensusTurn(
     // konsensus tetap berjalan dan mengembalikan jawaban mentah masing-masing.
     let synthesize: ((system: string, prompt: string) => Promise<string>) | undefined
     try {
-      synthesize = synthesizerFor(resolver(config, input.model))
+      synthesize = synthesizerFor(resolver(config, input.model), controller.signal)
     } catch {
       synthesize = undefined
     }
