@@ -3,24 +3,26 @@ import test from "node:test"
 import type { ModelMessage } from "ai"
 import {
   budgetTokens,
-  BYTES_PER_TOKEN,
   COMPACT_SYSTEM,
   compactPrompt,
   effectiveGrowth,
   effectiveReserved,
-  estimateTokens,
   growthTokens,
   KEEP_TURNS,
   messageBytes,
   MID_TURN_KEEP,
   midTurnCut,
   overBudget,
+  packChunks,
   planAtCut,
   planCompaction,
   projectedContext,
   pruneToolOutputs,
   REAL_BYTES_PER_TOKEN,
   renderMessage,
+  requestTokens,
+  summariseInChunks,
+  summariserChunkBytes,
   renderTranscript,
   reservedCollisions,
   tailBudgetBytes,
@@ -325,21 +327,320 @@ test("reservedCollisions menyebut model yang reserved-nya menelan jendelanya", (
   ])
 })
 
-// ---------- pruner ----------
-
-test("BYTES_PER_TOKEN bawaan adalah 8", () => {
-  // Dipatok di sini seperti KEEP_TURNS: supaya perubahan angka ini ketahuan
-  // sebagai keputusan sengaja, bukan luput karena tidak ada pemanggil yang
-  // membaca konstantanya langsung.
-  assert.equal(BYTES_PER_TOKEN, 8)
+test("REAL_BYTES_PER_TOKEN adalah 4, dan ia satu-satunya rasio yang tersisa", () => {
+  // Dulu ada dua rasio: 4 untuk BATAS, dan 8 khusus untuk menaksir penghematan
+  // prune supaya keputusan "masih perlu diringkas?" condong ke arah meringkas.
+  // Asimetri itu hilang bersama alasannya — penghematan tidak ditaksir lagi,
+  // permintaannya DIUKUR. Satu perbandingan dengan dua penggaris adalah
+  // kesalahan yang lebih halus daripada rasio yang keliru.
+  assert.equal(REAL_BYTES_PER_TOKEN, 4)
+  assert.equal(growthTokens(40_000), 10_000)
 })
+
+test("requestTokens mengukur pesan yang SUNGGUH akan dikirim, plus system prompt", () => {
+  // Inti issue #2. Yang membuat angka ini benar bukan rasionya, melainkan bahwa
+  // objeknya nyata: pesan-pesan ini persis yang berangkat. Pendahulunya
+  // mengurangi taksiran byte dari `inputTokens` yang dilaporkan provider untuk
+  // permintaan LAIN satu langkah sebelumnya.
+  const messages = [user("satu"), assistant("dua")]
+  const bytes = messages.reduce((total, message) => total + messageBytes(message), 0)
+
+  assert.equal(requestTokens(messages), growthTokens(bytes))
+  // System prompt ikut memakan jendela yang sama. Mengabaikannya berarti
+  // meremehkan permintaan, dan meremehkan ukuran permintaan berarti mengirim
+  // yang kebesaran — arah kesalahan yang paling mahal dari semuanya.
+  assert.equal(requestTokens(messages, 4_000), growthTokens(bytes + 4_000))
+  assert.ok(requestTokens(messages, 4_000) > requestTokens(messages))
+})
+
+test("requestTokens tumbuh bersama isinya, bukan bersama jumlah pesannya", () => {
+  // Penjaga arah: satu hasil `read` 28 KB dan tujuh pesan pendek adalah dua
+  // situasi yang sangat berbeda ukurannya, dan pengukuran yang menghitung pesan
+  // akan menyamakan keduanya.
+  const banyakPendek = Array.from({ length: 7 }, (_, index) => user(`pesan ${index}`))
+  const satuBesar = [user("x".repeat(28_000))]
+
+  assert.ok(requestTokens(satuBesar) > requestTokens(banyakPendek) * 10)
+})
+
+// ---------- peringkas berpotong ----------
+
+test("anggaran prompt peringkas adalah SELURUH prompt, bukan cuma transkripnya", () => {
+  // Inti issue #1: prompt peringkas TIDAK dibatasi apa pun. Terukur, dengan
+  // smallModel yang menyatakan contextWindow 4096, prompt yang dikirim 78.964
+  // token lewat `/compact` dan 79.662 lewat jalur otomatis — 19,3x dan 19,4x.
+  //
+  // Kontraknya: `summariserChunkBytes` memulangkan anggaran SELURUH prompt, dan
+  // `summariseInChunks` yang menguranginya dengan instruksi, pembungkus, dan
+  // teks fokus. Pembagian itu penting — pada versi sebelumnya sebagian
+  // pengurangan dilakukan di sini dan sebagian tidak dilakukan siapa pun, dan
+  // teks fokus lolos dari hitungan sama sekali (42.515 byte pada jendela 4096).
+  assert.equal(summariserChunkBytes(4096, 1000), budgetTokens(4096, 1000) * REAL_BYTES_PER_TOKEN)
+  assert.ok(summariserChunkBytes(4096, 1000) > 0)
+  // Dan yang dijaga adalah prompt yang SUNGGUH dikirim, bukan angka perantara:
+  // itu dipatok oleh test "tidak satu pun prompt melewati anggaran" di bawah.
+})
+
+
+test("jendela yang lebih kecil memberi potongan yang lebih kecil, dan tidak pernah negatif", () => {
+  assert.ok(summariserChunkBytes(32_768, 1000) > summariserChunkBytes(8192, 1000))
+  // Jendela yang lebih kecil dari instruksinya sendiri tidak boleh menghasilkan
+  // angka negatif atau nol: potongan nol berarti pemotongan tidak pernah maju
+  // dan giliran menggantung selamanya.
+  assert.ok(summariserChunkBytes(64, 0) > 0)
+})
+
+test("transkrip yang lebih besar dari jendela peringkas diringkas BERPOTONG, tidak dipotong provider", async () => {
+  // Acceptance pertama issue #1: transkrip yang lebih besar dari jendela
+  // smallModel tidak menghasilkan ringkasan yang terpotong diam-diam.
+  const parts = Array.from({ length: 12 }, (_, index) => `user: bagian ${index} ${"a".repeat(900)}`)
+  const prompts: string[] = []
+  const summarise = async (_system: string, prompt: string): Promise<string> => {
+    prompts.push(prompt)
+    return `ringkasan dari ${prompt.length} byte`
+  }
+
+  const chunkBytes = 2_000
+  const summary = await summariseInChunks(summarise, parts, chunkBytes)
+
+  // Positif dulu: bahannya memang jauh lebih besar dari satu potongan, jadi
+  // test ini sungguh menguji pemotongan dan bukan jalur satu-panggilan.
+  assert.ok(parts.join("\n\n").length > chunkBytes * 4)
+  assert.ok(prompts.length > 1, "harus lebih dari satu panggilan")
+
+  // INTI KLAIMNYA: tidak satu pun prompt yang melewati anggaran potongan.
+  // Inilah yang membuat pemotongan diam-diam oleh provider tidak mungkin lagi.
+  for (const prompt of prompts) {
+    assert.ok(
+      Buffer.byteLength(prompt) <= chunkBytes + Buffer.byteLength(COMPACT_SYSTEM),
+      `prompt ${Buffer.byteLength(prompt)} byte melewati anggaran ${chunkBytes}`,
+    )
+  }
+  assert.match(summary, /ringkasan dari/)
+})
+
+test("satu pesan yang sendirian lebih besar dari potongan dipotong EKSPLISIT, dengan penanda", async () => {
+  // Tanpa ini, pemotongan tetap terjadi — hanya saja di sisi provider, tanpa
+  // satu pun jejak. Penanda membuat model tahu ada yang hilang.
+  const parts = [`user: raksasa ${"b".repeat(20_000)}`]
+  const prompts: string[] = []
+  const summarise = async (_system: string, prompt: string): Promise<string> => {
+    prompts.push(prompt)
+    return "ringkasan"
+  }
+
+  await summariseInChunks(summarise, parts, 2_000)
+
+  assert.equal(prompts.length, 1)
+  assert.ok(Buffer.byteLength(prompts[0] ?? "") <= 2_000 + Buffer.byteLength(COMPACT_SYSTEM))
+  assert.match(prompts[0] ?? "", /truncated/i)
+})
+
+test("transkrip yang muat tetap satu panggilan, dan fokus user ikut terbawa", async () => {
+  // Jalur umum tidak boleh berubah perilakunya: satu potongan berarti satu
+  // panggilan, persis seperti sebelum pemotongan ada.
+  const prompts: string[] = []
+  const summarise = async (_system: string, prompt: string): Promise<string> => {
+    prompts.push(prompt)
+    return "ringkasan"
+  }
+
+  const summary = await summariseInChunks(summarise, ["user: pendek"], 100_000, "modul autentikasi")
+
+  assert.equal(prompts.length, 1)
+  assert.equal(summary, "ringkasan")
+  assert.match(prompts[0] ?? "", /modul autentikasi/)
+})
+
+test("fokus user dipakai di panggilan TERAKHIR, bukan cuma per potongan", async () => {
+  // Yang dibaca model adalah ringkasan akhir. Fokus yang cuma dipasang di
+  // potongan-potongan bisa hilang saat ringkasan-ringkasan itu diringkas lagi.
+  const parts = Array.from({ length: 8 }, (_, index) => `user: bagian ${index} ${"c".repeat(900)}`)
+  const prompts: string[] = []
+  const summarise = async (_system: string, prompt: string): Promise<string> => {
+    prompts.push(prompt)
+    return "ringkasan potongan"
+  }
+
+  await summariseInChunks(summarise, parts, 2_000, "skema basis data")
+
+  assert.ok(prompts.length > 1)
+  assert.match(prompts.at(-1) ?? "", /skema basis data/)
+})
+
+test("SATU potongan yang gagal menghentikan semuanya dan menghasilkan kosong", async () => {
+  // Melewati potongan yang gagal akan menghasilkan ringkasan yang diam-diam
+  // kehilangan satu bagian transkrip, lalu menyimpannya seolah utuh — persis
+  // kegagalan yang seluruh fitur ini ada untuk mencegah. Kosong jauh lebih baik:
+  // pemanggilnya lalu membiarkan riwayat lama apa adanya.
+  //
+  // Ada alasan kedua yang lebih keras: `synthesizerFor` mengembalikan string
+  // kosong (bukan melempar) baik saat model gagal MAUPUN saat dibatalkan.
+  // Melanjutkan sesudah pembatalan berarti memanggil model dengan signal yang
+  // sudah abort, dan panggilan itu menggantung selamanya — terukur, satu giliran
+  // tergantung 20 detik sampai test-nya menyerah.
+  const parts = Array.from({ length: 8 }, (_, index) => `user: bagian ${index} ${"d".repeat(900)}`)
+
+  let calls = 0
+  const gagalDiPotonganKedua = async (): Promise<string> => {
+    calls += 1
+    return calls === 2 ? "" : "ringkasan"
+  }
+  const summary = await summariseInChunks(gagalDiPotonganKedua, parts, 2_000)
+
+  assert.equal(summary.trim(), "", "hasilnya kosong, bukan ringkasan yang bolong")
+  assert.equal(calls, 2, "berhenti di potongan yang gagal, tidak memanggil sisanya")
+
+  // Dan seluruhnya kosong tetap kosong.
+  assert.equal((await summariseInChunks(async () => "", parts, 2_000)).trim(), "")
+})
+
+test("pemotongan selalu maju: peringkas yang membalas sepanjang bahannya tidak membuat giliran menggantung", async () => {
+  // Rekursi "ringkas ringkasannya" hanya menyelesaikan sesuatu kalau hasilnya
+  // MENYUSUT. Peringkas yang mengembalikan teks sepanjang masukannya adalah
+  // kasus nyata pada model kecil yang bingung, dan tanpa batas kedalaman ia
+  // menggantung giliran selamanya — di jalur yang user tidak pernah minta.
+  let calls = 0
+  const summarise = async (_system: string, prompt: string): Promise<string> => {
+    calls += 1
+    return "e".repeat(Buffer.byteLength(prompt))
+  }
+  const parts = Array.from({ length: 10 }, (_, index) => `user: bagian ${index} ${"f".repeat(900)}`)
+
+  const summary = await summariseInChunks(summarise, parts, 2_000)
+
+  assert.ok(calls > 1, "harus sungguh mencoba memotong")
+  assert.ok(calls < 40, `berhenti sendiri, bukan menggantung — ${calls} panggilan`)
+  assert.ok(summary.length > 0)
+})
+
+test("teks fokus ikut dihitung, dan dibatasi — bukan dikirim utuh tiap potongan", async () => {
+  // Ronde review kedua menemukan ini, dan ia mengalahkan seluruh batas issue #1:
+  // `focus` adalah teks prompt user (`focus: text`), tidak dibatasi apa pun, dan
+  // `compactPrompt` menempelkannya ke SETIAP potongan. Terukur pada versi itu:
+  // anggaran potongan 11.047 byte, prompt nyata 42.515 byte ≈ 10.629 token pada
+  // jendela 4096 — 2,6x, dan transkripnya duduk di DEPAN prompt, jadi yang
+  // dipotong provider justru bahan yang sedang diringkas.
+  const focus = "spesifikasi ".repeat(2_500) // ~30 KB, seperti paste berkas
+  const parts = Array.from({ length: 12 }, (_, index) => `user: bagian ${index} ${"a".repeat(900)}`)
+  const budget = 6_000
+
+  const prompts: string[] = []
+  await summariseInChunks(
+    async (system, prompt) => {
+      prompts.push(system + prompt)
+      return "RINGKASAN"
+    },
+    parts,
+    budget,
+    focus,
+  )
+
+  assert.ok(prompts.length > 1, "harus sungguh memotong, kalau tidak test ini kosong")
+  for (const whole of prompts) {
+    assert.ok(
+      Buffer.byteLength(whole) <= budget,
+      `prompt ${Buffer.byteLength(whole)} byte melewati anggaran ${budget}`,
+    )
+  }
+  // Fokusnya tetap sampai — dipotong, bukan dibuang: ia tetap menajamkan
+  // ringkasan, hanya tidak lagi boleh menelan seluruh jendela.
+  assert.match(prompts[0] ?? "", /spesifikasi/)
+})
+
+test("batas kedalaman menyatukan SEMUA ringkasan, dan menandai kalau harus memotong", async () => {
+  // Review menemukan ini, dan ia sama beratnya dengan issue #1 sendiri:
+  // fallback batas kedalaman mengambil `packChunks(...)[0]` — potongan PERTAMA —
+  // dan menjatuhkan sisanya tanpa penanda apa pun. Terukur pada versi itu: bahan
+  // 15.908 byte jadi ringkasan 506 byte, `truncated` tidak ada di mana pun, lalu
+  // disimpan dan batas air maju. ~97% riwayat hilang permanen, senyap.
+  //
+  // Peringkas di sini SENGAJA tidak menyusutkan apa pun (balas sepanjang
+  // masukannya), supaya rekursinya pasti mencapai batas kedalaman.
+  const parts = Array.from({ length: 40 }, (_, index) => `user: bagian ${index} ${"a".repeat(380)}`)
+  const summary = await summariseInChunks(
+    async (_system, prompt) => "R".repeat(Math.floor(Buffer.byteLength(prompt) / 2)),
+    parts,
+    1_000,
+  )
+
+  // Yang dijamin: kalau ada yang hilang, penandanya ADA. Itu seluruh perbedaan
+  // antara "model tahu ada yang hilang" dan "model menjawab yakin seolah tidak".
+  assert.match(summary, /truncated/i)
+  // Dan hasilnya tetap dibatasi anggaran, karena ringkasan ini akan ikut di
+  // SETIAP permintaan berikutnya.
+  assert.ok(
+    Buffer.byteLength(summary) <= 1_000,
+    `ringkasan ${Buffer.byteLength(summary)} byte melewati anggaran 1.000`,
+  )
+})
+
+test("jendela peringkas yang TIDAK diketahui berarti jangan dipotong, bukan potongan terkecil", async () => {
+  // Regresi yang review temukan: `summariserWindowFor` mengembalikan 0 kalau
+  // tidak ada satu pun jendela dideklarasikan, `budgetTokens(0, …)` jadi nol,
+  // hasilnya negatif, dan lantai MIN_CHUNK_BYTES memberi 512 byte. Transkrip
+  // 200 KB lalu jadi ~400 panggilan smallModel berurutan — padahal sebelum
+  // pemotongan ada, `/compact` cuma satu panggilan.
+  //
+  // Aturan Titah sendiri yang berlaku di sini: jendela yang tidak dideklarasikan
+  // berarti MATI, bukan ditebak. Untuk pemotongan, "mati" berarti tidak memotong.
+  assert.equal(summariserChunkBytes(undefined, 8192), Number.POSITIVE_INFINITY)
+
+  const parts = Array.from({ length: 200 }, (_, index) => `user: bagian ${index} ${"b".repeat(900)}`)
+  let calls = 0
+  await summariseInChunks(
+    async () => {
+      calls += 1
+      return "RINGKASAN"
+    },
+    parts,
+    summariserChunkBytes(undefined, 8192),
+  )
+  assert.equal(calls, 1, "satu panggilan, persis seperti sebelum pemotongan ada")
+
+  // Jendela yang dideklarasikan tapi mungil tetap dapat lantai, karena potongan
+  // nol berarti pemotongan tidak pernah maju.
+  assert.ok(summariserChunkBytes(64, 0) > 0)
+  assert.ok(summariserChunkBytes(64, 0) < Number.POSITIVE_INFINITY)
+})
+
+test("pemotongan dihitung per BYTE, bukan per karakter", async () => {
+  // Review menemukan `String.prototype.slice` dipakai terhadap anggaran byte.
+  // Terukur: satu bagian 2.000 karakter CJK dengan anggaran 1.000 byte
+  // menghasilkan potongan 2.834 byte — 2,8x. Untuk transkrip non-ASCII prompt
+  // peringkas tetap melewati jendelanya, yaitu luapan yang mau dicegah.
+  const cjk = `user: ${"。".repeat(2_000)}`
+  const [chunk] = packChunks([cjk], 1_000)
+
+  assert.ok(chunk !== undefined)
+  assert.ok(
+    Buffer.byteLength(chunk) <= 1_000,
+    `potongan ${Buffer.byteLength(chunk)} byte melewati anggaran 1.000`,
+  )
+  assert.match(chunk, /truncated/i)
+  // Dan tidak memotong di tengah karakter: tanpa penjagaan itu ujungnya jadi
+  // U+FFFD, yang masuk ke prompt sebagai sampah.
+  assert.doesNotMatch(chunk, /�/)
+})
+
+test("potongan multibyte tetap utuh saat ukurannya tepat di batas", async () => {
+  // Penjaga arah untuk pemotongan per byte: memotong satu byte terlalu jauh
+  // membelah karakter, memotong satu byte terlalu sedikit membuang karakter yang
+  // sebenarnya masih muat.
+  const teks = "。".repeat(10)
+  const utuh = Buffer.byteLength(teks) // 30 byte
+  const [pas] = packChunks([teks], utuh)
+  assert.equal(pas, teks, "yang tepat muat tidak boleh disentuh sama sekali")
+})
+
+// ---------- pruner ----------
 
 test("MID_TURN_KEEP bawaan adalah 6", () => {
   assert.equal(MID_TURN_KEEP, 6)
 })
 
 test("TAIL_FRACTION bawaan adalah 4, dan anggaran ekor dihitung darinya", () => {
-  // Dipatok seperti KEEP_TURNS dan BYTES_PER_TOKEN: angka ini yang menentukan
+  // Dipatok seperti KEEP_TURNS: angka ini yang menentukan
   // seberapa gemuk ekor mid-turn boleh jadi, dan tanpa patokan ia bisa bergeser
   // tanpa ada yang menyadarinya sebagai keputusan.
   assert.equal(TAIL_FRACTION, 4)
@@ -348,15 +649,6 @@ test("TAIL_FRACTION bawaan adalah 4, dan anggaran ekor dihitung darinya", () => 
   // 8192 − min(8192, 2048) = 6144, seperempatnya 1536, dikali 4 byte = 6144.
   assert.equal(budgetTokens(8192, 8192), 6144)
   assert.equal(tailBudgetBytes(8192, 8192), 6144)
-})
-
-test("REAL_BYTES_PER_TOKEN menaksir TERLALU BESAR — arah yang berlawanan dengan BYTES_PER_TOKEN", () => {
-  // Dua rasio, dua arah aman, dan tertukarnya adalah bug senyap. Untuk BATAS
-  // (ekor, margin pertumbuhan) meremehkan ukuran berarti membiarkan permintaan
-  // kebesaran terkirim; untuk PENGHEMATAN meremehkan cuma berarti satu
-  // panggilan smallModel yang mubazir.
-  assert.equal(REAL_BYTES_PER_TOKEN, 4)
-  assert.ok(growthTokens(40_000) > estimateTokens(40_000))
 })
 
 test("ekor mid-turn dibatasi UKURAN, bukan cuma jumlah pesan", () => {
@@ -681,16 +973,6 @@ test("banyak output kecil tidak membesarkan riwayat — prune yang tak menghemat
 
   assert.equal(bytesFreed, 0, "output sekecil ini tidak pantas dipangkas — menggantinya tidak menghemat apa pun")
   assert.equal(JSON.stringify(pruned), before, "riwayat dibiarkan apa adanya, bukan malah dibesarkan")
-})
-
-test("estimateTokens MEREMEHKAN penghematan, tidak melebih-lebihkannya", () => {
-  // Dua arah kesalahan tidak setara: meremehkan berarti satu panggilan
-  // smallModel yang mubazir; melebih-lebihkan berarti melewatkan peringkasan
-  // yang dibutuhkan lalu mengirim permintaan kebesaran — kegagalan yang jadi
-  // alasan seluruh fitur ini dibangun.
-  const realistic = 4 // byte per token pada teks nyata
-  const bytes = 40_000
-  assert.ok(estimateTokens(bytes) < bytes / realistic)
 })
 
 test("potong mid-turn tidak pernah jatuh di pesan tool", () => {

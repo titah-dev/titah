@@ -173,6 +173,39 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
   return config.provider[providerId]?.models[modelId]?.contextWindow
 }
 
+/**
+ * Model yang BENAR-BENAR menulis ringkasan.
+ *
+ * Satu fungsi, dipakai untuk dua hal yang wajib sepakat: me-resolve modelnya, dan
+ * menentukan jendela yang membatasi promptnya. Sebelumnya keduanya dihitung dari
+ * ekspresi yang BERBEDA — peringkasnya `config.smallModel ?? input.model`,
+ * jendelanya dari `agentDef?.model ?? modelOverride` — dan keduanya menyimpang
+ * pada kasus yang sangat nyata: `subagent.ts` memanggil `prompt()` TANPA `model`,
+ * jadi sebuah agent yang menyatakan `model` sendiri memberi jendela model itu
+ * (mis. 400.000) sementara yang meringkas adalah `config.model` (mis. 8192).
+ * Transkrip 1,2 MB lalu dikirim sebagai satu panggilan ke jendela 8k dan dipotong
+ * diam-diam — kegagalan yang sama yang seluruh siklus ini tutup.
+ *
+ * Dua sumber kebenaran untuk satu keputusan adalah bug yang menunggu; ini
+ * membuatnya tidak mungkin lagi.
+ */
+export function summariserModelFor(config: Config, turnModel?: string): string | undefined {
+  return config.smallModel ?? turnModel ?? config.model
+}
+
+/**
+ * `smallModel` yang disetel tapi jendelanya belum dideklarasikan.
+ *
+ * Batas prompt peringkas tidak bisa ditegakkan pada angka yang tidak ada, jadi
+ * ia jatuh ke jendela model giliran — lebih longgar dari yang user maksud, dan
+ * satu-satunya cara ia bisa tahu adalah kalau ada yang menyebutkannya.
+ */
+export function smallModelWindowMissing(config: Config): string | undefined {
+  const small = config.smallModel
+  if (small === undefined) return undefined
+  return contextWindowFor(config, small) === undefined ? small : undefined
+}
+
 /** Model yang dikonfigurasi tapi belum punya `contextWindow`, untuk dilaporkan `doctor`. */
 export function undeclaredContextWindows(config: Config): string[] {
   const out: string[] = []

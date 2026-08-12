@@ -1,14 +1,15 @@
+import type { ModelMessage } from "ai"
 import {
-  COMPACT_SYSTEM,
-  compactPrompt,
-  estimateTokens,
   growthTokens,
   midTurnCut,
   overBudget,
   planAtCut,
   projectedContext,
   pruneToolOutputs,
-  renderTranscript,
+  renderMessage,
+  requestTokens,
+  summariseInChunks,
+  summariserChunkBytes,
   tailStart,
   wrapSummary,
 } from "./compact.ts"
@@ -18,6 +19,7 @@ import {
   listModelRows,
   replaceModelMessage,
   saveCompaction,
+  summaryPair,
 } from "./storage/session.ts"
 
 export interface AutoCompactInput {
@@ -48,6 +50,30 @@ export interface AutoCompactInput {
    * mekanisme yang bisa menjangkau hasil itu — tidak pernah dijalankan.
    */
   arrivedTokens?: number
+  /**
+   * Jendela konteks PERINGKAS, kalau berbeda dari jendela model giliran.
+   *
+   * Prompt peringkas dibatasi jendela model yang MENULIS ringkasan — `smallModel`
+   * — bukan jendela model yang sedang menjalankan giliran. Tanpa ini, prompt itu
+   * tidak dibatasi apa pun: terukur 78.964 token pada smallModel yang menyatakan
+   * jendela 4096, dan provider memotongnya diam-diam alih-alih menolak.
+   *
+   * Tidak dinyatakan berarti "pakai jendela model giliran". Itu bukan tebakan:
+   * `smallModel` yang tidak disetel berarti model giliran SENDIRI yang meringkas,
+   * dan `titah doctor` menyebut `smallModel` yang jendelanya belum dideklarasikan.
+   */
+  summariserWindow?: number
+  /**
+   * Ukuran bagian permintaan yang TIDAK ada di daftar pesan, dalam byte —
+   * praktisnya system prompt.
+   *
+   * Dipakai `requestTokens` supaya permintaan yang diukur adalah permintaan yang
+   * sungguh dikirim. Bawaannya nol, dan itu berarti "diukur tanpanya" bukan
+   * "tidak ada": pemanggil yang tidak menyertakannya akan meremehkan permintaan.
+   * Hanya `agent.ts` yang tahu angka ini, karena hanya ia yang merakit
+   * system prompt-nya.
+   */
+  systemBytes?: number
 }
 
 export interface AutoCompactResult {
@@ -102,6 +128,13 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   // pertama, supaya byte yang sudah dibebaskan tidak terhitung dua kali.
   let current = messages
   let prunedBytes = 0
+  /**
+   * Byte yang dibebaskan dengan MENGGANTI riwayat lama oleh ringkasan.
+   *
+   * Dipakai hanya untuk mengkredit angka provider di `doesNotFit` — bukan untuk
+   * memutuskan apakah peringkasan dibutuhkan; keputusan ITU diukur langsung.
+   */
+  let summaryFreed = 0
 
   const prune = (from: number, upTo: number, sparing = true): void => {
     const result = pruneToolOutputs(current, upTo, from, sparing)
@@ -118,42 +151,73 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   if (compaction.prune && cut > 0) prune(0, cut)
 
   /**
-   * Ukuran permintaan berikutnya, SEIMBANG: yang masuk dan yang keluar dihitung
-   * dengan rasio yang sama (4 byte/token, `growthTokens`).
+   * Ukuran permintaan yang AKAN dikirim, DIUKUR — bukan disimpulkan dari angka
+   * provider yang basi dikurangi taksiran penghematan.
    *
-   * Ini pertanyaan "apakah muat" — pertanyaan tentang UKURAN, bukan tentang
-   * risiko. Yang tiba didebit 4:1 sementara yang terbebas dikredit 8:1 bukan
-   * kehati-hatian, melainkan ketidakkonsistenan: satu perbandingan dengan dua
-   * penggaris. Terukur akibatnya — berkas 22 KB yang muat hanya sampai ke model
-   * di 15 dari 30 langkah, berselang-seling dengan penanda kosong, karena
-   * penghematan yang nyata dinilai separuhnya lalu ekornya dibuang.
+   * `summary` adalah ringkasan yang akan menyertai permintaan itu (yang lama
+   * sebelum peringkasan, yang baru sesudahnya), dan `tail` pesan yang menyusul.
+   * Bentuknya dirakit lewat `summaryPair` — fungsi yang sama yang dipakai
+   * `listModelMessages` saat sungguh mengirim — supaya yang diukur dan yang
+   * dikirim tidak bisa berbeda.
+   *
+   * `systemBytes` menutup satu-satunya bagian yang tidak ada di daftar pesan:
+   * system prompt. Ia ikut memakan jendela yang sama, dan mengabaikannya berarti
+   * meremehkan permintaan.
    */
-  const remainingBalanced = (freedBytes: number): number =>
-    (projected ?? 0) - growthTokens(freedBytes)
+  const measure = (summary: string | undefined, tail: ModelMessage[]): number =>
+    requestTokens(
+      summary === undefined ? tail : [...summaryPair(summary), ...tail],
+      input.systemBytes ?? 0,
+    )
 
   /**
-   * Ukuran permintaan berikutnya, dengan taksiran penghematan yang sengaja
-   * MEREMEHKAN (8 byte/token, `estimateTokens`).
-   *
-   * Dipakai HANYA untuk keputusan tingkat kedua: "prune saja sudah cukup, atau
-   * perlu diringkas juga?". Asimetrinya disengaja dan alasannya khusus untuk
-   * pertanyaan ITU: meremehkan penghematan berarti satu panggilan smallModel
-   * yang mubazir, melebih-lebihkannya berarti melewatkan peringkasan yang
-   * dibutuhkan lalu mengirim permintaan kebesaran. Jangan dipindah ke
-   * pertanyaan "apakah muat" di atas — di sana keduanya bukan soal risiko,
-   * cuma soal ukuran.
+   * Berapa token yang SUDAH dibebaskan giliran ini, untuk mengkredit angka
+   * provider. Dihitung dengan penggaris yang sama (4:1) di kedua sisi.
    */
-  const remainingConservative = (freedBytes: number): number =>
-    (projected ?? 0) - estimateTokens(freedBytes)
+  const freedTokens = (): number => growthTokens(prunedBytes + summaryFreed)
+
+  /**
+   * Ukuran permintaan berikutnya: yang LEBIH BESAR antara yang diukur dan angka
+   * provider yang dikreditkan. SATU aturan, dipakai kedua gerbang di bawah.
+   *
+   * Dua sinyal karena keduanya tidak lengkap sendiri-sendiri:
+   *
+   *   - Pengukuran nyata objeknya, tapi ia rasio byte→token: ia bisa meremehkan
+   *     30–50% pada isi padat token, dan ia tidak melihat definisi tool.
+   *   - Angka provider adalah FAKTA — termasuk definisi tool dan tokenisasi
+   *     sungguhan — tapi tentang permintaan satu langkah lalu, jadi ia tidak tahu
+   *     apa yang baru saja dibebaskan. Karena itu ia dikreditkan.
+   *
+   * Yang lebih besar menang, dan arahnya memang begitu: memadatkan tanpa perlu
+   * ongkosnya satu panggilan peringkas, sementara TIDAK memadatkan saat perlu
+   * berarti provider memotong diam-diam.
+   *
+   * Aturan ini pernah dipasang di `doesNotFit` SAJA, dan asimetri itu adalah
+   * regresi yang terukur terhadap main: provider melaporkan 8.354 token pada
+   * jendela 8192 — luapan nyata — pengukuran bilang 6.035, `needsMore` pulang
+   * false, dan `autoCompact` tidak melakukan APA PUN. Di main, riwayat yang sama
+   * diringkas. Gerbang yang berdiri paling depan justru yang tidak dijaga.
+   */
+  const projectedSize = (summary: string | undefined, tail: ModelMessage[]): number =>
+    Math.max(measure(summary, tail), (projected ?? 0) - freedTokens())
 
   /**
    * Masih perlu tindakan yang MURAH (prune riwayat lama, lalu ringkas)?
    *
    * Memakai margin pertumbuhan: di sinilah F3 hidup — berhenti tepat di bibir
    * anggaran berarti langkah berikutnya meluap lagi.
+   *
+   * Dinilai atas SELURUH `current`, karena pada titik ini belum ada peringkasan:
+   * permintaannya adalah ringkasan lama (kalau ada) plus semua baris di atas
+   * batas air.
    */
-  const needsMore = (freedBytes: number): boolean =>
-    overBudget(remainingConservative(freedBytes), input.contextWindow, compaction.reserved, growth)
+  const needsMore = (): boolean =>
+    overBudget(
+      projectedSize(previous?.summary, current),
+      input.contextWindow,
+      compaction.reserved,
+      growth,
+    )
 
   /**
    * Sungguh-sungguh tidak MUAT — diukur terhadap JENDELA, bukan anggaran.
@@ -176,11 +240,19 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
    * DI BAWAH jendela. Diukur terhadap anggaran, berkas yang sebenarnya muat itu
    * ikut dibuang di setiap langkah dan model tidak pernah melihat isi berkas
    * yang ia baca sendiri; diukur terhadap jendela, ia sampai utuh.
+   *
+   * `summary` dan `tail` adalah keadaan SESUDAH peringkasan: ringkasan yang baru
+   * (atau yang lama, kalau peringkasan tidak jadi) plus ekor yang dipertahankan.
+   * Mengukur `current` utuh di sini akan menghitung dua kali bagian yang sudah
+   * digantikan ringkasan.
    */
-  const doesNotFit = (freedBytes: number): boolean =>
-    input.contextWindow !== undefined && remainingBalanced(freedBytes) >= input.contextWindow
+  const doesNotFit = (summary: string | undefined, tail: ModelMessage[]): boolean =>
+    input.contextWindow !== undefined && projectedSize(summary, tail) >= input.contextWindow
 
   // `sparing: false` — di ekor tidak ada yang dikecualikan. Lihat komentar
+  // `doesNotFit` di bawah: yang membenarkan langkah ini hanya ketidakmuatan yang
+  // SUNGGUHAN, dan pada titik itu memotong diam-diam oleh provider lebih buruk
+  // daripada kehilangan isi ekor — termasuk jawaban sub-agent.
   const pruneTail = (): void => {
     if (compaction.prune) prune(cut, current.length, false)
   }
@@ -192,27 +264,47 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
     changed: prunedBytes > 0 || summarised,
   })
 
-  if (!needsMore(prunedBytes)) return done(false)
+  if (!needsMore()) return done(false)
 
   // Batas potong yang SAMA dengan yang dipakai prune — satu aturan, bukan dua.
   const plan = planAtCut(rows, cut)
   let summarised = false
-  let summaryFreed = 0
+  /** Ringkasan yang akan MENYERTAI permintaan berikutnya — lama sampai tergantikan. */
+  let summary = previous?.summary
 
   if (plan.dropped.length > 0) {
     // Ringkasan sebelumnya ikut diringkas ulang, bukan ditumpuk — menumpuk
     // membuat ringkasan tumbuh tanpa batas, persis masalah yang mau dipecahkan.
-    const droppedText = renderTranscript(plan.dropped)
-    const source = previous ? `${previous.summary}\n\n${droppedText}` : droppedText
+    //
+    // Dipecah per PESAN, bukan diserahkan sebagai satu string: itu satuan yang
+    // `packChunks` pakai untuk memotong tanpa membelah sebuah pesan di tengah.
+    const parts = [
+      ...(previous ? [previous.summary] : []),
+      ...plan.dropped.map((message) => renderMessage(message)),
+    ]
 
-    const summary = await input.summarise(COMPACT_SYSTEM, compactPrompt(source, input.focus))
-    if (summary.trim() !== "") {
-      saveCompaction(sessionID, plan.watermark, wrapSummary(summary))
+    // Jendela PERINGKAS, bukan jendela model giliran: sejak `/compact` dan jalur
+    // otomatis sama-sama memakai `smallModel`, jendela yang membatasi prompt
+    // peringkas adalah milik model kecil itu. Kalau pemanggil tidak
+    // menyatakannya, jendela model giliran dipakai — bukan tebakan, melainkan
+    // angka yang toh sudah wajib ada agar pemadatan otomatis hidup sama sekali.
+    const written = await summariseInChunks(
+      input.summarise,
+      parts,
+      // TANPA `?? 0`: nol terlihat seperti angka dan ikut terhitung — ia jatuh ke
+      // potongan terkecil yang mungkin, persis bug yang `summariserChunkBytes`
+      // diubah untuk menghindari. `undefined` sudah ditangani di sana sebagai
+      // "jangan potong". Hari ini baris ini tidak terjangkau karena `overBudget`
+      // pulang lebih dulu, tapi penjaga yang benar tidak boleh bergantung pada itu.
+      summariserChunkBytes(input.summariserWindow ?? input.contextWindow, compaction.reserved),
+      input.focus,
+    )
+    if (written.trim() !== "") {
+      summary = wrapSummary(written)
+      saveCompaction(sessionID, plan.watermark, summary)
       summarised = true
-      summaryFreed = Math.max(
-        0,
-        Buffer.byteLength(droppedText) - Buffer.byteLength(wrapSummary(summary)),
-      )
+      const droppedBytes = parts.reduce((total, part) => total + Buffer.byteLength(part), 0)
+      summaryFreed = Math.max(0, droppedBytes - Buffer.byteLength(summary))
     }
   }
 
@@ -226,28 +318,36 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   //
   // `doesNotFit`, bukan `needsMore`: setelah semua yang murah dijalankan, hanya
   // ketidakmuatan yang SUNGGUHAN boleh membuang isi ekor.
+  //
+  // Diukur atas keadaan yang SUNGGUH akan dikirim, dan itu bergantung pada
+  // apakah peringkasan jadi:
+  //
+  //   - Jadi: ringkasan baru plus ekor. Baris sebelum `cut` sudah diwakili
+  //     ringkasan itu, jadi menghitungnya lagi berarti membuang isi ekor karena
+  //     beban yang sudah tidak ada.
+  //   - TIDAK jadi (peringkas gagal atau dibatalkan — `summariseInChunks`
+  //     memulangkan string kosong, bukan melempar): `saveCompaction` tidak
+  //     dipanggil, batas air tidak maju, jadi permintaan berikutnya masih memuat
+  //     SELURUH `current`. Mengukur ekor saja di sini meremehkannya, `pruneTail`
+  //     — satu-satunya tuas yang masih tersisa — tidak pernah jalan, dan
+  //     permintaan kebesaran berangkat untuk dipotong diam-diam provider.
+  const willSend = (): ModelMessage[] => (summarised ? current.slice(cut) : current)
 
   // Peringkasan TIDAK jadi dan tetap tidak muat: perlindungan hasil sub-agent di
-  // riwayat lama harus mengalah lebih dulu.
+  // riwayat lama harus mengalah.
   //
-  // Perlindungan itu bertumpu pada peringkas yang mewakili hasil `task`. Kalau
-  // peringkasnya gagal atau dibatalkan, tidak ada yang mewakilinya, batas air
-  // tidak maju, dan barisnya tetap dikirim — sementara `pruneTail` hanya
-  // menjangkau [cut, akhir). Satu hasil task 22 KB di riwayat lama karena itu
-  // duduk di luar jangkauan SEMUA tuas yang tersisa, padahal sebelum pengecualian
-  // ini ada ia terpangkas tanpa syarat. Pada titik ini memotong diam-diam oleh
+  // Perlindungan itu (#4) bertumpu pada peringkas yang mewakili hasil `task`.
+  // Kalau peringkasnya gagal, tidak ada yang mewakilinya, batas air tidak maju,
+  // dan barisnya tetap dikirim — sementara `pruneTail` hanya menjangkau
+  // [cut, akhir). Satu hasil task 22 KB di riwayat lama karena itu duduk di luar
+  // jangkauan SEMUA tuas yang tersisa. Pada titik ini memotong diam-diam oleh
   // provider lebih buruk daripada kehilangan jawaban sub-agent — penilaian yang
   // sama dengan yang sudah dipakai `pruneTail` sendiri.
-  if (
-    !summarised &&
-    compaction.prune &&
-    cut > 0 &&
-    doesNotFit(prunedBytes + summaryFreed)
-  ) {
+  if (!summarised && compaction.prune && cut > 0 && doesNotFit(summary, willSend())) {
     prune(0, cut, false)
   }
 
-  if (doesNotFit(prunedBytes + summaryFreed)) pruneTail()
+  if (doesNotFit(summary, willSend())) pruneTail()
 
   return done(summarised)
 }

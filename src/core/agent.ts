@@ -5,21 +5,22 @@ import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { contextWindowFor, resolveModel } from "./provider.ts"
+import { contextWindowFor, resolveModel, summariserModelFor } from "./provider.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
 import { runConsensus, synthesizerFor } from "./consensus.ts"
 import {
-  COMPACT_SYSTEM,
-  compactPrompt,
   growthTokens,
   messageBytes,
   MID_TURN_KEEP,
   overBudget,
   planCompaction,
   projectedContext,
+  renderMessage,
   renderTranscript,
+  summariseInChunks,
+  summariserChunkBytes,
   tailBudgetBytes,
   wrapSummary,
 } from "./compact.ts"
@@ -374,11 +375,27 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // `controller.signal` ikut diteruskan: peringkas ini tidak diminta user, jadi
   // satu-satunya jalan keluar dari smallModel yang menggantung adalah `Esc` —
   // dan tanpa sinyal, `Esc` melapor berhasil sementara gilirannya tetap hidup.
+  // Bagian permintaan yang TIDAK ada di daftar baris, dalam byte. `autoCompact`
+  // memerlukannya untuk mengukur permintaan yang akan dikirim; tanpanya
+  // pengukuran itu meremehkan, dan meremehkan ukuran permintaan berarti
+  // mengirim yang kebesaran.
+  //
+  // Dua bagian, bukan satu: system prompt, DAN pesan user giliran ini. Yang
+  // kedua mudah terlewat — `autoCompact` antar-giliran berjalan SEBELUM giliran
+  // ini ditulis jadi baris, jadi ia tidak ada di `current` sama sekali. Sebuah
+  // paste berkas 40 KB sebagai prompt karena itu tidak terlihat oleh keputusan
+  // "masih perlu diringkas?" yang justru diambil karenanya.
+  const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
+  const systemBytes = Buffer.byteLength(system) + messageBytes(userTurn)
+  // Model peringkas dihitung SEKALI, lalu dipakai untuk dua hal yang wajib
+  // sepakat: me-resolve modelnya di bawah, dan menentukan jendela yang membatasi
+  // promptnya. Dua ekspresi berbeda untuk satu keputusan adalah bug yang
+  // menunggu — dan sudah terjadi sekali (lihat `summariserModelFor`).
+  const summariserModel = summariserModelFor(config, input.model)
+  const summariserWindow = contextWindowFor(config, summariserModel)
+
   const summarise = (system: string, userPrompt: string): Promise<string> =>
-    synthesizerFor(
-      resolver(config, config.smallModel ?? input.model),
-      controller.signal,
-    )(system, userPrompt)
+    synthesizerFor(resolver(config, summariserModel), controller.signal)(system, userPrompt)
 
   try {
     try {
@@ -387,6 +404,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
         compaction: config.compaction,
         contextWindow,
         lastStepTokens: lastMeasured,
+        systemBytes,
+        summariserWindow,
         summarise,
         focus: text,
       })
@@ -400,7 +419,6 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     const history = listModelMessages(session.id)
-    const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
     const messages: ModelMessage[] = [...history, userTurn]
 
     // Berapa pesan giliran ini yang SUDAH tertulis jadi baris. Pemadatan mid-turn
@@ -509,6 +527,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
             contextWindow,
             lastStepTokens: used,
             arrivedTokens: arrived,
+            // System prompt SAJA di sini: mid-turn, pesan user giliran ini sudah
+            // tertulis jadi baris dan ikut di `current`, jadi menyertakannya lagi
+            // berarti menghitungnya dua kali.
+            systemBytes: Buffer.byteLength(system),
+            summariserWindow,
             summarise,
             focus: text,
             midTurn: {
@@ -969,17 +992,31 @@ async function compactTurn(
     const source = previous
       ? `${previous.summary}\n\n${renderTranscript(plan.dropped)}`
       : renderTranscript(plan.dropped)
+    // Dipecah per PESAN untuk peringkasnya, sementara `source` di atas tetap
+    // dipakai untuk melaporkan ukuran sebelum/sesudah ke user.
+    const parts = [
+      ...(previous ? [previous.summary] : []),
+      ...plan.dropped.map((message) => renderMessage(message)),
+    ]
 
     // `smallModel ?? input.model` — pilihan model yang SAMA dengan pemadatan
     // otomatis. Operasinya identik (instruksi, prompt, dan pembungkusnya sama
     // persis), jadi dua pilihan model berarti `/compact` diam-diam menghasilkan
     // ringkasan yang berbeda mutunya dari yang ditulis otomatis di sesi yang
     // sama — beda yang tidak pernah bisa dijelaskan ke user.
-    const summarise = synthesizerFor(
-      resolver(config, config.smallModel ?? input.model),
-      controller.signal,
+    const summariserModel = summariserModelFor(config, input.model)
+    const summarise = synthesizerFor(resolver(config, summariserModel), controller.signal)
+    // Lewat `summariseInChunks`, sama dengan jalur otomatis: prompt peringkas
+    // dibatasi jendela model yang MENULIS ringkasan. Jalur ini justru yang
+    // paparannya paling lebar — memindahkan `/compact` ke `smallModel` membuat
+    // transkrip sebesar jendela model giliran dikirim ke model yang jendelanya
+    // bisa jauh lebih kecil.
+    const summary = await summariseInChunks(
+      summarise,
+      parts,
+      summariserChunkBytes(contextWindowFor(config, summariserModel), config.compaction.reserved),
+      focus,
     )
-    const summary = await summarise(COMPACT_SYSTEM, compactPrompt(source, focus))
 
     if (summary.trim() === "") throw new AgentError("The model returned an empty summary.")
 

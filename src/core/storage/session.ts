@@ -359,13 +359,27 @@ export function latestCompaction(sessionID: string): Compaction | undefined {
 }
 
 /**
- * Riwayat SEPERTI YANG DILIHAT MODEL: ringkasan di depan, lalu pesan yang belum
- * dipadatkan apa adanya.
+ * Ringkasan sebagai pasangan user+assistant, bukan satu pesan user.
  *
- * Ringkasan dikirim sebagai pasangan user+assistant, bukan satu pesan user.
  * Ekor yang dipertahankan selalu diawali pesan user, jadi tanpa pasangan itu
  * akan ada dua pesan user berturut-turut — sesuatu yang ditolak sebagian
  * provider dan diam-diam digabung oleh sebagian yang lain.
+ *
+ * Diekspor supaya pemadatan bisa MENGUKUR permintaan dalam bentuk yang sama
+ * persis dengan yang nanti dikirim. Dua salinan bentuk ini berarti yang diukur
+ * bukan yang dikirim, dan selisihnya tidak akan terlihat sampai sebuah
+ * permintaan meluap.
+ */
+export function summaryPair(summary: string): ModelMessage[] {
+  return [
+    { role: "user", content: summary },
+    { role: "assistant", content: "Understood. I will continue from that summary." },
+  ]
+}
+
+/**
+ * Riwayat SEPERTI YANG DILIHAT MODEL: ringkasan di depan, lalu pesan yang belum
+ * dipadatkan apa adanya.
  */
 export function listModelMessages(sessionID: string): ModelMessage[] {
   const rows = listModelRows(sessionID)
@@ -373,9 +387,5 @@ export function listModelMessages(sessionID: string): ModelMessage[] {
   if (!compaction) return rows.map((row) => row.message)
 
   const tail = rows.filter((row) => row.seq > compaction.seq).map((row) => row.message)
-  return [
-    { role: "user", content: compaction.summary },
-    { role: "assistant", content: "Understood. I will continue from that summary." },
-    ...tail,
-  ]
+  return [...summaryPair(compaction.summary), ...tail]
 }
