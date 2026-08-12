@@ -16,6 +16,14 @@ Bukan dari ingatan. Sumbernya tiga, semuanya bisa Anda periksa ulang:
 
 Pembanding Titah: `main` @ `b334908`, 511 test hijau, 10.425 baris `src/`.
 
+**Diperbarui 2026-08-12.** Titah: `main` @ `b6100bf`, **606 test hijau**, 11.553
+baris `src/`. Pembandingnya sekarang dua, dan keduanya yang benar-benar
+terpasang di mesin ini: **opencode 1.18.4** (homebrew) dan **Claude Code
+2.1.228**. Satu koreksi terhadap teks di atas: `~/.opencode/bin/opencode` versi
+1.18.16 tidak ada di mesin ini — yang terpasang hanya homebrew 1.18.4, jadi
+klaim khas-1.18.16 di dokumen ini belum diverifikasi ulang. Permukaan Claude
+Code dibaca dari `claude --help`, bukan dari ingatan.
+
 Satu catatan supaya angkanya terbaca adil: opencode di versi 1.18 dengan tim di
 belakangnya; Titah di 0.1.0 dan ditulis satu orang. Daftar panjang di bawah ini
 wajar. Yang penting bukan panjangnya, melainkan butir mana yang mengubah **apa
@@ -24,6 +32,8 @@ yang bisa dikerjakan**, bukan sekadar seberapa rapi konfigurasinya.
 ---
 
 ## Peta besar
+
+Versi 2026-08-11, dua kolom:
 
 | | Titah | opencode |
 |---|---|---|
@@ -40,8 +50,54 @@ yang bisa dikerjakan**, bukan sekadar seberapa rapi konfigurasinya.
 | Fan-out lintas agent eksternal | **`/consensus`** | — |
 | Skill dari registry Claude Code | **ya** | — |
 
-Dua baris tebal di bawah adalah tempat Titah unggul, dan keduanya bukan
+Dua baris tebal di atas adalah tempat Titah unggul, dan keduanya bukan
 kebetulan — itu memang alasan Titah dibuat.
+
+Versi 2026-08-12, tiga kolom. Baris yang berubah untuk Titah ditandai **→**:
+
+| | Titah 0.1.0 | opencode 1.18.4 | Claude Code 2.1.228 |
+|---|---|---|---|
+| Tool | 9 | 15 + MCP | ~15 + MCP |
+| Web (fetch/search) | — | `webfetch`, `websearch` | ✅ |
+| Gambar / PDF | — | ✅ | ✅ |
+| Todo / rencana persisten | — (issue #5, baru desain) | `todowrite` | ✅ |
+| MCP | — | 3 transport + OAuth | ✅ |
+| Hooks / plugin | — | plugin npm | hooks + plugin + marketplace |
+| LSP / formatter | — | ✅ (`opencode debug lsp`) | ✅ (disebut di `--bare`) |
+| Bash background | — (600 dtk lalu SIGKILL) | ✅ | `--bg`, `claude agents` |
+| Sumbu izin | 3, dan lihat butir 10b | 15, plus per-pola | per-pola: `Bash(git *)` |
+| Compaction | **→** otomatis + prune + tuning | otomatis + prune + tuning | `--autocompact auto\|100k–1M` |
+| Batas langkah per agent | **→** `agent.steps` | `steps` | — |
+| `temperature` / `top_p` | — | ✅ | — |
+| Prompt caching | — | ✅ | ✅ |
+| Remote / cloud | `serve` (tanpa auth) | `serve`, `web`, `mdns`, `github`, `pr` | `--cloud`, `--bg`, `gateway` |
+| Delegasi ke CLI agent lain | **`@claude`, `@opencode`** | — | — |
+| Fan-out lintas agent eksternal | **`/consensus`** | — | `ultrareview` (cloud, milik sendiri) |
+| Skill dua ekosistem | **ya** | miliknya sendiri | miliknya sendiri |
+
+## Ketiganya sekarang berbeda jenis, bukan cuma jumlah
+
+Ini yang paling berguna dari pembaruan 2026-08-12, dan tabel di atas tidak
+menunjukkannya.
+
+**Claude Code** bergerak ke arah *menjalankan agent di tempat lain*: `--bg`,
+`--cloud`, `--chrome`, `gateway` untuk telemetri enterprise, dan `ultrareview`
+yang menjalankan review multi-agent di cloud. Ia bahkan punya `claude import`
+untuk menyedot konfigurasi dari agent lain.
+
+**opencode** bergerak ke arah *platform*: server ACP, plugin npm, antarmuka web,
+mDNS, integrasi GitHub, `db`, `stats`, export/import sesi.
+
+**Titah** tidak bergerak ke dua arah itu sama sekali. Yang ia kerjakan justru
+kebenaran loop intinya — dan di situ posisinya tidak buruk. Akuntansi konteks
+Titah satu-satunya dari ketiganya yang sudah lewat empat ronde review adversarial
+dengan tiap temuan dipaku test, termasuk kelas bug yang tidak terlihat dari luar.
+Auto-compaction Claude Code dan opencode jelas lebih matang secara pemakaian,
+tapi alasannya tidak bisa Anda baca; di Titah bisa.
+
+Konsekuensi praktisnya untuk memilih pekerjaan berikutnya: gap Titah adalah
+**jangkauan**, dan jangkauan bisa ditambal belakangan. Yang tidak bisa ditambal
+belakangan adalah kebenaran loop intinya, dan itu bagian yang sudah dibayar.
 
 ---
 
@@ -194,7 +250,15 @@ sisanya kalau perlu.
 
 Ini murah dan langsung terasa.
 
-### 30. Compaction yang bisa disetel
+### 30. Compaction yang bisa disetel — **TUTUP**
+
+> Ditutup 2026-08-12. `compaction.{auto,reserved,tailTurns,prune}` ada di
+> `src/core/schema.ts:201`. Tebakan di paragraf terakhir butir ini ternyata
+> tepat, dan lebih tepat dari yang saya kira: `reserved` memang detail yang
+> mudah terlewat, dan di Titah ia bahkan perlu dibatasi seperempat jendela agar
+> tidak memakan seluruh ruang pada model berjendela kecil.
+>
+> Teks di bawah dipertahankan sebagai catatan cetak biru yang dipakai.
 
 Butir 1 dokumen pertama, sekarang dengan cetak biru yang sudah terbukti:
 `compaction.auto` (default **true**), `prune` untuk membuang output tool lama,
@@ -220,7 +284,15 @@ Anda ubah.
 
 ## Per-agent: yang tidak bisa disetel di Titah
 
-### 32. Tanpa `temperature`, `top_p`, atau `steps` per agent
+### 32. Tanpa `temperature`, `top_p`, atau `steps` per agent — **SEBAGIAN TUTUP**
+
+> Diperbarui 2026-08-12. `steps` sudah ada (`src/core/schema.ts:112`,
+> dipakai di `src/core/agent.ts:461`), lengkap dengan perilaku yang butir ini
+> kutip dari opencode: paksa jawaban teks saat batas tercapai, jangan diamkan.
+> Field per-agent Titah sekarang `description` `mode` `prompt` `model` `steps`
+> `tools` `skills` `permission` `delegate`.
+>
+> `temperature`, `top_p`, `disable`, dan `hidden` masih tidak ada.
 
 `AgentConfig` opencode punya `model` `variant` `temperature` `top_p` `prompt`
 `description` `mode` `permission` `steps` `hidden` `color` `disable` `options`.
@@ -329,11 +401,9 @@ opencode. Titah memilih ketat lalu melonggarkan; opencode sebaliknya.
 
 Berubah dari dokumen pertama. Tiga hal menyodok naik.
 
-1. **Auto-compaction** (butir 1 & 30). Tetap nomor satu, dan sekarang cetak
-   birunya jelas: `auto`, `tail_turns`, `reserved`, `prune`.
-2. **`steps` per-agent yang bicara saat tercapai** (butir 2 & 32). Kecil,
-   menghapus pesan error yang menyesatkan, dan opencode sudah menunjukkan
-   perilaku yang benar: paksa jawaban teks.
+1. ~~**Auto-compaction** (butir 1 & 30)~~ — selesai 2026-08-12.
+2. ~~**`steps` per-agent yang bicara saat tercapai** (butir 2 & 32)~~ — selesai
+   2026-08-12.
 3. **Tool `question`** (butir 16). **Naik tajam.** Ini yang paling murah di
    seluruh daftar dan paling mengubah karakter agent — dari yang menebak jadi
    yang bertanya. Anda sudah punya seluruh infrastrukturnya: dialog izin di TUI
@@ -351,3 +421,19 @@ Berubah dari dokumen pertama. Tiga hal menyodok naik.
 
 Prompt caching Anthropic (butir 13 dokumen pertama) tetap di luar urutan —
 kerjakan kapan saja.
+
+**Ditinjau ulang 2026-08-12.** Dua teratas selesai, dan urutan yang berlaku
+sekarang ada di [`gap-analysis.md`](./gap-analysis.md#kalau-harus-memilih).
+Ringkasnya, dua hal masuk yang tidak ada di daftar mana pun sebelumnya:
+
+- **Butir 10b — pencocokan allowlist** naik ke nomor satu. Claude Code menerima
+  pola berbentuk sama, `Bash(git *)`, tapi memeriksa perintah yang dirantai;
+  Titah berhenti di kata pertama, sehingga `"git *"` juga mengizinkan
+  `git status && rm -rf ~`.
+- **Prompt caching** keluar dari "di luar urutan" dan naik ke nomor dua, karena
+  sekarang ada angkanya: prompt kosong dengan 29 skill terdaftar sudah memakan
+  6120 token input, dan tiap giliran membayarnya ulang.
+
+Tool `question` (butir 16) turun satu tingkat tapi alasannya tidak berubah, dan
+butir 12 (tempat menaruh rencana) naik justru karena auto-compaction sudah
+terpasang: sekarang transkripnya memang benar-benar diringkas.
