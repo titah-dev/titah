@@ -734,12 +734,30 @@ What it does, precisely:
   threshold. Without that, a single result larger than the growth margin slipped
   in unnoticed and the next request was already over the window — measured at
   110% of an 8k window with a 30 KB read.
-- "Will it fit" is measured with one ruler on both sides. What arrives and what
-  pruning frees are both counted at the same bytes-per-token ratio; the
-  deliberately pessimistic ratio is kept for the separate question of whether
-  pruning alone was enough or a summary is also needed. Mixing the two made a
-  22 KB file reach the model on only half its steps, alternating with a bare
-  marker, on a window where it comfortably fits.
+- "Was pruning enough?" is answered by **measuring the request that is about to
+  be sent** — the messages plus the system prompt — not by subtracting an
+  estimate from a number the provider reported for a different request one step
+  ago. That arithmetic could not be right, and it was wrong in the direction that
+  costs money: measured, at a 28 KB result on an 8k window the request that would
+  actually go out was 490 tokens — 6% of the window — while the summariser fired
+  on 29 of 30 steps. One ruler now answers both this and "will it fit".
+- Sub-agent results are **exempt** from ordinary pruning. The marker tells the
+  model to re-run the tool, which is right for `read` and wrong for `task`:
+  recovering a sub-agent's answer costs another full nested turn. Summarisation
+  handles them instead — lossy, but not destructive. In the last-resort tail
+  prune nothing is exempt, because a silently truncated request is worse still,
+  but there the marker says what was lost and what it costs to get back.
+- The summariser's own prompt is bounded too, by the window of the model that
+  writes it. A transcript larger than that window is summarised in **chunks** —
+  each chunk small enough to fit, then the chunk summaries summarised in turn.
+  Without this the prompt was unbounded: measured at 78,964 tokens against a
+  `smallModel` declaring 4,096 — 19.3× — and providers do not reject that, they
+  truncate it. `titah doctor` names a `smallModel` with no declared
+  `contextWindow`, because the bound cannot be enforced without one.
+- If any chunk comes back empty — a provider error, or `Esc` — the whole
+  summarisation is abandoned and nothing is saved. A summary missing one chunk,
+  stored as though complete, is exactly the failure this feature exists to
+  prevent.
 - A failed compaction — a broken `smallModel`, a provider error — never fails
   the turn. That step's compaction is simply skipped and the turn continues
   with whatever context it already had.

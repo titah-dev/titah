@@ -29,6 +29,40 @@ agent editors as the thing that sets it apart.
   `titah undo` reverts the whole turn, including deleting files it created.
   Your own `.git` is never touched.
 
+### Context management
+
+- Compaction runs **automatically**, between turns and **mid-turn**, so a single
+  long agentic turn cannot overflow the window on its own.
+- Bounded by the model's declared `contextWindow`. Undeclared means compaction is
+  off for that model, said out loud once per session and listed by
+  `titah doctor` — a wrong window is more dangerous than no window, because a
+  provider does not reject an oversized request, it truncates the oldest part and
+  the model then answers confidently about what it can no longer see.
+- Old tool output is pruned before anything is summarised — free, and usually
+  enough. Sub-agent (`task`) results are exempt from ordinary pruning: re-running
+  one costs a whole nested turn, unlike re-reading a file.
+- The summariser's own prompt is bounded as well. A transcript larger than the
+  summariser's window is summarised in chunks and the chunk summaries summarised
+  in turn, rather than being silently truncated by the provider.
+- Tunable: `compaction.auto`, `reserved`, `tailTurns`, `prune`. `reserved` is
+  capped at a quarter of the window, so the 8192 default does not swallow an 8k
+  local model's entire budget.
+- `/compact` runs the same machinery on demand, and `/compact <focus>` keeps the
+  named material in full detail.
+
+### Sub-agents
+
+- Titah's own model can dispatch several of its configured agents in parallel
+  inside one turn, with the `task` tool or `/tim <task>`.
+- Dispatch depth is capped at exactly one level: a sub-agent never receives
+  `task`, so nothing can spawn a tree that burns quota with no way to stop it.
+- Readers run concurrently; writers are serialised per working directory, so two
+  sub-agents never race over the same shadow-git snapshot.
+- An agent's `delegate` routes it through an external CLI instead of Titah's own
+  loop — the same engine `@claude` uses, reached from `task`.
+- A live panel (`ctrl+x` then `↓`) shows each sub-agent's state and can cancel one
+  without killing the coordinator's turn.
+
 ### Modes
 
 - Three modes ship built in: **Plan** (refuses every change), **Build Manual**
@@ -72,9 +106,16 @@ agent editors as the thing that sets it apart.
 
 - `/consensus` fans one question out to every external agent in parallel, then
   synthesises and flags where they disagree.
-- Custom agents (prompt + tool filter + permission override + model override).
+- Custom agents (prompt + tool filter + permission override + model override, plus
+  `delegate` to run one through an external CLI instead).
 - Custom commands (`/review src/a.ts`) with `{{.Input}}` placeholders.
-- Markdown skills from `skills.paths`, in two supported layouts.
+- Markdown skills from `skills.paths`, in two supported layouts — **and
+  discovered from the Claude Code and opencode registries** (`~/.claude`,
+  `~/.config/opencode`), so skills you already have work without configuration.
+- Skills are both passive (catalogued in the system prompt, loaded by the model
+  with the `skill` tool) and active (`/<skill-name>` inserts one yourself).
+- Per-agent `steps` limits, and a text answer forced when the limit is reached
+  rather than the misleading "the model stopped without giving an answer".
 
 ### Setup & maintenance
 
