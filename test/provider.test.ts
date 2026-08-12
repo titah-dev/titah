@@ -8,6 +8,7 @@ import {
   contextWindowFor,
   summariserModelFor,
   summariserWindowFor,
+  turnModelFor,
   undeclaredContextWindows,
 } from "../src/core/provider.ts"
 import { Config, Provider } from "../src/core/schema.ts"
@@ -54,6 +55,29 @@ test("jendela peringkas: milik peringkasnya, dengan jendela giliran sebagai jari
   // Tidak ada yang dideklarasikan sama sekali: undefined, yang berarti "jangan
   // potong" — bukan nol, dan bukan potongan terkecil yang mungkin.
   assert.equal(summariserWindowFor(cfg({}), "ollama/tanpa-jendela"), undefined)
+})
+
+test("model giliran: milik agent kalau ia menyatakannya, kalau tidak override-nya", () => {
+  // Ronde review keempat: aturan ini hidup di DUA tempat dan sempat menyimpang —
+  // jalur giliran biasa memakai `agentDef?.model ?? modelOverride`, sementara
+  // `/compact` memakai `input.model` mentah. Akibatnya sebuah `defaultAgent` yang
+  // menyatakan modelnya sendiri diringkas oleh model bawaan, sedangkan pemadatan
+  // otomatis di sesi yang SAMA memakai model agent itu: dua ringkasan dengan mutu
+  // berbeda dalam satu sesi, persis yang dihindari saat `/compact` dipindah ke
+  // `smallModel`.
+  const cfg = {
+    model: "ollama/bawaan",
+    agent: { pembaca: { model: "openai/besar" }, polos: {} },
+    provider: {},
+  } as unknown as Config
+
+  assert.equal(turnModelFor(cfg, "pembaca", undefined), "openai/besar")
+  // Override eksplisit tetap kalah dari model yang dinyatakan agent — itu aturan
+  // yang sudah berlaku di jalur giliran biasa, dan kini berlaku di kedua tempat.
+  assert.equal(turnModelFor(cfg, "pembaca", "ollama/lain"), "openai/besar")
+  assert.equal(turnModelFor(cfg, "polos", "ollama/lain"), "ollama/lain")
+  assert.equal(turnModelFor(cfg, undefined, "ollama/lain"), "ollama/lain")
+  assert.equal(turnModelFor(cfg, undefined, undefined), undefined)
 })
 
 test("model peringkas: smallModel dulu, lalu model giliran, lalu model bawaan", () => {

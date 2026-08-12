@@ -456,6 +456,47 @@ test("angka provider yang sudah melewati jendela tetap memicu pemangkasan ekor",
   )
 })
 
+test("byte yang sudah diprune tidak dikreditkan DUA KALI saat peringkasan berhasil", async () => {
+  // Ronde review keempat, dan ia membatalkan perbaikan ronde ketiga dari dalam.
+  //
+  // `plan.dropped` berasal dari `rows` — pesan SEBELUM prune — sementara
+  // `prunedBytes` sudah menghitung byte yang sama. Keduanya lalu dijumlahkan di
+  // `freedTokens()`. Terukur: kepala 20 KB memberi prunedBytes 19.929 DAN
+  // summaryFreed ~19.900, jadi kreditnya ~9.957 token melawan `projected` 7.000
+  // — hasilnya negatif, `projectedSize` runtuh ke pengukuran saja, dan sinyal
+  // provider yang ada justru untuk menangkap remehnya pengukuran itu hilang.
+  // Ekor tidak pernah dipangkas walau provider bilang luapannya 7x jendela.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "mulai" },
+    call("a"),
+    bigResult("a"), // kepala 20 KB — diprune, dan ikut diringkas
+    { role: "user", content: "lanjut" },
+    call("b"),
+    smallResult("b"), // ekor — inilah yang harus ikut dipangkas
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 7_000, // FAKTA provider: luapan 7x jendela
+    summarise: async () => "RINGKASAN",
+  })
+
+  // Positif dulu: kepala memang diprune DAN diringkas, jadi kedua sumber kredit
+  // sungguh aktif — tanpa itu test ini tidak menguji penggandaannya.
+  assert.ok(result.prunedBytes > 10_000)
+  assert.equal(result.summarised, true)
+
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[5]?.message),
+    /output was dropped/,
+    "provider bilang masih jauh di atas jendela, jadi ekor harus dipangkas",
+  )
+})
+
 test("kredit peringkasan dihitung dari byte pesan NYATA, bukan byte hasil render", async () => {
   // Ronde review ketiga. `summaryFreed` dijumlahkan dari `parts` — hasil
   // `renderMessage`, yang MEMOTONG setiap tool-result di 400 karakter — lalu

@@ -59,9 +59,19 @@ export interface AutoCompactInput {
    * tidak dibatasi apa pun: terukur 78.964 token pada smallModel yang menyatakan
    * jendela 4096, dan provider memotongnya diam-diam alih-alih menolak.
    *
-   * Tidak dinyatakan berarti "pakai jendela model giliran". Itu bukan tebakan:
-   * `smallModel` yang tidak disetel berarti model giliran SENDIRI yang meringkas,
-   * dan `titah doctor` menyebut `smallModel` yang jendelanya belum dideklarasikan.
+   * TIDAK dinyatakan berarti "jangan potong" — seluruh transkrip dikirim dalam
+   * satu panggilan tanpa batas, yaitu issue #1 yang belum tertutup.
+   *
+   * Itu disengaja, dan jaringnya ada di SISI PEMANGGIL: `summariserWindowFor`
+   * yang jatuh ke jendela model giliran, karena hanya pemanggil yang tahu model
+   * mana yang meringkas. Dua jaring untuk satu keputusan adalah bentuk kesalahan
+   * yang sudah tiga kali menghasilkan cacat di siklus ini, jadi `autoCompact`
+   * tidak memilikinya.
+   *
+   * Komentar ini pernah menyatakan KEBALIKANNYA ("tidak dinyatakan berarti pakai
+   * jendela model giliran") setelah jaringnya dipindah — kontrak yang tertulis
+   * salah adalah jebakan untuk pemanggil berikutnya, dan test yang memang
+   * menghilangkannya sudah berjalan di jalur tanpa-potong tanpa ada yang tahu.
    */
   summariserWindow?: number
   /**
@@ -305,19 +315,30 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
       summary = wrapSummary(written)
       saveCompaction(sessionID, plan.watermark, summary)
       summarised = true
-      // Byte pesan SUNGGUHAN, bukan byte hasil render.
+      // Byte yang dibebaskan peringkasan DI ATAS yang sudah dibebaskan prune.
       //
-      // `parts` datang dari `renderMessage`, yang memotong setiap tool-result di
-      // 400 karakter — jadi menjumlahkannya lalu mengkreditkannya ke `projected`
-      // (hitungan token atas pesan yang nyata) adalah mencampur dua satuan.
-      // Dengan pengecualian `task`, hasil 30 KB di riwayat lama dilewati prune DAN
-      // menyusut ke ~450 byte di `parts`: kreditnya hilang, `anchored` tetap di
-      // atas jendela, dan `pruneTail` menghancurkan hasil tool yang baru saja
-      // diminta model — padahal permintaan sesudah peringkasan jauh di bawahnya.
+      // `current`, bukan `plan.dropped`. Keduanya adalah kepala yang sama, tapi
+      // `plan.dropped` berasal dari `rows` — versi SEBELUM prune. Memakainya
+      // menghitung byte yang sudah masuk `prunedBytes` untuk kedua kalinya, dan
+      // `freedTokens()` menjumlahkan keduanya. Terukur: kepala 20 KB memberi
+      // prunedBytes 19.929 DAN summaryFreed ~19.900, kreditnya ~9.957 token
+      // melawan `projected` 7.000 — hasilnya negatif, `projectedSize` runtuh ke
+      // pengukuran saja, dan sinyal provider yang ADA justru untuk menangkap
+      // remehnya pengukuran itu ikut hilang. Ekor tidak pernah dipangkas walau
+      // provider melaporkan luapan tujuh kali jendela.
+      //
+      // `plan.dropped` tetap benar untuk BAHAN peringkas di atas — di sana yang
+      // dibutuhkan justru isi asli, bukan penanda hasil prune.
+      //
+      // Ringkasan diukur sebagaimana ia DIKIRIM, lewat `summaryPair`: ia berangkat
+      // sebagai dua pesan JSON, bukan satu string telanjang. Mencampur byte string
+      // dengan byte pesan adalah dua satuan dalam satu pengurangan.
+      const sentBytes = (text: string): number =>
+        summaryPair(text).reduce((total, message) => total + messageBytes(message), 0)
       const droppedBytes =
-        plan.dropped.reduce((total, message) => total + messageBytes(message), 0) +
-        (previous ? Buffer.byteLength(previous.summary) : 0)
-      summaryFreed = Math.max(0, droppedBytes - Buffer.byteLength(summary))
+        current.slice(0, cut).reduce((total, message) => total + messageBytes(message), 0) +
+        (previous ? sentBytes(previous.summary) : 0)
+      summaryFreed = Math.max(0, droppedBytes - sentBytes(summary))
     }
   }
 

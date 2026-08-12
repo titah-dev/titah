@@ -174,6 +174,25 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
 }
 
 /**
+ * Model yang MENJALANKAN giliran: milik agent kalau ia menyatakannya, kalau tidak
+ * override yang diminta pemanggil.
+ *
+ * Satu fungsi karena aturannya dipakai dua tempat — jalur giliran biasa dan jalur
+ * `/compact` — dan sempat menyimpang di antaranya: `/compact` memakai
+ * `input.model` mentah, sehingga sebuah `defaultAgent` yang menyatakan modelnya
+ * sendiri diringkas oleh model bawaan, sementara pemadatan otomatis di sesi yang
+ * SAMA memakai model agent itu. Dua ringkasan dengan mutu berbeda dalam satu sesi
+ * adalah persis yang dihindari saat `/compact` dipindah ke `smallModel`.
+ */
+export function turnModelFor(
+  config: Config,
+  agentID: string | undefined,
+  override: string | undefined,
+): string | undefined {
+  return (agentID ? config.agent[agentID]?.model : undefined) ?? override
+}
+
+/**
  * Model yang BENAR-BENAR menulis ringkasan.
  *
  * Satu fungsi, dipakai untuk dua hal yang wajib sepakat: me-resolve modelnya, dan

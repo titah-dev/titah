@@ -10,6 +10,7 @@ import {
   resolveModel,
   summariserModelFor,
   summariserWindowFor,
+  turnModelFor,
 } from "./provider.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
@@ -277,7 +278,14 @@ export async function prompt(input: PromptInput): Promise<Message> {
       text = command.args
       teamPrompt = buildTeamPrompt(config, roster)
     } else if (isBuiltin(command.name)) {
-      return builtinTurn(session, config, command.name, command.args, input)
+      return builtinTurn(
+        session,
+        config,
+        command.name,
+        command.args,
+        input,
+        turnModelFor(config, agentID, modelOverride),
+      )
     } else {
       const CLI_HINT: Record<string, string> = {
         model: "From the CLI, pass --model instead. See `titah models`.",
@@ -366,7 +374,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // gagal atau dibatalkan tidak pernah sempat mengukur apa pun, dan memakainya
   // akan mematikan pemadatan otomatis sampai ada giliran yang sukses.
   const lastMeasured = lastContextTokens(session.id)
-  const modelID = agentDef?.model ?? modelOverride
+  const modelID = turnModelFor(config, agentID, modelOverride)
   const contextWindow = contextWindowFor(config, modelID)
   if (contextWindow === undefined) warnUndeclaredWindow(session, config, modelID)
   // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
@@ -946,8 +954,10 @@ async function builtinTurn(
   name: string,
   args: string,
   input: PromptInput,
+  /** Model yang menjalankan giliran — lihat `turnModelFor`. */
+  turnModel: string | undefined,
 ): Promise<Message> {
-  if (name === "compact") return compactTurn(session, config, args.trim(), input)
+  if (name === "compact") return compactTurn(session, config, args.trim(), input, turnModel)
   if (name === "agents") return infoTurn(session, input.text, renderAgents(config))
   if (name === "commands") return infoTurn(session, input.text, renderCommands(config))
   if (name === "skills") return infoTurn(session, input.text, renderSkills(config, session.directory))
@@ -971,6 +981,12 @@ async function compactTurn(
   config: Config,
   focus: string,
   input: PromptInput,
+  /**
+   * Model yang menjalankan giliran ini. DITERIMA, bukan dihitung ulang dari
+   * `input.model`: agent yang menyatakan modelnya sendiri harus meringkas dengan
+   * model itu juga, sama seperti pemadatan otomatis di sesi yang sama.
+   */
+  turnModel: string | undefined,
 ): Promise<Message> {
   const previous = latestCompaction(session.id)
   const rows = listModelRows(session.id).filter((row) => !previous || row.seq > previous.seq)
@@ -1014,7 +1030,7 @@ async function compactTurn(
     // persis), jadi dua pilihan model berarti `/compact` diam-diam menghasilkan
     // ringkasan yang berbeda mutunya dari yang ditulis otomatis di sesi yang
     // sama — beda yang tidak pernah bisa dijelaskan ke user.
-    const summariserModel = summariserModelFor(config, input.model)
+    const summariserModel = summariserModelFor(config, turnModel)
     const summarise = synthesizerFor(resolver(config, summariserModel), controller.signal)
     // Lewat `summariseInChunks`, sama dengan jalur otomatis: prompt peringkas
     // dibatasi jendela model yang MENULIS ringkasan. Jalur ini justru yang
@@ -1024,7 +1040,7 @@ async function compactTurn(
     const summary = await summariseInChunks(
       summarise,
       parts,
-      summariserChunkBytes(summariserWindowFor(config, input.model), config.compaction.reserved),
+      summariserChunkBytes(summariserWindowFor(config, turnModel), config.compaction.reserved),
       focus,
     )
 

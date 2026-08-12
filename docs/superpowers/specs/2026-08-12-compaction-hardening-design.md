@@ -285,12 +285,27 @@ budget, `projectedSize` is one rule for both gates, `summariserWindowFor` is one
 rule for both paths, and `summaryFreed` is measured in the same unit it is credited
 against.
 
+## Fourth review round, 2026-08-12
+
+Three findings, and the first one **cancelled the third round's own fix**.
+
+| # | Where | What |
+|---|---|---|
+| F1 | `summaryFreed` accounting | `plan.dropped` comes from `rows` — the messages **before** prune — while `prunedBytes` had already counted those same bytes, and `freedTokens()` adds both. Reproduced: a 20 KB head gives `prunedBytes` 19,929 **and** `summaryFreed` ~19,900, so the credit is ~9,957 tokens against a `projected` of 7,000. The subtraction goes negative, `projectedSize` collapses to the measurement alone, and the provider signal — added in round three precisely to catch the measurement's 30–50% under-count — is cancelled whenever summarisation succeeds. The tail went unpruned with the provider reporting a 7× overflow. Now measured over `current.slice(0, cut)` (post-prune); `plan.dropped` stays as the summariser's *input*, where the original content is what is wanted. The summary is also measured through `summaryPair`, as it is actually sent — two JSON messages, not a bare string. |
+| F2 | `summariserWindow` JSDoc | Said the opposite of what the code does: "not stated means use the turn model's window", when omitting it now means *don't chunk at all*. The net was moved to the caller in round three and the doc was not. A written contract that is wrong is a trap for the next caller — and the tests, which omit it, were already running the no-chunking path unnoticed. |
+| F3 | `/compact`'s turn model | `prompt()` uses `modelID` (`agentDef?.model ?? modelOverride`); `compactTurn` still used raw `input.model`. A `defaultAgent` declaring its own model was therefore summarised by the *default* model, while automatic compaction in the same session used the agent's — two summaries of different quality in one session, exactly what moving `/compact` onto `smallModel` was meant to remove. `turnModelFor` now owns the rule and both paths call it. |
+
+**Twenty findings across four rounds, and the count that has not moved:** every
+round's most serious finding was a bound or a credit trusting a number computed
+somewhere else. F1 is the sharpest form of it yet — the number was computed *by
+this same function, twenty lines earlier*, and counted twice.
+
 **Not every fix has a test that would catch a regression**, and it is worth listing
 rather than glossing:
 
-- The summariser-model wiring (S4, T2) is structural — which argument `agent.ts`
-  passes. Its tests pin `summariserModelFor` and `summariserWindowFor`'s semantics,
-  not the wiring.
+- The summariser-model wiring (S4, T2, F3) is structural — which argument `agent.ts`
+  passes. Its tests pin `summariserModelFor`, `summariserWindowFor` and
+  `turnModelFor`'s semantics, not the wiring itself.
 - `BEGIN IMMEDIATE` (T6) would need two processes racing on one database to
   reproduce, and a flaky test is worse than a documented gap. The `ROLLBACK`-masking
   fix beside it *is* pinned.
