@@ -1317,6 +1317,10 @@ function buildTools(options: BuildToolsOptions): ToolSet {
               title: need.title,
               detail: need.detail,
               pattern: need.pattern,
+              // Diteruskan apa adanya, TERMASUK array kosong: kosong adalah
+              // bagaimana bash mengabarkan bahwa perintahnya tidak bisa dinilai
+              // per bagian, dan allowlist tidak boleh menyala (issue #12).
+              ...(need.segments === undefined ? {} : { segments: need.segments }),
               // Dihitung dari `streamSessionID`, BUKAN `sessionID` milik anak
               // sendiri: klien (TUI/CLI/server) hanya berlangganan stream sesi
               // PALING ATAS, jadi `listenerCount(sessionID)` untuk giliran

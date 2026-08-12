@@ -229,3 +229,57 @@ test("doctor bilang kalau reserved dijinakkan lantainya", () => {
   // dari test di atas, yang membuktikan bawaan tidak ditandai.
   assert.match(output, /! ollama\/kecil/)
 })
+
+test("doctor menyebut entri allowlist yang tidak akan pernah cocok", () => {
+  // Issue #12. Kelas entri mati yang lama — pola sub-perintah seperti
+  // "git status*" — sudah hilang karena pencocokannya diperbaiki. Yang tersisa
+  // adalah entri yang mengandung operator shell: segmen tidak pernah
+  // mengandungnya, jadi entri itu mati sejak ditulis. Diam soal ini persis
+  // kegagalan yang issue #12 catat, jadi diamnya yang dipaku di sini.
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      permission: {
+        edit: "ask",
+        write: "ask",
+        bash: "ask",
+        allowlist: ["git *", "ls && rm -rf /"],
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /Bash allowlist/)
+  assert.match(output, /! permission\.allowlist: "ls && rm -rf \/" can never match/)
+  assert.match(output, /shell operator/)
+  // Entri yang sehat tidak ikut ditandai.
+  assert.doesNotMatch(output, /! permission\.allowlist: "git \*"/)
+})
+
+test("doctor menyatakan allowlist yang sehat, dan menyebut aturan rantainya", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      permission: { edit: "ask", write: "ask", bash: "ask", allowlist: ["git *", "ls*"] },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /2 entries, all of them matchable/)
+  // Aturan yang paling mudah disalahpahami disebut tiap kali, bukan cuma saat
+  // ada temuan: user yang menulis "git *" perlu tahu bahwa itu TIDAK menutupi
+  // apa pun yang dirantai di belakangnya.
+  assert.match(output, /each part of a chained command must match on its own/)
+})
+
+test("doctor diam soal allowlist kalau user memang tidak memakainya", () => {
+  const project = isolatedProject({ skills: { discover: [], paths: [] } }, {})
+  const output = runDoctor(project)
+
+  // Bagian yang selalu berbunyi "0 entri" cuma menambah baris yang tidak pernah
+  // berubah, dan doctor ini memang memilih diam saat tidak ada yang perlu
+  // dikatakan — lihat "Nothing to fix" pada bagian Context windows.
+  assert.doesNotMatch(output, /Bash allowlist/)
+})

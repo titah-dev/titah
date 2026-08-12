@@ -23,7 +23,12 @@ import {
 import { listen } from "./server/index.ts"
 import { bus } from "./core/event.ts"
 import { prompt, AgentError } from "./core/agent.ts"
-import { respond, type PermissionDecision, type PermissionRequest } from "./core/permission.ts"
+import {
+  neverMatchingAllowlistEntries,
+  respond,
+  type PermissionDecision,
+  type PermissionRequest,
+} from "./core/permission.ts"
 import { undo, UndoError } from "./core/undo.ts"
 import { gitAvailable, SnapshotError } from "./core/snapshot.ts"
 import {
@@ -400,6 +405,40 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
     )
   }
   out()
+
+  // Hanya dirender kalau user memang memakai allowlist. Bagian yang selalu
+  // berbunyi "0 entri" pada config yang tidak punya allowlist cuma menambah
+  // baris yang tidak pernah berubah.
+  const allowlists: { where: string; entries: string[] }[] = [
+    { where: "permission.allowlist", entries: loaded.config.permission.allowlist },
+    ...Object.entries(loaded.config.agent)
+      .map(([id, agent]) => ({
+        where: `agent.${id}.permission.allowlist`,
+        entries: agent.permission?.allowlist ?? [],
+      }))
+      .filter((entry) => entry.entries.length > 0),
+  ].filter((entry) => entry.entries.length > 0)
+
+  if (allowlists.length > 0) {
+    out("Bash allowlist")
+    let dead = 0
+    for (const { where, entries } of allowlists) {
+      // Pencocokan berjalan per segmen perintah, dan segmen tidak pernah
+      // mengandung operator shell — jadi entri yang mengandungnya tidak akan
+      // pernah menyala. Diam soal ini persis kegagalan yang issue #12 catat.
+      for (const entry of neverMatchingAllowlistEntries(entries)) {
+        dead += 1
+        out(`  ! ${where}: "${entry}" can never match — it contains a shell operator`)
+        out("      allowlist entries are matched against one command at a time")
+      }
+    }
+    if (dead === 0) {
+      const total = allowlists.reduce((sum, entry) => sum + entry.entries.length, 0)
+      out(`  ${total} ${total === 1 ? "entry" : "entries"}, all of them matchable`)
+    }
+    out("  each part of a chained command must match on its own")
+    out()
+  }
 
   // Q24: agent yang tidak terpasang tetap ditampilkan, tidak disembunyikan.
   out("External agents")
