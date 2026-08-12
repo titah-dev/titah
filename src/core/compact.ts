@@ -91,15 +91,46 @@ export function messageBytes(message: ModelMessage): number {
 const PRUNED = "[output was dropped to free context — re-run the tool if you need it]"
 
 /**
- * Ukuran penanda itu sendiri, dalam byte JSON.
+ * Penanda untuk hasil tool yang MAHAL dipulihkan.
+ *
+ * Sengaja menyebut ongkosnya, bukan sekadar menyuruh menjalankan ulang: nasihat
+ * "re-run the tool" benar untuk `read`, dan menyesatkan untuk jawaban sub-agent
+ * yang harganya satu giliran bersarang penuh. Model tidak punya cara lain
+ * mengetahui bedanya.
+ */
+const PRUNED_EXPENSIVE =
+  "[a sub-agent's answer was dropped to free context — recovering it means dispatching that sub-agent again, a full nested turn]"
+
+/**
+ * Tool yang hasilnya TIDAK dibuang oleh prune biasa.
+ *
+ * Yang membedakan bukan ukuran output, melainkan harga memulihkannya. Komentar
+ * WHY pruner ini menyebut alasan rancangannya: risikonya model membaca ulang
+ * berkas, dan itu bisa dipulihkan. Alasan itu TIDAK berlaku untuk `task` —
+ * memulihkannya berarti model call sendiri, tool call sendiri, mungkin CLI
+ * eksternal terdelegasi. Sebelum ini pruner tidak pernah melihat `toolName`
+ * sama sekali, jadi bedanya tidak tertulis di mana pun.
+ */
+export const EXPENSIVE_TOOLS: ReadonlySet<string> = new Set(["task"])
+
+/**
+ * Ukuran sebuah penanda, dalam byte JSON — sebagaimana ia benar-benar tersimpan.
  *
  * Dipakai sebagai ambang: mengganti output yang SUDAH lebih kecil atau sama
  * dengan penanda tidak menghemat apa pun — riwayatnya bisa saja malah membesar.
  * `bytesFreed` harus berarti "byte yang SUNGGUH terhemat", bukan "byte yang
  * dibuang". Melebih-lebihkannya membuat pemanggil mengira sudah cukup meringan
  * padahal belum, dan melewatkan peringkasan yang justru dibutuhkan.
+ *
+ * Per penanda, bukan satu angka untuk semuanya: penanda mahal lebih panjang,
+ * dan memakai ukuran penanda pendek untuknya akan melebih-lebihkan penghematan
+ * — persis arah kesalahan yang dilarang di atas. Ini juga yang menjaga
+ * idempotensi: output yang sudah berisi penanda punya ukuran yang sama persis
+ * dengan penandanya sendiri, jadi ia terlewati alih-alih dihitung ulang.
  */
-const MARKER_BYTES = Buffer.byteLength(JSON.stringify({ type: "text", value: PRUNED }))
+function markerBytes(marker: string): number {
+  return Buffer.byteLength(JSON.stringify({ type: "text", value: marker }))
+}
 
 /**
  * Membuang output hasil tool di rentang `[from, upTo)`, tanpa menghapus satu
@@ -117,11 +148,23 @@ const MARKER_BYTES = Buffer.byteLength(JSON.stringify({ type: "text", value: PRU
  * satu hasil tool yang lebih besar dari seluruh anggaran tidak bisa ditolong
  * oleh pemotongan mana pun, dan karena prune tidak pernah MENGHAPUS pesan, ia
  * tetap aman dilakukan di dalam ekor.
+ *
+ * `sparing` memisahkan dua situasi yang ongkosnya berbeda:
+ *
+ *   - `true` (prune biasa, riwayat lama) — hasil `EXPENSIVE_TOOLS` dilewati.
+ *     Peringkas yang menanganinya: ringkasan sebuah jawaban sub-agent lossy,
+ *     tapi tidak destruktif.
+ *   - `false` (upaya terakhir di ekor) — tidak ada yang dilewati. Mengecualikan
+ *     `task` di sini justru mengembalikan bahaya aslinya: permintaan tetap
+ *     kebesaran, provider memotong diam-diam, dan model menjawab yakin tentang
+ *     bahan yang tidak pernah dilihatnya. Kehilangan isi ekor kerugian yang
+ *     lebih kecil — tapi penandanya menyebut harganya.
  */
 export function pruneToolOutputs(
   messages: ModelMessage[],
   upTo: number,
   from = 0,
+  sparing = true,
 ): { messages: ModelMessage[]; bytesFreed: number } {
   let bytesFreed = 0
 
@@ -133,6 +176,10 @@ export function pruneToolOutputs(
     let changed = false
     const next = parts.map((part) => {
       if (part["type"] !== "tool-result") return part
+      const expensive = EXPENSIVE_TOOLS.has(String(part["toolName"] ?? ""))
+      if (expensive && sparing) return part
+      const marker = expensive ? PRUNED_EXPENSIVE : PRUNED
+      const size = markerBytes(marker)
       const output = part["output"]
       const rendered = JSON.stringify(output ?? "")
       const removed = Buffer.byteLength(rendered)
@@ -141,10 +188,10 @@ export function pruneToolOutputs(
       // di sini, karena rendernya sama persis dengan penanda). Satu giliran
       // penuh hasil edit/confirm pendek adalah kasus nyata di mana ini terjadi
       // pada SEMUA bagiannya sekaligus, bukan pengecualian langka.
-      if (removed <= MARKER_BYTES) return part
-      bytesFreed += removed - MARKER_BYTES
+      if (removed <= size) return part
+      bytesFreed += removed - size
       changed = true
-      return { ...part, output: { type: "text", value: PRUNED } }
+      return { ...part, output: { type: "text", value: marker } }
     })
 
     return changed ? ({ ...message, content: next } as ModelMessage) : message
