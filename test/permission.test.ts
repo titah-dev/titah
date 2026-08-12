@@ -26,6 +26,13 @@ afterEach(() => {
   for (let i = 1; i <= session; i += 1) clearSession(`ses_perm_${i}`)
 })
 
+/**
+ * `segments` wajib ada untuk `kind: "bash"` sejak issue #12 — itulah yang
+ * dicocokkan ke allowlist, menggantikan `pattern` yang cuma berisi kata pertama.
+ * Permintaan bash tanpa segmen sengaja TIDAK pernah lolos allowlist, jadi
+ * menghilangkannya di sini akan membuat test menggantung menunggu dialog, bukan
+ * gagal dengan rapi. Perilaku itu sendiri dipaku di test/bash-allowlist.test.ts.
+ */
 const request = (sessionID: string, permission = base(), listeners = 1) =>
   ask({
     sessionID,
@@ -34,6 +41,7 @@ const request = (sessionID: string, permission = base(), listeners = 1) =>
     title: "bash: git status",
     detail: "git status",
     pattern: "git *",
+    segments: ["git status"],
     listeners,
   })
 
@@ -120,6 +128,7 @@ test('jawaban "always" mengingat polanya untuk sesi itu saja', async () => {
     title: "bash: git diff",
     detail: "git diff",
     pattern: "git *",
+    segments: ["git diff"],
     listeners: 1,
   })
   assert.equal(kedua.granted, true)
@@ -169,6 +178,7 @@ test('jawaban "always" dari satu sub-agent menutup seluruh giliran induk, bukan 
     title: "bash: git status",
     detail: "git status",
     pattern: "git *",
+    segments: ["git status"],
     listeners: 1,
     allowlistSessionID: induk,
   })
@@ -188,6 +198,7 @@ test('jawaban "always" dari satu sub-agent menutup seluruh giliran induk, bukan 
     title: "bash: git diff",
     detail: "git diff",
     pattern: "git *",
+    segments: ["git diff"],
     listeners: 0,
     allowlistSessionID: induk,
   })

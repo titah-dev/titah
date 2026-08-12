@@ -35,6 +35,17 @@ export interface PermissionNeed {
   detail: string
   /** Pola yang masuk allowlist kalau user menjawab "selalu izinkan". */
   pattern: string
+  /**
+   * Bagian-bagian perintah yang MASING-MASING harus diizinkan allowlist
+   * sebelum tool ini boleh jalan tanpa dialog. Hanya `bash` yang mengisinya;
+   * tool lain (`edit`, `write`) tidak punya konsep ini, dan `pattern`-nya yang
+   * dicocokkan.
+   *
+   * Array KOSONG bukan berarti "tidak ada yang perlu diperiksa" — ia berarti
+   * perintahnya tidak bisa dinilai per bagian, dan jawabannya tetap bertanya.
+   * Lihat issue #12 dan `commandSegments` di `tool/bash.ts`.
+   */
+  segments?: string[]
 }
 
 export interface TitahTool<Schema extends z.ZodType = z.ZodType> {

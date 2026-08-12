@@ -24,10 +24,51 @@ const inputSchema = z.object({
  * Kata pertama perintah dipakai sebagai pola allowlist, sehingga jawaban
  * "selalu izinkan" untuk `git status` menjadi `git *` — bukan izin buta untuk
  * seluruh shell.
+ *
+ * Ini melayani DIALOG: apa yang disimpan ketika user menjawab "always". Ia
+ * bukan, dan tidak pernah boleh jadi lagi, yang dicocokkan ke allowlist —
+ * lihat `commandSegments` di bawah dan issue #12.
  */
 export function allowlistPattern(command: string): string {
   const first = command.trim().split(/\s+/)[0] ?? command
   return `${first} *`
+}
+
+/**
+ * Konstruksi yang membuat sebuah perintah tidak bisa dinilai dari potongannya.
+ *
+ * Substitusi (`$(…)`, backtick, `<(…)`) menjalankan perintah LAIN di dalam yang
+ * ini, dan perintah itu tidak pernah muncul sebagai segmen — memecah lalu
+ * mengizinkan potongan yang terlihat sama saja dengan mengizinkan yang
+ * tersembunyi di dalamnya. Redirect (`>`, `<`) membuat perintah yang cuma
+ * "membaca" bisa menimpa berkas apa pun, sehingga mengizinkan `ls *` tidak lagi
+ * berarti apa yang dibaca user saat menulisnya.
+ *
+ * Deteksinya sengaja kasar dan tidak sadar kutip: `grep "a>b" f` ikut kena dan
+ * akan selalu bertanya. Arah salahnya benar — bertanya terlalu sering itu
+ * merepotkan, mengizinkan terlalu sering itu cacat keamanan.
+ */
+const UNJUDGEABLE = /\$\(|\$\{|`|<\(|>\(|>|</
+
+/** Operator yang memisahkan satu perintah menjadi beberapa perintah. */
+const SEPARATORS = /&&|\|\||[;\n|&]/
+
+/**
+ * Perintah dipecah menjadi bagian-bagian yang masing-masing HARUS diizinkan.
+ *
+ * `undefined` berarti perintahnya tidak bisa dinilai per bagian, dan pemanggil
+ * wajib memperlakukan itu sebagai "jangan pernah izinkan otomatis".
+ *
+ * Inti issue #12: sebelum ini yang dicocokkan ke allowlist adalah
+ * `"<kata-pertama> *"`, jadi hanya kata pertama yang pernah dibaca dan
+ * `git status && rm -rf ~` lolos lewat entri `git *`.
+ */
+export function commandSegments(command: string): string[] | undefined {
+  if (UNJUDGEABLE.test(command)) return undefined
+  return command
+    .split(SEPARATORS)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "")
 }
 
 export const bashTool: TitahTool<typeof inputSchema> = {
@@ -38,11 +79,17 @@ export const bashTool: TitahTool<typeof inputSchema> = {
   inputSchema,
   mutates: true,
   permission(input) {
+    // `segments` sengaja SELALU dikirim, termasuk sebagai array kosong ketika
+    // perintahnya tidak bisa dinilai. Array kosong berarti "tidak ada satu pun
+    // bagian yang bisa diizinkan", dan `ask()` memperlakukannya sebagai tolak —
+    // bukan sebagai "tidak ada yang perlu diperiksa".
+    const segments = commandSegments(input.command)
     return {
       kind: "bash",
       title: `bash: ${input.command.split("\n")[0]?.slice(0, 80)}`,
       detail: input.description ? `${input.description}\n\n${input.command}` : input.command,
       pattern: allowlistPattern(input.command),
+      segments: segments ?? [],
     }
   },
   async execute(input, ctx) {

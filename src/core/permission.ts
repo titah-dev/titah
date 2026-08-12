@@ -137,6 +137,51 @@ export function matchesPattern(pattern: string, value: string): boolean {
   return new RegExp(`^${escaped}$`).test(value)
 }
 
+/** Operator shell — tidak pernah muncul di dalam satu segmen perintah. */
+const OPERATOR = /&&|\|\||[;\n|&]|\$\(|`/
+
+/**
+ * Entri allowlist yang tidak akan pernah cocok dengan apa pun.
+ *
+ * Pencocokan berjalan per SEGMEN, dan segmen tidak pernah mengandung operator
+ * shell — jadi entri yang mengandungnya mati sejak ditulis. Sebelum issue #12
+ * kelas entri mati jauh lebih luas (setiap pola sub-perintah), dan tidak ada
+ * yang pernah menyebutkannya; itulah bagian yang paling merugikan user. Fungsi
+ * ini ada supaya `titah doctor` bisa menyebut sisanya.
+ */
+export function neverMatchingAllowlistEntries(allowlist: string[]): string[] {
+  return allowlist.filter((entry) => OPERATOR.test(entry))
+}
+
+/**
+ * Entri allowlist mana yang mengizinkan permintaan ini — `undefined` kalau
+ * tidak ada.
+ *
+ * Untuk bash, SETIAP segmen harus punya entri yang mengizinkannya. Dulu yang
+ * dicocokkan cuma `"<kata-pertama> *"`, sehingga `git *` juga mengizinkan
+ * `git status && rm -rf ~` (issue #12).
+ */
+function matchAllowlist(entries: string[], options: AskOptions): string | undefined {
+  const hit = (value: string) => entries.find((entry) => matchesPattern(entry, value))
+
+  if (options.kind !== "bash") return hit(options.pattern)
+
+  const segments = options.segments
+  // Dua penjagaan, dan keduanya perlu. Tanpa yang pertama, pemanggil bash yang
+  // lupa mengirim segmen diam-diam kembali ke perilaku lama. Tanpa yang kedua,
+  // `[].every(...)` yang bernilai true membuat perintah yang tidak bisa dinilai
+  // — justru yang paling berbahaya — lolos sebagai kebenaran hampa.
+  if (segments === undefined || segments.length === 0) return undefined
+
+  const matched: string[] = []
+  for (const segment of segments) {
+    const entry = hit(segment)
+    if (entry === undefined) return undefined
+    matched.push(entry)
+  }
+  return [...new Set(matched)].join('", "')
+}
+
 export interface EffectivePermission {
   edit: "ask" | "allow" | "deny"
   write: "ask" | "allow" | "deny"
@@ -174,6 +219,14 @@ export interface AskOptions {
   title: string
   detail: string
   pattern: string
+  /**
+   * Bagian perintah yang masing-masing harus diizinkan allowlist. Diisi oleh
+   * `bash`; tool lain membiarkannya kosong dan `pattern`-nya yang dicocokkan.
+   *
+   * Untuk `kind: "bash"` ini WAJIB ada dan tidak boleh kosong agar allowlist
+   * bisa menyala sama sekali — lihat `matchAllowlist`.
+   */
+  segments?: string[]
   permission: EffectivePermission
   /** Jumlah klien yang sedang mendengarkan sesi ini. 0 berarti tolak. */
   listeners: number
@@ -226,11 +279,14 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
 
   const allowlistSessionID = options.allowlistSessionID ?? options.sessionID
   const configAllowlist = options.permission.allowlist
-  const matched = [
-    ...configAllowlist,
-    ...allowlistFor(allowlistSessionID),
-    ...turnAllowlistFor(allowlistSessionID),
-  ].find((pattern) => matchesPattern(pattern, options.pattern))
+  const matched = matchAllowlist(
+    [
+      ...configAllowlist,
+      ...allowlistFor(allowlistSessionID),
+      ...turnAllowlistFor(allowlistSessionID),
+    ],
+    options,
+  )
   if (matched) return { granted: true, reason: `Matched allowlist: "${matched}".` }
 
   // Sama seperti allowlist: sub-agent memeriksa --auto INDUKNYA, bukan
