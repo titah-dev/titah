@@ -49,31 +49,19 @@ export function tailStart(messages: ModelMessage[], keepTurns = KEEP_TURNS): num
 }
 
 /**
- * Rasio byte→token yang SENGAJA meremehkan.
+ * Rasio byte→token, satu-satunya di berkas ini.
  *
- * Teks nyata kira-kira 4 byte per token. Angka 8 di sini membuat penghematan
- * hasil prune selalu ditaksir lebih kecil dari sebenarnya, sehingga keputusan
- * "masih perlu diringkas?" condong ke arah meringkas. Dua arah kesalahannya
- * tidak setara: menaksir terlalu rendah cuma menambah satu panggilan
- * smallModel; menaksir terlalu tinggi berarti melewatkan peringkasan yang
- * dibutuhkan lalu mengirim permintaan kebesaran.
- */
-export const BYTES_PER_TOKEN = 8
-
-export function estimateTokens(bytes: number): number {
-  return Math.floor(bytes / BYTES_PER_TOKEN)
-}
-
-/**
- * Rasio byte→token untuk hal yang harus ditaksir TERLALU BESAR, bukan terlalu
- * kecil — kebalikan arah dari `BYTES_PER_TOKEN`.
+ * Empat byte per token adalah angka teks nyata. Dipakai tiga tempat: ukuran ekor
+ * mid-turn, margin pertumbuhan satu langkah, dan pengukuran permintaan
+ * (`requestTokens`). Ketiganya BATAS atau UKURAN, bukan penghematan yang
+ * ditaksir, jadi satu penggaris sudah cukup.
  *
- * Dipakai dua tempat: ukuran ekor mid-turn dan margin pertumbuhan satu langkah.
- * Keduanya BATAS, bukan penghematan, jadi arah amannya terbalik: meremehkan
- * ukuran sebuah hasil tool berarti membiarkan ekor yang terlalu gemuk atau
- * margin yang terlalu tipis, dan permintaan kebesaran tetap terkirim. Empat
- * byte per token adalah angka teks nyata; delapan hanya aman ketika salahnya
- * berarti satu panggilan smallModel yang mubazir.
+ * Dulu ada penggaris kedua, 8 byte/token, khusus untuk menaksir penghematan
+ * prune supaya keputusan "masih perlu diringkas?" condong ke arah meringkas.
+ * Asimetri itu hilang bersama alasannya: penghematan tidak lagi ditaksir sama
+ * sekali — permintaan yang akan dikirim diukur langsung. Menaksir dua arah
+ * dengan dua penggaris adalah satu perbandingan dengan dua satuan, dan itu
+ * kesalahan yang lebih halus daripada rasio yang keliru.
  */
 export const REAL_BYTES_PER_TOKEN = 4
 
@@ -85,6 +73,37 @@ export function growthTokens(bytes: number): number {
 /** Ukuran satu pesan seperti yang benar-benar dikirim, dalam byte JSON. */
 export function messageBytes(message: ModelMessage): number {
   return Buffer.byteLength(JSON.stringify(message))
+}
+
+/**
+ * Ukuran permintaan yang AKAN dikirim, diukur langsung dari pesannya.
+ *
+ * Menggantikan aritmetika di atas angka provider yang basi: dulu keputusan
+ * "prune saja cukup?" mengambil `inputTokens` yang dilaporkan untuk permintaan
+ * LAIN satu langkah sebelumnya, lalu menguranginya dengan taksiran byte yang
+ * dibebaskan prune. Taksiran itu tidak mungkin benar, dan salahnya ke arah yang
+ * membakar kuota: terukur, pada hasil 28 KB dengan jendela 8192, permintaan yang
+ * sungguh akan dikirim hanya 490 token — 6% jendela — sementara peringkas tetap
+ * menyala di 29 dari 30 langkah.
+ *
+ * Yang membuat ini benar bukan rasionya, melainkan bahwa objeknya nyata:
+ * pesan-pesan ini persis yang akan berangkat. `extraBytes` untuk bagian yang
+ * TIDAK ada di daftar pesan tapi tetap ikut terkirim — system prompt. Tanpanya
+ * pengukuran ini meremehkan permintaan, dan meremehkan ukuran permintaan berarti
+ * mengirim yang kebesaran: arah kesalahan yang paling mahal dari semuanya.
+ *
+ * Yang MASIH tidak terlihat, dan disebut di sini supaya tidak disangka lengkap:
+ * definisi tool. Skema tool ikut dikirim tiap permintaan tapi tidak ada di daftar
+ * pesan maupun di system prompt, dan merakit ulang skema JSON-nya di sini berarti
+ * menebak bentuk yang dihasilkan AI SDK. Akibatnya terbatas dan bukan luapan:
+ * pengukuran ini bisa meremehkan beberapa ratus token, sehingga sesekali satu
+ * anggaran dan pemicunya — yang membaca angka provider yang SUNGGUHAN, termasuk
+ * definisi tool — menyala lagi di langkah berikutnya.
+ */
+export function requestTokens(messages: ModelMessage[], extraBytes = 0): number {
+  let bytes = extraBytes
+  for (const message of messages) bytes += messageBytes(message)
+  return growthTokens(bytes)
 }
 
 /** Penanda yang menggantikan output tool yang dibuang. */

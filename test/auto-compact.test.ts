@@ -66,6 +66,33 @@ function seed(): string {
   return session.id
 }
 
+/**
+ * Riwayat yang bulk-nya TIDAK bisa dijangkau prune: teks assistant, bukan output
+ * tool.
+ *
+ * Dibutuhkan sejak keputusan "prune saja cukup?" diukur langsung dari permintaan
+ * yang akan dikirim. Dengan `seed()` yang bulk-nya 20 KB output tool, prune
+ * SUNGGUH cukup — permintaan sisanya cuma ratusan byte — jadi peringkas tidak
+ * dipanggil, dan itu perilaku yang benar (issue #2: terukur 490 token, peringkas
+ * menyala 29 dari 30 langkah). Test yang memang menguji jalur peringkasan harus
+ * memakai riwayat yang peringkasan sungguh dibutuhkan untuknya, bukan riwayat
+ * yang tampak besar hanya lewat angka provider yang basi.
+ */
+function seedTextHeavy(): string {
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "giliran satu" },
+    call("a"),
+    bigResult("a"),
+    // 6 KB teks: di luar jangkauan prune, jadi hanya peringkasan yang bisa
+    // menghilangkannya. 6.000 byte ÷ 4 = 1.500 token, di atas anggaran 900.
+    { role: "assistant", content: `selesai satu — catatan panjang ${"z".repeat(6_000)}` },
+    { role: "user", content: "giliran dua" },
+    { role: "assistant", content: "selesai dua" },
+  ])
+  return session.id
+}
+
 test("compaction.auto: false tidak menjalankan apa pun, walau jauh di atas ambang", async () => {
   // Saklarnya tidak terpatok sama sekali sebelumnya: menghapus penjaga
   // `if (!compaction.auto) return IDLE` meninggalkan seluruh suite hijau,
@@ -85,7 +112,11 @@ test("compaction.auto: false tidak menjalankan apa pun, walau jauh di atas amban
     summarise: async () => "RINGKASAN",
   })
   assert.equal(proof.ran, true)
-  assert.equal(proof.summarised, true)
+  // `changed`, bukan `summarised`: yang dibuktikan kontrol positif ini adalah
+  // "dengan auto: true, angka-angka ini SUNGGUH memadatkan". Pada riwayat ini
+  // prune sendiri sudah cukup, dan tidak naik ke peringkasan justru perilaku
+  // yang benar — lihat `seedTextHeavy`.
+  assert.equal(proof.changed, true)
 
   // Baru negatif, di sesi yang baru disemai persis sama.
   const off = seed()
@@ -288,8 +319,48 @@ test("prune jalan lebih dulu, dan tersimpan ke baris", async () => {
   assert.equal(latestCompaction(sessionID), undefined)
 })
 
+test("prune yang CUKUP tidak naik ke peringkasan, walau angka provider terakhir masih raksasa", async () => {
+  // Ini regresi issue #2, dan pemakunya. Keputusan "prune saja cukup, atau
+  // perlu diringkas juga?" dulu beraritmetika di atas `lastStepTokens` — angka
+  // yang dilaporkan provider untuk permintaan LAIN satu langkah sebelumnya —
+  // dikurangi taksiran 8 byte/token. Terukur akibatnya: pada hasil 28 KB dan
+  // 32 KB dengan jendela 8192, permintaan yang SUNGGUH akan dikirim cuma 490
+  // token (6% jendela) dan peringkas tetap menyala di 29 dari 30 langkah.
+  //
+  // `lastStepTokens: 999_999` di sini mewakili angka basi yang raksasa itu.
+  // Yang menentukan sekarang adalah ukuran permintaan yang diukur langsung
+  // sesudah prune — dan permintaan itu memang kecil, jadi peringkas tidak boleh
+  // dipanggil sama sekali.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "baca berkas besar" },
+    call("a"),
+    bigResult("a"), // 20 KB, DI LUAR ekor — sepenuhnya bisa dibebaskan prune
+    { role: "assistant", content: "selesai" },
+    { role: "user", content: "giliran dua" },
+    { role: "assistant", content: "selesai dua" },
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => {
+      throw new Error("permintaan yang terukur sudah muat — peringkas tidak boleh dipanggil")
+    },
+  })
+
+  // Positif dulu: prune SUNGGUH jalan dan membebaskan 20 KB itu. Tanpa ini,
+  // `summarised: false` di bawah bisa lolos karena pemadatan tidak menyala.
+  assert.equal(result.ran, true)
+  assert.ok(result.prunedBytes > 10_000)
+  assert.equal(result.summarised, false)
+  assert.equal(latestCompaction(session.id), undefined)
+})
+
 test("prune yang tidak cukup naik ke peringkasan", async () => {
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
   let called = 0
 
   const result = await autoCompact({
@@ -323,7 +394,7 @@ test("prune yang tidak cukup naik ke peringkasan", async () => {
 })
 
 test("focus diteruskan ke prompt peringkas", async () => {
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
   let seen = ""
   await autoCompact({
     sessionID,
@@ -340,7 +411,7 @@ test("focus diteruskan ke prompt peringkas", async () => {
 })
 
 test("prune: false melewatkan prune dan langsung meringkas", async () => {
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
   const result = await autoCompact({
     sessionID,
     compaction: { ...CONFIG, prune: false },
@@ -357,7 +428,7 @@ test("ringkasan kosong dari peringkas TIDAK disimpan, riwayat tidak diganti", as
   // promise-nya — jadi `synthesizerFor` mengembalikan string kosong, bukan
   // melempar, kalau smallModel-nya sedang down. Sebuah 503 sesaat TIDAK boleh
   // berarti seluruh riwayat lama diganti ringkasan yang membungkus kekosongan.
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
 
   const result = await autoCompact({
     sessionID,
@@ -393,7 +464,11 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
     { role: "assistant", content: "balasan purba" }, // seq1 — sudah diringkas (batas air)
     call("a"), // seq2
     bigResult("a"), // seq3 — 20 KB, seharusnya yang diprune
-    { role: "assistant", content: "selesai satu" }, // seq4
+    // seq4 — 6 KB TEKS: di luar jangkauan prune, jadi peringkasan sungguh
+    // dibutuhkan di sini. Pesan yang sudah ada ini yang dibesarkan, bukan pesan
+    // baru yang disisipkan, supaya nomor `seq` yang dipaku test ini tidak
+    // bergeser.
+    { role: "assistant", content: `selesai satu ${"z".repeat(6_000)}` },
     { role: "user", content: "giliran dua" }, // seq5
     { role: "assistant", content: "selesai dua" }, // seq6
   ])

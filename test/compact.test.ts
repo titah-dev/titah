@@ -3,12 +3,10 @@ import test from "node:test"
 import type { ModelMessage } from "ai"
 import {
   budgetTokens,
-  BYTES_PER_TOKEN,
   COMPACT_SYSTEM,
   compactPrompt,
   effectiveGrowth,
   effectiveReserved,
-  estimateTokens,
   growthTokens,
   KEEP_TURNS,
   messageBytes,
@@ -21,6 +19,7 @@ import {
   pruneToolOutputs,
   REAL_BYTES_PER_TOKEN,
   renderMessage,
+  requestTokens,
   renderTranscript,
   reservedCollisions,
   tailBudgetBytes,
@@ -325,13 +324,40 @@ test("reservedCollisions menyebut model yang reserved-nya menelan jendelanya", (
   ])
 })
 
-// ---------- pruner ----------
+test("REAL_BYTES_PER_TOKEN adalah 4, dan ia satu-satunya rasio yang tersisa", () => {
+  // Dulu ada dua rasio: 4 untuk BATAS, dan 8 khusus untuk menaksir penghematan
+  // prune supaya keputusan "masih perlu diringkas?" condong ke arah meringkas.
+  // Asimetri itu hilang bersama alasannya — penghematan tidak ditaksir lagi,
+  // permintaannya DIUKUR. Satu perbandingan dengan dua penggaris adalah
+  // kesalahan yang lebih halus daripada rasio yang keliru.
+  assert.equal(REAL_BYTES_PER_TOKEN, 4)
+  assert.equal(growthTokens(40_000), 10_000)
+})
 
-test("BYTES_PER_TOKEN bawaan adalah 8", () => {
-  // Dipatok di sini seperti KEEP_TURNS: supaya perubahan angka ini ketahuan
-  // sebagai keputusan sengaja, bukan luput karena tidak ada pemanggil yang
-  // membaca konstantanya langsung.
-  assert.equal(BYTES_PER_TOKEN, 8)
+test("requestTokens mengukur pesan yang SUNGGUH akan dikirim, plus system prompt", () => {
+  // Inti issue #2. Yang membuat angka ini benar bukan rasionya, melainkan bahwa
+  // objeknya nyata: pesan-pesan ini persis yang berangkat. Pendahulunya
+  // mengurangi taksiran byte dari `inputTokens` yang dilaporkan provider untuk
+  // permintaan LAIN satu langkah sebelumnya.
+  const messages = [user("satu"), assistant("dua")]
+  const bytes = messages.reduce((total, message) => total + messageBytes(message), 0)
+
+  assert.equal(requestTokens(messages), growthTokens(bytes))
+  // System prompt ikut memakan jendela yang sama. Mengabaikannya berarti
+  // meremehkan permintaan, dan meremehkan ukuran permintaan berarti mengirim
+  // yang kebesaran — arah kesalahan yang paling mahal dari semuanya.
+  assert.equal(requestTokens(messages, 4_000), growthTokens(bytes + 4_000))
+  assert.ok(requestTokens(messages, 4_000) > requestTokens(messages))
+})
+
+test("requestTokens tumbuh bersama isinya, bukan bersama jumlah pesannya", () => {
+  // Penjaga arah: satu hasil `read` 28 KB dan tujuh pesan pendek adalah dua
+  // situasi yang sangat berbeda ukurannya, dan pengukuran yang menghitung pesan
+  // akan menyamakan keduanya.
+  const banyakPendek = Array.from({ length: 7 }, (_, index) => user(`pesan ${index}`))
+  const satuBesar = [user("x".repeat(28_000))]
+
+  assert.ok(requestTokens(satuBesar) > requestTokens(banyakPendek) * 10)
 })
 
 test("MID_TURN_KEEP bawaan adalah 6", () => {
@@ -339,7 +365,7 @@ test("MID_TURN_KEEP bawaan adalah 6", () => {
 })
 
 test("TAIL_FRACTION bawaan adalah 4, dan anggaran ekor dihitung darinya", () => {
-  // Dipatok seperti KEEP_TURNS dan BYTES_PER_TOKEN: angka ini yang menentukan
+  // Dipatok seperti KEEP_TURNS: angka ini yang menentukan
   // seberapa gemuk ekor mid-turn boleh jadi, dan tanpa patokan ia bisa bergeser
   // tanpa ada yang menyadarinya sebagai keputusan.
   assert.equal(TAIL_FRACTION, 4)
@@ -348,15 +374,6 @@ test("TAIL_FRACTION bawaan adalah 4, dan anggaran ekor dihitung darinya", () => 
   // 8192 − min(8192, 2048) = 6144, seperempatnya 1536, dikali 4 byte = 6144.
   assert.equal(budgetTokens(8192, 8192), 6144)
   assert.equal(tailBudgetBytes(8192, 8192), 6144)
-})
-
-test("REAL_BYTES_PER_TOKEN menaksir TERLALU BESAR — arah yang berlawanan dengan BYTES_PER_TOKEN", () => {
-  // Dua rasio, dua arah aman, dan tertukarnya adalah bug senyap. Untuk BATAS
-  // (ekor, margin pertumbuhan) meremehkan ukuran berarti membiarkan permintaan
-  // kebesaran terkirim; untuk PENGHEMATAN meremehkan cuma berarti satu
-  // panggilan smallModel yang mubazir.
-  assert.equal(REAL_BYTES_PER_TOKEN, 4)
-  assert.ok(growthTokens(40_000) > estimateTokens(40_000))
 })
 
 test("ekor mid-turn dibatasi UKURAN, bukan cuma jumlah pesan", () => {
@@ -681,16 +698,6 @@ test("banyak output kecil tidak membesarkan riwayat — prune yang tak menghemat
 
   assert.equal(bytesFreed, 0, "output sekecil ini tidak pantas dipangkas — menggantinya tidak menghemat apa pun")
   assert.equal(JSON.stringify(pruned), before, "riwayat dibiarkan apa adanya, bukan malah dibesarkan")
-})
-
-test("estimateTokens MEREMEHKAN penghematan, tidak melebih-lebihkannya", () => {
-  // Dua arah kesalahan tidak setara: meremehkan berarti satu panggilan
-  // smallModel yang mubazir; melebih-lebihkan berarti melewatkan peringkasan
-  // yang dibutuhkan lalu mengirim permintaan kebesaran — kegagalan yang jadi
-  // alasan seluruh fitur ini dibangun.
-  const realistic = 4 // byte per token pada teks nyata
-  const bytes = 40_000
-  assert.ok(estimateTokens(bytes) < bytes / realistic)
 })
 
 test("potong mid-turn tidak pernah jatuh di pesan tool", () => {

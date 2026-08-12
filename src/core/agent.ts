@@ -374,6 +374,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // `controller.signal` ikut diteruskan: peringkas ini tidak diminta user, jadi
   // satu-satunya jalan keluar dari smallModel yang menggantung adalah `Esc` —
   // dan tanpa sinyal, `Esc` melapor berhasil sementara gilirannya tetap hidup.
+  // Ukuran system prompt, dalam byte — bagian permintaan yang TIDAK ada di
+  // daftar pesan tapi tetap ikut memakan jendela yang sama. `autoCompact`
+  // memerlukannya untuk mengukur permintaan yang akan dikirim; tanpanya
+  // pengukuran itu meremehkan, dan meremehkan ukuran permintaan berarti
+  // mengirim yang kebesaran.
+  const systemBytes = Buffer.byteLength(system)
   const summarise = (system: string, userPrompt: string): Promise<string> =>
     synthesizerFor(
       resolver(config, config.smallModel ?? input.model),
@@ -387,6 +393,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         compaction: config.compaction,
         contextWindow,
         lastStepTokens: lastMeasured,
+        systemBytes,
         summarise,
         focus: text,
       })
@@ -509,6 +516,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             contextWindow,
             lastStepTokens: used,
             arrivedTokens: arrived,
+            systemBytes,
             summarise,
             focus: text,
             midTurn: {
