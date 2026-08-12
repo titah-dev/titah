@@ -13,6 +13,7 @@ import {
   MID_TURN_KEEP,
   midTurnCut,
   overBudget,
+  packChunks,
   planAtCut,
   planCompaction,
   projectedContext,
@@ -511,6 +512,91 @@ test("pemotongan selalu maju: peringkas yang membalas sepanjang bahannya tidak m
   assert.ok(calls > 1, "harus sungguh mencoba memotong")
   assert.ok(calls < 40, `berhenti sendiri, bukan menggantung — ${calls} panggilan`)
   assert.ok(summary.length > 0)
+})
+
+test("batas kedalaman menyatukan SEMUA ringkasan, dan menandai kalau harus memotong", async () => {
+  // Review menemukan ini, dan ia sama beratnya dengan issue #1 sendiri:
+  // fallback batas kedalaman mengambil `packChunks(...)[0]` — potongan PERTAMA —
+  // dan menjatuhkan sisanya tanpa penanda apa pun. Terukur pada versi itu: bahan
+  // 15.908 byte jadi ringkasan 506 byte, `truncated` tidak ada di mana pun, lalu
+  // disimpan dan batas air maju. ~97% riwayat hilang permanen, senyap.
+  //
+  // Peringkas di sini SENGAJA tidak menyusutkan apa pun (balas sepanjang
+  // masukannya), supaya rekursinya pasti mencapai batas kedalaman.
+  const parts = Array.from({ length: 40 }, (_, index) => `user: bagian ${index} ${"a".repeat(380)}`)
+  const summary = await summariseInChunks(
+    async (_system, prompt) => "R".repeat(Math.floor(Buffer.byteLength(prompt) / 2)),
+    parts,
+    1_000,
+  )
+
+  // Yang dijamin: kalau ada yang hilang, penandanya ADA. Itu seluruh perbedaan
+  // antara "model tahu ada yang hilang" dan "model menjawab yakin seolah tidak".
+  assert.match(summary, /truncated/i)
+  // Dan hasilnya tetap dibatasi anggaran, karena ringkasan ini akan ikut di
+  // SETIAP permintaan berikutnya.
+  assert.ok(
+    Buffer.byteLength(summary) <= 1_000,
+    `ringkasan ${Buffer.byteLength(summary)} byte melewati anggaran 1.000`,
+  )
+})
+
+test("jendela peringkas yang TIDAK diketahui berarti jangan dipotong, bukan potongan terkecil", async () => {
+  // Regresi yang review temukan: `summariserWindowFor` mengembalikan 0 kalau
+  // tidak ada satu pun jendela dideklarasikan, `budgetTokens(0, …)` jadi nol,
+  // hasilnya negatif, dan lantai MIN_CHUNK_BYTES memberi 512 byte. Transkrip
+  // 200 KB lalu jadi ~400 panggilan smallModel berurutan — padahal sebelum
+  // pemotongan ada, `/compact` cuma satu panggilan.
+  //
+  // Aturan Titah sendiri yang berlaku di sini: jendela yang tidak dideklarasikan
+  // berarti MATI, bukan ditebak. Untuk pemotongan, "mati" berarti tidak memotong.
+  assert.equal(summariserChunkBytes(undefined, 8192), Number.POSITIVE_INFINITY)
+
+  const parts = Array.from({ length: 200 }, (_, index) => `user: bagian ${index} ${"b".repeat(900)}`)
+  let calls = 0
+  await summariseInChunks(
+    async () => {
+      calls += 1
+      return "RINGKASAN"
+    },
+    parts,
+    summariserChunkBytes(undefined, 8192),
+  )
+  assert.equal(calls, 1, "satu panggilan, persis seperti sebelum pemotongan ada")
+
+  // Jendela yang dideklarasikan tapi mungil tetap dapat lantai, karena potongan
+  // nol berarti pemotongan tidak pernah maju.
+  assert.ok(summariserChunkBytes(64, 0) > 0)
+  assert.ok(summariserChunkBytes(64, 0) < Number.POSITIVE_INFINITY)
+})
+
+test("pemotongan dihitung per BYTE, bukan per karakter", async () => {
+  // Review menemukan `String.prototype.slice` dipakai terhadap anggaran byte.
+  // Terukur: satu bagian 2.000 karakter CJK dengan anggaran 1.000 byte
+  // menghasilkan potongan 2.834 byte — 2,8x. Untuk transkrip non-ASCII prompt
+  // peringkas tetap melewati jendelanya, yaitu luapan yang mau dicegah.
+  const cjk = `user: ${"。".repeat(2_000)}`
+  const [chunk] = packChunks([cjk], 1_000)
+
+  assert.ok(chunk !== undefined)
+  assert.ok(
+    Buffer.byteLength(chunk) <= 1_000,
+    `potongan ${Buffer.byteLength(chunk)} byte melewati anggaran 1.000`,
+  )
+  assert.match(chunk, /truncated/i)
+  // Dan tidak memotong di tengah karakter: tanpa penjagaan itu ujungnya jadi
+  // U+FFFD, yang masuk ke prompt sebagai sampah.
+  assert.doesNotMatch(chunk, /�/)
+})
+
+test("potongan multibyte tetap utuh saat ukurannya tepat di batas", async () => {
+  // Penjaga arah untuk pemotongan per byte: memotong satu byte terlalu jauh
+  // membelah karakter, memotong satu byte terlalu sedikit membuang karakter yang
+  // sebenarnya masih muat.
+  const teks = "。".repeat(10)
+  const utuh = Buffer.byteLength(teks) // 30 byte
+  const [pas] = packChunks([teks], utuh)
+  assert.equal(pas, teks, "yang tepat muat tidak boleh disentuh sama sekali")
 })
 
 // ---------- pruner ----------

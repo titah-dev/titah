@@ -741,6 +741,12 @@ What it does, precisely:
   costs money: measured, at a 28 KB result on an 8k window the request that would
   actually go out was 490 tokens — 6% of the window — while the summariser fired
   on 29 of 30 steps. One ruler now answers both this and "will it fit".
+  The measurement counts the system prompt and the prompt you just typed, both of
+  which ride the request without being in the stored history. What it cannot count
+  is the tool schemas, and a byte-per-token ratio is an estimate: token-dense
+  content (code, CJK, base64) can make the real count a third higher than
+  measured. `reserved` is the headroom that absorbs that, and the trigger — which
+  reads the provider's own number — fires again the next step.
 - Sub-agent results are **exempt** from ordinary pruning. The marker tells the
   model to re-run the tool, which is right for `read` and wrong for `task`:
   recovering a sub-agent's answer costs another full nested turn. Summarisation

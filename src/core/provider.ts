@@ -187,10 +187,16 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
  * `smallModel` yang disetel tapi jendelanya belum dideklarasikan juga mendarat di
  * sini, dan itu yang dilaporkan `smallModelWindowMissing` ke `doctor` — perilaku
  * yang aman, tapi bukan yang user maksud.
+ *
+ * `undefined` kalau TIDAK ADA yang dideklarasikan, bukan `0`. Nol terlihat seperti
+ * angka dan ikut terhitung: ia melewati aritmetika anggaran menjadi negatif, lalu
+ * dijinakkan lantai jadi potongan terkecil yang mungkin — ~400 panggilan
+ * smallModel untuk transkrip 200 KB. `undefined` berarti "tidak diketahui", dan
+ * pemanggilnya memperlakukannya sebagai "jangan potong".
  */
-export function summariserWindowFor(config: Config, turnModel?: string): number {
+export function summariserWindowFor(config: Config, turnModel?: string): number | undefined {
   const small = config.smallModel ? contextWindowFor(config, config.smallModel) : undefined
-  return small ?? contextWindowFor(config, turnModel) ?? 0
+  return small ?? contextWindowFor(config, turnModel)
 }
 
 /**

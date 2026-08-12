@@ -375,12 +375,18 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // `controller.signal` ikut diteruskan: peringkas ini tidak diminta user, jadi
   // satu-satunya jalan keluar dari smallModel yang menggantung adalah `Esc` —
   // dan tanpa sinyal, `Esc` melapor berhasil sementara gilirannya tetap hidup.
-  // Ukuran system prompt, dalam byte — bagian permintaan yang TIDAK ada di
-  // daftar pesan tapi tetap ikut memakan jendela yang sama. `autoCompact`
+  // Bagian permintaan yang TIDAK ada di daftar baris, dalam byte. `autoCompact`
   // memerlukannya untuk mengukur permintaan yang akan dikirim; tanpanya
   // pengukuran itu meremehkan, dan meremehkan ukuran permintaan berarti
   // mengirim yang kebesaran.
-  const systemBytes = Buffer.byteLength(system)
+  //
+  // Dua bagian, bukan satu: system prompt, DAN pesan user giliran ini. Yang
+  // kedua mudah terlewat — `autoCompact` antar-giliran berjalan SEBELUM giliran
+  // ini ditulis jadi baris, jadi ia tidak ada di `current` sama sekali. Sebuah
+  // paste berkas 40 KB sebagai prompt karena itu tidak terlihat oleh keputusan
+  // "masih perlu diringkas?" yang justru diambil karenanya.
+  const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
+  const systemBytes = Buffer.byteLength(system) + messageBytes(userTurn)
   // Jendela yang membatasi prompt PERINGKAS — milik `smallModel` kalau ada.
   // Dihitung di sini, bukan di dalam `autoCompact`, karena resolusi model adalah
   // pengetahuan pemanggil: `autoCompact` hanya menerima angkanya.
@@ -414,7 +420,6 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     const history = listModelMessages(session.id)
-    const userTurn: ModelMessage = skillMessage ?? { role: "user", content: text }
     const messages: ModelMessage[] = [...history, userTurn]
 
     // Berapa pesan giliran ini yang SUDAH tertulis jadi baris. Pemadatan mid-turn
@@ -523,7 +528,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
             contextWindow,
             lastStepTokens: used,
             arrivedTokens: arrived,
-            systemBytes,
+            // System prompt SAJA di sini: mid-turn, pesan user giliran ini sudah
+            // tertulis jadi baris dan ikut di `current`, jadi menyertakannya lagi
+            // berarti menghitungnya dua kali.
+            systemBytes: Buffer.byteLength(system),
             summariserWindow,
             summarise,
             focus: text,

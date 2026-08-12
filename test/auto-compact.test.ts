@@ -359,6 +359,44 @@ test("prune yang CUKUP tidak naik ke peringkasan, walau angka provider terakhir 
   assert.equal(latestCompaction(session.id), undefined)
 })
 
+test("peringkas yang GAGAL tidak mematikan pemangkasan ekor", async () => {
+  // Review menemukan ini. `summariseInChunks` memulangkan string kosong — bukan
+  // melempar — ketika model gagal atau dibatalkan. Di jalur itu `saveCompaction`
+  // tidak dipanggil dan batas air TIDAK maju, jadi permintaan berikutnya masih
+  // memuat seluruh riwayat di atas batas air. Mengukur ekor saja meremehkannya,
+  // `pruneTail` — satu-satunya tuas yang masih tersisa — tidak pernah jalan, dan
+  // permintaan kebesaran berangkat untuk dipotong diam-diam provider.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    // 6 KB teks: di luar jangkauan prune, jadi hanya peringkasan yang bisa
+    // menghilangkannya — dan peringkasan itu yang gagal di test ini.
+    { role: "assistant", content: `catatan ${"z".repeat(6_000)}` },
+    { role: "user", content: "dua" },
+    call("b"),
+    smallResult("b"), // DI DALAM ekor, dan cukup besar untuk bisa diprune
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => "", // gagal, atau dibatalkan lewat Esc
+  })
+
+  // Positif dulu: pemadatan memang menyala dan peringkasannya memang tidak jadi.
+  assert.equal(result.ran, true)
+  assert.equal(result.summarised, false)
+  assert.equal(latestCompaction(session.id), undefined, "tidak ada ringkasan yang disimpan")
+
+  // Inti klaimnya: hasil tool di dalam ekor SUNGGUH dipangkas, karena tanpa
+  // ringkasan permintaannya memang tidak muat.
+  const after = listModelRows(session.id)
+  assert.match(JSON.stringify(after[4]?.message), /output was dropped/)
+  assert.ok(result.prunedBytes > 0)
+})
+
 test("prune yang tidak cukup naik ke peringkasan", async () => {
   const sessionID = seedTextHeavy()
   const prompts: string[] = []

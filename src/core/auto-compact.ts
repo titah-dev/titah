@@ -276,11 +276,20 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   // `doesNotFit`, bukan `needsMore`: setelah semua yang murah dijalankan, hanya
   // ketidakmuatan yang SUNGGUHAN boleh membuang isi ekor.
   //
-  // Diukur atas keadaan SESUDAH peringkasan: ringkasan yang berlaku sekarang
-  // plus ekor yang dipertahankan. Baris sebelum `cut` sudah diwakili ringkasan
-  // itu, jadi menghitungnya lagi berarti membuang isi ekor karena beban yang
-  // sudah tidak ada.
-  if (doesNotFit(summary, current.slice(cut))) pruneTail()
+  // Diukur atas keadaan yang SUNGGUH akan dikirim, dan itu bergantung pada
+  // apakah peringkasan jadi:
+  //
+  //   - Jadi: ringkasan baru plus ekor. Baris sebelum `cut` sudah diwakili
+  //     ringkasan itu, jadi menghitungnya lagi berarti membuang isi ekor karena
+  //     beban yang sudah tidak ada.
+  //   - TIDAK jadi (peringkas gagal atau dibatalkan — `summariseInChunks`
+  //     memulangkan string kosong, bukan melempar): `saveCompaction` tidak
+  //     dipanggil, batas air tidak maju, jadi permintaan berikutnya masih memuat
+  //     SELURUH `current`. Mengukur ekor saja di sini meremehkannya, `pruneTail`
+  //     — satu-satunya tuas yang masih tersisa — tidak pernah jalan, dan
+  //     permintaan kebesaran berangkat untuk dipotong diam-diam provider.
+  const willSend = summarised ? current.slice(cut) : current
+  if (doesNotFit(summary, willSend)) pruneTail()
 
   return done(summarised)
 }

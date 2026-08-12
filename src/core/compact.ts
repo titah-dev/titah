@@ -92,15 +92,25 @@ export function messageBytes(message: ModelMessage): number {
  * pengukuran ini meremehkan permintaan, dan meremehkan ukuran permintaan berarti
  * mengirim yang kebesaran: arah kesalahan yang paling mahal dari semuanya.
  *
- * Yang MASIH tidak terlihat, dan disebut di sini supaya tidak disangka lengkap:
- * definisi tool. Skema tool ikut dikirim tiap permintaan tapi tidak ada di daftar
- * pesan maupun di system prompt, dan merakit ulang skema JSON-nya di sini berarti
- * menebak bentuk yang dihasilkan AI SDK. Akibatnya terbatas dan bukan luapan:
- * pengukuran ini bisa meremehkan beberapa ratus token, sehingga sesekali satu
- * langkah berjalan sebelum peringkasan yang seharusnya sudah terjadi. Ia tidak
- * bisa melewati JENDELA, karena `reserved` masih menyisakan kelapangan di atas
- * anggaran dan pemicunya — yang membaca angka provider yang SUNGGUHAN, termasuk
- * definisi tool — menyala lagi di langkah berikutnya.
+ * Dua hal yang MASIH tidak terlihat, disebut di sini supaya tidak disangka
+ * lengkap — dan yang kedua lebih besar daripada yang pernah tertulis:
+ *
+ *   - **Definisi tool.** Skema tool ikut dikirim tiap permintaan tapi tidak ada
+ *     di daftar pesan maupun di system prompt, dan merakit ulang skema JSON-nya
+ *     di sini berarti menebak bentuk yang dihasilkan AI SDK. Besarnya tetap:
+ *     beberapa ratus token.
+ *   - **Variasi tokenisasi.** Empat byte per token adalah angka TEKS NYATA. Isi
+ *     yang padat token — kode, CJK, base64 — bisa mendarat di 2–3 byte per
+ *     token, jadi pengukuran ini bisa meremehkan 30–50%, bukan "beberapa ratus
+ *     token" seperti yang pernah tertulis di sini. Itu koreksi, bukan nuansa.
+ *
+ * Yang menahan keduanya adalah `reserved`: ia kelapangan di ATAS anggaran, jadi
+ * remeh sampai sekitar sepertiga terserap tanpa permintaan mana pun melewati
+ * jendela. Di atas itu ia bisa melewati jendela, dan satu-satunya pemulihnya
+ * adalah pemicu — yang membaca angka provider SUNGGUHAN, termasuk definisi tool —
+ * menyala lagi di langkah berikutnya. Pengganti yang benar adalah menghitung token
+ * lewat tokenizer provider alih-alih rasio; itu belum ada di Titah, dan sampai ada,
+ * batas ini nyata.
  */
 export function requestTokens(messages: ModelMessage[], extraBytes = 0): number {
   let bytes = extraBytes
@@ -424,7 +434,22 @@ const TRUNCATED = "\n[… this part of the transcript was truncated to fit the s
  */
 const MIN_CHUNK_BYTES = 512
 
-export function summariserChunkBytes(contextWindow: number, reserved: number): number {
+/**
+ * Jendela yang TIDAK diketahui berarti jangan memotong sama sekali.
+ *
+ * Aturan yang sama yang sudah berlaku di `contextWindowFor`: batas yang tidak
+ * dideklarasikan berarti MATI, bukan ditebak. Untuk pemotongan, "mati" berarti
+ * satu panggilan seperti sebelum pemotongan ada.
+ *
+ * Versi pertama memulangkan `0` untuk kasus ini, dan `0` melewati aritmetika di
+ * bawah menjadi angka negatif yang lalu dijinakkan lantai jadi 512 byte —
+ * potongan TERKECIL yang mungkin, bukan tidak memotong. Terukur akibatnya di
+ * jalur `/compact`: transkrip 200 KB jadi ~400 panggilan smallModel berurutan,
+ * pada konfigurasi yang memang didukung (doctor hanya memperingatkan), padahal
+ * sebelum pemotongan ada ia satu panggilan.
+ */
+export function summariserChunkBytes(contextWindow: number | undefined, reserved: number): number {
+  if (contextWindow === undefined) return Number.POSITIVE_INFINITY
   const overhead = Buffer.byteLength(COMPACT_SYSTEM) + Buffer.byteLength(compactPrompt(""))
   const bytes = budgetTokens(contextWindow, reserved) * REAL_BYTES_PER_TOKEN - overhead
   return Math.max(MIN_CHUNK_BYTES, bytes)
@@ -439,6 +464,26 @@ export function summariserChunkBytes(contextWindow: number, reserved: number): n
  * pernah minta, jadi ia bahkan tidak akan tahu harus menekan Esc.
  */
 const MAX_CHUNK_ROUNDS = 3
+
+/**
+ * Memotong teks ke `limit` BYTE, tanpa membelah karakter multibyte.
+ *
+ * `String.prototype.slice` memotong per code unit UTF-16, dan seluruh anggaran di
+ * berkas ini dalam byte. Terukur pada versi yang memakai `slice`: satu bagian
+ * 2.000 karakter CJK dengan anggaran 1.000 byte menghasilkan potongan 2.834 byte
+ * — 2,8x. Untuk transkrip non-ASCII prompt peringkas jadi tetap melewati
+ * jendelanya, yaitu luapan yang justru mau dicegah.
+ *
+ * Karakter yang terbelah di ujung didekode `TextDecoder` menjadi U+FFFD; itu
+ * dibuang, bukan dibiarkan masuk ke prompt sebagai sampah.
+ */
+export function sliceBytes(text: string, limit: number): string {
+  if (limit <= 0) return ""
+  if (Buffer.byteLength(text) <= limit) return text
+  let out = new TextDecoder().decode(Buffer.from(text, "utf8").subarray(0, limit))
+  while (out.endsWith("�")) out = out.slice(0, -1)
+  return out
+}
 
 /** Memaketkan bagian transkrip jadi potongan yang tiap potongnya muat. */
 export function packChunks(parts: string[], chunkBytes: number): string[] {
@@ -461,7 +506,7 @@ export function packChunks(parts: string[], chunkBytes: number): string[] {
     // keduanya terpotong.
     if (size > limit) {
       flush()
-      chunks.push(part.slice(0, Math.max(0, limit - Buffer.byteLength(TRUNCATED))) + TRUNCATED)
+      chunks.push(sliceBytes(part, limit - Buffer.byteLength(TRUNCATED)) + TRUNCATED)
       continue
     }
     if (bytes > 0 && bytes + size > limit) flush()
@@ -527,10 +572,22 @@ export async function summariseInChunks(
   }
 
   if (round + 1 >= MAX_CHUNK_ROUNDS) {
-    // Batas kedalaman tercapai: satukan apa adanya, dipotong eksplisit. Lebih
-    // baik ringkasan yang jelas-jelas terpotong daripada giliran yang tidak
-    // pernah selesai.
-    return packChunks(summaries, chunkBytes)[0] as string
+    // Batas kedalaman tercapai: satukan SEMUA ringkasan, lalu potong ke anggaran
+    // dengan penanda kalau memang harus memotong.
+    //
+    // Versi pertama mengambil `packChunks(...)[0]` — potongan PERTAMA — dan
+    // menjatuhkan sisanya. Terukur: bahan 15.908 byte jadi ringkasan 506 byte,
+    // tanpa satu pun penanda, lalu disimpan sementara batas air maju. Sekitar
+    // 97% riwayat hilang permanen, senyap — persis kegagalan yang seluruh berkas
+    // ini ada untuk mencegah, dan komentarnya sendiri menjanjikan "dipotong
+    // eksplisit" yang tidak pernah terjadi.
+    //
+    // Dibatasi anggaran, bukan dibiarkan sepanjang apa adanya: ringkasan ini
+    // ikut di SETIAP permintaan berikutnya, jadi ringkasan yang tidak dibatasi
+    // adalah masalah konteks yang kedua.
+    const joined = summaries.join("\n\n")
+    if (Buffer.byteLength(joined) <= chunkBytes) return joined
+    return sliceBytes(joined, chunkBytes - Buffer.byteLength(TRUNCATED)) + TRUNCATED
   }
   return summariseInChunks(summarise, summaries, chunkBytes, focus, round + 1)
 }

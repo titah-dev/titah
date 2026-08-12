@@ -680,6 +680,33 @@ test("ambang membaca usage.context (langkah TERAKHIR), bukan usage.input (jumlah
   assert.equal(latestCompaction(session.id), undefined)
 })
 
+test("prompt giliran ini ikut terukur, walau belum tertulis jadi baris", async () => {
+  // Review menemukan ini: `autoCompact` antar-giliran berjalan SEBELUM giliran
+  // ini ditulis jadi baris, jadi pesan user-nya tidak ada di `current` sama
+  // sekali. Sebuah paste berkas 30 KB sebagai prompt karena itu tidak terlihat
+  // oleh keputusan "masih perlu diringkas?" yang justru diambil karenanya.
+  //
+  // Riwayatnya SENGAJA kecil: satu-satunya yang bisa membawa permintaan ini di
+  // atas anggaran adalah prompt giliran dua. Kalau ia tidak ikut terhitung, tidak
+  // ada ringkasan yang tersimpan sama sekali.
+  const dir = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
+  const session = createSession(dir)
+
+  recordingModel([textChunk("jawaban", usageWith(7800))])
+  await prompt({ sessionID: session.id, text: "pendek" })
+
+  // Positif dulu: giliran satu memang tidak memadatkan apa pun — riwayatnya
+  // kecil, jadi tidak ada yang bisa dituduhkan ke giliran ini nanti.
+  assert.equal(latestCompaction(session.id), undefined)
+
+  await prompt({ sessionID: session.id, text: bulky("paste berkas besar") })
+
+  assert.ok(
+    latestCompaction(session.id),
+    "prompt 30 KB itu sendiri yang melewati anggaran, dan harus terhitung",
+  )
+})
+
 test("giliran ketiga TIDAK meringkas lagi setelah giliran kedua memadatkan", async () => {
   // Kalau angka pra-pemadatan disimpan alih-alih dibaca ulang tiap giliran,
   // sesi akan memadatkan berulang-ulang tanpa kemajuan — terlihat seperti model

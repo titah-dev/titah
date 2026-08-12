@@ -200,6 +200,37 @@ Per fix, test first, then the code.
 Failure injection for #3 uses a message whose `JSON.stringify` throws (a
 `BigInt`) — deterministic, and no mocking of the database.
 
+## Review round, 2026-08-12
+
+`/code-review` on PR #6 found six defects in this cycle's own work. Four were
+outright bugs, two of which were as severe as the issues this cycle set out to
+close, and none of them failed a test — the same pattern that produced #1–#4 in
+the first place. All six are fixed on the branch; three were reproduced with
+independent measurements before being accepted.
+
+| # | Where | What |
+|---|---|---|
+| R1 | `compact.ts` depth-limit fallback | Took `packChunks(...)[0]` — the **first** chunk — and dropped the rest with no marker. Measured: 15,908 bytes of material became a 506-byte summary, no `truncated` anywhere, then saved while the watermark advanced. ~97% of history lost permanently, silently. Now joins every chunk summary and marks the cut. |
+| R2 | `summariserWindowFor` returning `0` | An undeclared window fell through the budget arithmetic to a negative number, which the `MIN_CHUNK_BYTES` floor tamed into the **smallest possible chunk**. Measured: `summariserChunkBytes(0, 8192) === 512`, so a 200 KB transcript on `/compact` became ~400 sequential `smallModel` calls where it used to be one. Now `undefined` means don't chunk — the same rule `contextWindowFor` already follows. |
+| R3 | `doesNotFit` after a failed summarisation | `summariseInChunks` returns empty rather than throwing, so nothing is saved and the watermark does not move — yet the fit check measured only the tail. `pruneTail`, the one lever left, never ran. Now the measured set depends on whether summarisation actually happened. |
+| R4 | `packChunks` truncation | `String.prototype.slice` (UTF-16 code units) against a **byte** budget. Measured: 2,000 CJK characters with a 1,000-byte budget produced 2,834 bytes — 2.8×. `sliceBytes` truncates by bytes without splitting a character. |
+| R5 | `measure()` between turns | The pending user message is not in the rows yet, so a 40 KB paste was invisible to the decision it should have driven. Now counted. |
+| R6 | The `requestTokens` limit, as documented | The claim that under-counting is bounded by "a few hundred tokens" was **wrong**: token-dense content (code, CJK, base64) lands at 2–3 bytes per token, so the estimate can be 30–50% low. Corrected in the code, the commit message, and the PR body. |
+
+**R6 is a documented limit, not a fix.** `reserved` is headroom above the budget,
+so an under-count of roughly a third is absorbed without any request passing the
+window; beyond that it can pass, and the only recovery is the trigger — which
+reads the provider's real number — firing again the next step. The correct
+replacement is counting tokens with the provider's tokenizer instead of a ratio.
+Titah has no such path today, and until it does, this limit is real.
+
+**What R1, R2 and R4 have in common** is worth naming: all three are in the
+chunking code added for #1, and all three were the *bounding* logic itself
+failing to bound. A guard is the last place where "it looks right" should be
+accepted, and the tests written for #1 checked that chunking *happened* rather
+than that its output was whole and within budget. The new tests assert the
+output.
+
 ## Out of scope
 
 Intent state (#5) — its own design. The gap-analysis backlog (MCP, web tools,
