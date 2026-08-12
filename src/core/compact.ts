@@ -97,6 +97,8 @@ export function messageBytes(message: ModelMessage): number {
  * pesan maupun di system prompt, dan merakit ulang skema JSON-nya di sini berarti
  * menebak bentuk yang dihasilkan AI SDK. Akibatnya terbatas dan bukan luapan:
  * pengukuran ini bisa meremehkan beberapa ratus token, sehingga sesekali satu
+ * langkah berjalan sebelum peringkasan yang seharusnya sudah terjadi. Ia tidak
+ * bisa melewati JENDELA, karena `reserved` masih menyisakan kelapangan di atas
  * anggaran dan pemicunya — yang membaca angka provider yang SUNGGUHAN, termasuk
  * definisi tool — menyala lagi di langkah berikutnya.
  */
@@ -395,6 +397,142 @@ export function compactPrompt(transcript: string, focus?: string): string {
     ? `\n\nThe user asked you to pay particular attention to: ${focus.trim()}\nKeep that material in full detail. Summarise the rest normally — do not drop it.`
     : ""
   return `Here is the session transcript to compress.\n\n<transcript>\n${transcript}\n</transcript>${instruction}`
+}
+
+/**
+ * Penanda pemotongan yang EKSPLISIT.
+ *
+ * Satu pesan yang sendirian lebih besar dari jendela peringkas tetap harus
+ * dipotong — bedanya, dipotong di sini dan diberi tahu, bukan dipotong provider
+ * tanpa jejak. Itu seluruh perbedaan antara "ada yang hilang, dan model tahu"
+ * dengan "ada yang hilang, dan model menjawab yakin seolah tidak".
+ */
+const TRUNCATED = "\n[… this part of the transcript was truncated to fit the summariser's window …]"
+
+/**
+ * Anggaran satu potongan transkrip untuk peringkas, dalam byte.
+ *
+ * Dikurangi instruksi peringkas dan teks pembungkus `compactPrompt`: keduanya
+ * ikut memakan jendela yang sama dengan transkripnya. Anggaran yang mengabaikan
+ * itu tetap meluap, dan itu versi naif dari perbaikan ini.
+ *
+ * Lantai `MIN_CHUNK_BYTES` bukan kehati-hatian: potongan nol atau negatif berarti
+ * pemotongan tidak pernah maju, dan giliran menggantung selamanya di jalur yang
+ * user tidak pernah minta. Kalau jendelanya sungguh lebih kecil dari instruksinya
+ * sendiri, tidak ada anggaran yang bisa menolong — yang bisa dilakukan hanyalah
+ * memotong sekecil mungkin dan tetap bergerak.
+ */
+const MIN_CHUNK_BYTES = 512
+
+export function summariserChunkBytes(contextWindow: number, reserved: number): number {
+  const overhead = Buffer.byteLength(COMPACT_SYSTEM) + Buffer.byteLength(compactPrompt(""))
+  const bytes = budgetTokens(contextWindow, reserved) * REAL_BYTES_PER_TOKEN - overhead
+  return Math.max(MIN_CHUNK_BYTES, bytes)
+}
+
+/**
+ * Berapa kali paling banyak "ringkas ringkasannya" boleh berulang.
+ *
+ * Rekursinya hanya menyelesaikan sesuatu kalau hasilnya MENYUSUT. Peringkas yang
+ * membalas sepanjang bahannya adalah kejadian nyata pada model kecil yang
+ * bingung, dan tanpa batas ini giliran menggantung — di jalur yang user tidak
+ * pernah minta, jadi ia bahkan tidak akan tahu harus menekan Esc.
+ */
+const MAX_CHUNK_ROUNDS = 3
+
+/** Memaketkan bagian transkrip jadi potongan yang tiap potongnya muat. */
+export function packChunks(parts: string[], chunkBytes: number): string[] {
+  const limit = Math.max(MIN_CHUNK_BYTES, chunkBytes)
+  const chunks: string[] = []
+  let current: string[] = []
+  let bytes = 0
+
+  const flush = (): void => {
+    if (current.length === 0) return
+    chunks.push(current.join("\n\n"))
+    current = []
+    bytes = 0
+  }
+
+  for (const part of parts) {
+    const size = Buffer.byteLength(part)
+    // Satu bagian yang sendirian tidak muat: ia potongannya sendiri, dipotong
+    // eksplisit. Memaksanya berbagi potongan dengan bagian lain cuma membuat
+    // keduanya terpotong.
+    if (size > limit) {
+      flush()
+      chunks.push(part.slice(0, Math.max(0, limit - Buffer.byteLength(TRUNCATED))) + TRUNCATED)
+      continue
+    }
+    if (bytes > 0 && bytes + size > limit) flush()
+    current.push(part)
+    bytes += size
+  }
+  flush()
+  return chunks
+}
+
+/**
+ * Meringkas transkrip yang mungkin JAUH lebih besar dari jendela peringkas.
+ *
+ * Ini perbaikan issue #1, dan satu-satunya pintu masuk ke peringkas: `/compact`
+ * maupun jalur otomatis melewati fungsi yang sama, supaya keduanya tidak bisa
+ * berbeda perilaku. Sebelum ini prompt peringkas tidak dibatasi apa pun —
+ * terukur 78.964 token pada smallModel yang menyatakan jendela 4096, dan
+ * provider tidak menolaknya melainkan memotong bagian paling awal, lalu
+ * peringkas menulis ringkasan yang yakin tentang bahan yang tidak dilihatnya.
+ *
+ * Panggilan dibuat BERURUTAN, bukan paralel: paralel menggandakan beban model
+ * kecil sekaligus membuat pembatalan lewat Esc lebih sulit dihormati, dan tidak
+ * ada urutan yang bisa dipercepat di sini — hasilnya toh disatukan.
+ *
+ * `focus` dipasang di panggilan TERAKHIR juga, bukan cuma per potongan: yang
+ * dibaca model adalah ringkasan akhir, dan fokus yang hanya hidup di potongan
+ * bisa hilang justru saat ringkasan-ringkasan itu diringkas lagi.
+ */
+export async function summariseInChunks(
+  summarise: (system: string, prompt: string) => Promise<string>,
+  parts: string[],
+  chunkBytes: number,
+  focus?: string,
+  round = 0,
+): Promise<string> {
+  const chunks = packChunks(parts, chunkBytes)
+  if (chunks.length === 0) return ""
+  if (chunks.length === 1) {
+    return summarise(COMPACT_SYSTEM, compactPrompt(chunks[0] as string, focus))
+  }
+
+  const summaries: string[] = []
+  for (const chunk of chunks) {
+    const written = await summarise(COMPACT_SYSTEM, compactPrompt(chunk, focus))
+    // SATU potongan kosong menghentikan semuanya, dan mengembalikan kosong.
+    //
+    // Dua alasan, dan keduanya menolak "lewati saja yang gagal":
+    //
+    //   - Melewatinya berarti ringkasan yang diam-diam kehilangan satu bagian
+    //     transkrip, lalu disimpan seolah utuh. Itu PERSIS kegagalan yang
+    //     seluruh fitur ini ada untuk mencegah — ringkasan yang yakin tentang
+    //     bahan yang tidak pernah dilihatnya. Kosong jauh lebih baik: pemanggil
+    //     membiarkan riwayat lama apa adanya.
+    //   - `synthesizerFor` mengembalikan string kosong, bukan melempar, ketika
+    //     model gagal ATAU dibatalkan (streamText meneruskan error ke `onError`).
+    //     Melanjutkan sesudah pembatalan berarti memanggil model dengan signal
+    //     yang SUDAH abort — dan pendengar `abort` di sana tidak akan menyala
+    //     lagi, jadi panggilan itu menggantung selamanya. Terukur: satu giliran
+    //     tergantung 20 detik sampai test-nya menyerah, di jalur yang user tidak
+    //     pernah minta.
+    if (written.trim() === "") return ""
+    summaries.push(written)
+  }
+
+  if (round + 1 >= MAX_CHUNK_ROUNDS) {
+    // Batas kedalaman tercapai: satukan apa adanya, dipotong eksplisit. Lebih
+    // baik ringkasan yang jelas-jelas terpotong daripada giliran yang tidak
+    // pernah selesai.
+    return packChunks(summaries, chunkBytes)[0] as string
+  }
+  return summariseInChunks(summarise, summaries, chunkBytes, focus, round + 1)
 }
 
 /** Membungkus ringkasan supaya model tahu ini catatan, bukan ucapan user. */

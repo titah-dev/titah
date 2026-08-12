@@ -1,15 +1,14 @@
 import type { ModelMessage } from "ai"
 import {
-  COMPACT_SYSTEM,
-  compactPrompt,
-  growthTokens,
   midTurnCut,
   overBudget,
   planAtCut,
   projectedContext,
   pruneToolOutputs,
+  renderMessage,
   requestTokens,
-  renderTranscript,
+  summariseInChunks,
+  summariserChunkBytes,
   tailStart,
   wrapSummary,
 } from "./compact.ts"
@@ -50,6 +49,19 @@ export interface AutoCompactInput {
    * mekanisme yang bisa menjangkau hasil itu — tidak pernah dijalankan.
    */
   arrivedTokens?: number
+  /**
+   * Jendela konteks PERINGKAS, kalau berbeda dari jendela model giliran.
+   *
+   * Prompt peringkas dibatasi jendela model yang MENULIS ringkasan — `smallModel`
+   * — bukan jendela model yang sedang menjalankan giliran. Tanpa ini, prompt itu
+   * tidak dibatasi apa pun: terukur 78.964 token pada smallModel yang menyatakan
+   * jendela 4096, dan provider memotongnya diam-diam alih-alih menolak.
+   *
+   * Tidak dinyatakan berarti "pakai jendela model giliran". Itu bukan tebakan:
+   * `smallModel` yang tidak disetel berarti model giliran SENDIRI yang meringkas,
+   * dan `titah doctor` menyebut `smallModel` yang jendelanya belum dideklarasikan.
+   */
+  summariserWindow?: number
   /**
    * Ukuran bagian permintaan yang TIDAK ada di daftar pesan, dalam byte —
    * praktisnya system prompt.
@@ -224,12 +236,31 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
   if (plan.dropped.length > 0) {
     // Ringkasan sebelumnya ikut diringkas ulang, bukan ditumpuk — menumpuk
     // membuat ringkasan tumbuh tanpa batas, persis masalah yang mau dipecahkan.
-    const droppedText = renderTranscript(plan.dropped)
-    const source = previous ? `${previous.summary}\n\n${droppedText}` : droppedText
+    //
+    // Dipecah per PESAN, bukan diserahkan sebagai satu string: itu satuan yang
+    // `packChunks` pakai untuk memotong tanpa membelah sebuah pesan di tengah.
+    const parts = [
+      ...(previous ? [previous.summary] : []),
+      ...plan.dropped.map((message) => renderMessage(message)),
+    ]
 
-    const summary = await input.summarise(COMPACT_SYSTEM, compactPrompt(source, input.focus))
-    if (summary.trim() !== "") {
-      saveCompaction(sessionID, plan.watermark, wrapSummary(summary))
+    // Jendela PERINGKAS, bukan jendela model giliran: sejak `/compact` dan jalur
+    // otomatis sama-sama memakai `smallModel`, jendela yang membatasi prompt
+    // peringkas adalah milik model kecil itu. Kalau pemanggil tidak
+    // menyatakannya, jendela model giliran dipakai — bukan tebakan, melainkan
+    // angka yang toh sudah wajib ada agar pemadatan otomatis hidup sama sekali.
+    const written = await summariseInChunks(
+      input.summarise,
+      parts,
+      summariserChunkBytes(
+        input.summariserWindow ?? input.contextWindow ?? 0,
+        compaction.reserved,
+      ),
+      input.focus,
+    )
+    if (written.trim() !== "") {
+      summary = wrapSummary(written)
+      saveCompaction(sessionID, plan.watermark, summary)
       summarised = true
     }
   }

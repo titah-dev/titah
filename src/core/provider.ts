@@ -173,6 +173,39 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
   return config.provider[providerId]?.models[modelId]?.contextWindow
 }
 
+/**
+ * Jendela yang membatasi prompt PERINGKAS.
+ *
+ * Peringkas ditulis `smallModel` kalau ada, jadi jendelanya yang berlaku — bukan
+ * jendela model giliran. Ini yang membuat prompt peringkas bisa dibatasi sama
+ * sekali: sebelumnya tidak ada satu pun pemanggil `contextWindowFor` untuk
+ * `smallModel`, dan promptnya terukur 19,3x jendela yang ia nyatakan sendiri.
+ *
+ * Urutannya: jendela `smallModel`, lalu jendela model giliran. Yang kedua bukan
+ * tebakan — kalau `smallModel` tidak disetel, model giliran SENDIRI yang
+ * meringkas, dan angkanya toh sudah wajib ada agar pemadatan otomatis hidup.
+ * `smallModel` yang disetel tapi jendelanya belum dideklarasikan juga mendarat di
+ * sini, dan itu yang dilaporkan `smallModelWindowMissing` ke `doctor` — perilaku
+ * yang aman, tapi bukan yang user maksud.
+ */
+export function summariserWindowFor(config: Config, turnModel?: string): number {
+  const small = config.smallModel ? contextWindowFor(config, config.smallModel) : undefined
+  return small ?? contextWindowFor(config, turnModel) ?? 0
+}
+
+/**
+ * `smallModel` yang disetel tapi jendelanya belum dideklarasikan.
+ *
+ * Batas prompt peringkas tidak bisa ditegakkan pada angka yang tidak ada, jadi
+ * ia jatuh ke jendela model giliran — lebih longgar dari yang user maksud, dan
+ * satu-satunya cara ia bisa tahu adalah kalau ada yang menyebutkannya.
+ */
+export function smallModelWindowMissing(config: Config): string | undefined {
+  const small = config.smallModel
+  if (small === undefined) return undefined
+  return contextWindowFor(config, small) === undefined ? small : undefined
+}
+
 /** Model yang dikonfigurasi tapi belum punya `contextWindow`, untuk dilaporkan `doctor`. */
 export function undeclaredContextWindows(config: Config): string[] {
   const out: string[] = []

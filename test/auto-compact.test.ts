@@ -361,7 +361,7 @@ test("prune yang CUKUP tidak naik ke peringkasan, walau angka provider terakhir 
 
 test("prune yang tidak cukup naik ke peringkasan", async () => {
   const sessionID = seedTextHeavy()
-  let called = 0
+  const prompts: string[] = []
 
   const result = await autoCompact({
     sessionID,
@@ -369,22 +369,28 @@ test("prune yang tidak cukup naik ke peringkasan", async () => {
     contextWindow: 1000,
     lastStepTokens: 999_999, // jauh di atas apa pun yang bisa dibebaskan prune
     summarise: async (system, prompt) => {
-      called += 1
+      prompts.push(prompt)
       assert.match(system, /compress a coding session/)
-      assert.match(prompt, /giliran satu/)
-      // Positif dulu: isi ASLI hasil tool (20.000 karakter "x", dipotong 400
-      // oleh renderMessage) memang ada di transkrip yang dikirim ke peringkas.
-      assert.match(prompt, /x{100,}/)
       // Baru negatif: bukan penanda yang tersimpan ke BARIS setelah prune.
       // `planAtCut` harus dijalankan atas `rows` dari SEBELUM prune menimpa
       // database — meringkas dari penanda berarti kehilangan detail yang
-      // sama dua kali (sekali oleh prune, sekali oleh peringkas).
+      // sama dua kali (sekali oleh prune, sekali oleh peringkas). Diperiksa
+      // per prompt, karena tidak satu pun potongan boleh memuatnya.
       assert.doesNotMatch(prompt, /output was dropped/)
       return "RINGKASAN"
     },
   })
 
-  assert.equal(called, 1)
+  // Diperiksa atas GABUNGAN prompt, bukan prompt pertama: sejak issue #1
+  // transkrip yang lebih besar dari jendela peringkas dikirim BERPOTONG, jadi
+  // "bahannya sampai ke peringkas" berarti sampai di salah satu potongan.
+  const joined = prompts.join("\n")
+  assert.ok(prompts.length > 0, "peringkas harus dipanggil")
+  assert.match(joined, /giliran satu/)
+  // Positif: isi ASLI hasil tool (20.000 karakter "x", dipotong 400 oleh
+  // renderMessage) memang ada di transkrip yang dikirim ke peringkas.
+  assert.match(joined, /x{100,}/)
+
   assert.equal(result.summarised, true)
   assert.equal(latestCompaction(sessionID)?.summary.includes("RINGKASAN"), true)
 
@@ -482,14 +488,18 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
   assert.equal(before[3]?.seq, 3)
   assert.match(JSON.stringify(before[3]?.message), /x{100,}/)
 
-  let capturedPrompt = ""
+  // SEMUA prompt, bukan yang terakhir: sejak issue #1 transkrip yang lebih besar
+  // dari jendela peringkas dikirim berpotong, dan prompt terakhir adalah
+  // "ringkas ringkasannya" — memeriksa hanya itu berarti memeriksa ringkasan,
+  // bukan bahan yang dikirim.
+  const prompts: string[] = []
   const result = await autoCompact({
     sessionID: session.id,
     compaction: CONFIG,
     contextWindow: 1000,
     lastStepTokens: 999_999,
     summarise: async (_system, prompt) => {
-      capturedPrompt = prompt
+      prompts.push(prompt)
       return "RINGKASAN BARU"
     },
   })
@@ -509,11 +519,14 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
 
   // Ringkasan lama ikut dilipat ke sumber ringkasan baru, bukan ditumpuk
   // terpisah — dan materi giliran yang BARU (belum diringkas) memang masuk.
+  const capturedPrompt = prompts.join("\n")
+  assert.ok(prompts.length > 0, "peringkas harus dipanggil")
   assert.match(capturedPrompt, /RINGKASAN LAMA/)
   assert.match(capturedPrompt, /selesai satu/)
   // Baru negatif: materi yang SUDAH ada di belakang batas air tidak
   // diringkas ulang — kalau ia diikutkan lagi, ringkasan membesar tanpa henti.
-  assert.doesNotMatch(capturedPrompt, /purba satu/)
+  // Per prompt, bukan gabungan: tidak SATU pun potongan boleh memuatnya.
+  for (const one of prompts) assert.doesNotMatch(one, /purba satu/)
   assert.doesNotMatch(capturedPrompt, /balasan purba/)
 
   assert.equal(latestCompaction(session.id)?.summary.includes("RINGKASAN BARU"), true)

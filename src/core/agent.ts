@@ -5,21 +5,22 @@ import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { contextWindowFor, resolveModel } from "./provider.ts"
+import { contextWindowFor, resolveModel, summariserWindowFor } from "./provider.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
 import { runConsensus, synthesizerFor } from "./consensus.ts"
 import {
-  COMPACT_SYSTEM,
-  compactPrompt,
   growthTokens,
   messageBytes,
   MID_TURN_KEEP,
   overBudget,
   planCompaction,
   projectedContext,
+  renderMessage,
   renderTranscript,
+  summariseInChunks,
+  summariserChunkBytes,
   tailBudgetBytes,
   wrapSummary,
 } from "./compact.ts"
@@ -380,6 +381,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // pengukuran itu meremehkan, dan meremehkan ukuran permintaan berarti
   // mengirim yang kebesaran.
   const systemBytes = Buffer.byteLength(system)
+  // Jendela yang membatasi prompt PERINGKAS — milik `smallModel` kalau ada.
+  // Dihitung di sini, bukan di dalam `autoCompact`, karena resolusi model adalah
+  // pengetahuan pemanggil: `autoCompact` hanya menerima angkanya.
+  const summariserWindow = summariserWindowFor(config, modelID)
+
   const summarise = (system: string, userPrompt: string): Promise<string> =>
     synthesizerFor(
       resolver(config, config.smallModel ?? input.model),
@@ -394,6 +400,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         contextWindow,
         lastStepTokens: lastMeasured,
         systemBytes,
+        summariserWindow,
         summarise,
         focus: text,
       })
@@ -517,6 +524,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             lastStepTokens: used,
             arrivedTokens: arrived,
             systemBytes,
+            summariserWindow,
             summarise,
             focus: text,
             midTurn: {
@@ -977,6 +985,12 @@ async function compactTurn(
     const source = previous
       ? `${previous.summary}\n\n${renderTranscript(plan.dropped)}`
       : renderTranscript(plan.dropped)
+    // Dipecah per PESAN untuk peringkasnya, sementara `source` di atas tetap
+    // dipakai untuk melaporkan ukuran sebelum/sesudah ke user.
+    const parts = [
+      ...(previous ? [previous.summary] : []),
+      ...plan.dropped.map((message) => renderMessage(message)),
+    ]
 
     // `smallModel ?? input.model` — pilihan model yang SAMA dengan pemadatan
     // otomatis. Operasinya identik (instruksi, prompt, dan pembungkusnya sama
@@ -987,7 +1001,17 @@ async function compactTurn(
       resolver(config, config.smallModel ?? input.model),
       controller.signal,
     )
-    const summary = await summarise(COMPACT_SYSTEM, compactPrompt(source, focus))
+    // Lewat `summariseInChunks`, sama dengan jalur otomatis: prompt peringkas
+    // dibatasi jendela model yang MENULIS ringkasan. Jalur ini justru yang
+    // paparannya paling lebar — memindahkan `/compact` ke `smallModel` membuat
+    // transkrip sebesar jendela model giliran dikirim ke model yang jendelanya
+    // bisa jauh lebih kecil.
+    const summary = await summariseInChunks(
+      summarise,
+      parts,
+      summariserChunkBytes(summariserWindowFor(config, input.model), config.compaction.reserved),
+      focus,
+    )
 
     if (summary.trim() === "") throw new AgentError("The model returned an empty summary.")
 
