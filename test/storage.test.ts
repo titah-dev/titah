@@ -154,6 +154,38 @@ test("riwayat format AI SDK disimpan terpisah dan urut", () => {
   assert.equal(history[2]?.content, "tiga")
 })
 
+test("flush yang gagal di tengah tidak meninggalkan baris separuh, dan tidak menggandakan riwayat", () => {
+  const session = createSession("/proyek/flush-gagal")
+  appendModelMessages(session.id, [{ role: "user", content: "giliran satu" }])
+
+  // Pesan yang JSON.stringify-nya MELEMPAR: BigInt tidak bisa diserialisasi.
+  // Ini menyuntikkan kegagalan persis di tengah loop — pesan pertama sudah
+  // di-insert, pesan kedua melempar — tanpa perlu memalsukan database.
+  const beracun = [
+    { role: "user", content: "giliran dua, bagian pertama" },
+    { role: "user", content: { toJSON: () => 1n } },
+  ] as unknown as Parameters<typeof appendModelMessages>[1]
+
+  assert.throws(() => appendModelMessages(session.id, beracun))
+
+  // Yang penting BUKAN sekadar "yang beracun tidak tersimpan", melainkan bahwa
+  // bagian pertamanya juga tidak: separuh tertulis adalah keadaan yang membuat
+  // penulisan akhir-giliran menggandakan riwayat, dan PRIMARY KEY (session_id,
+  // seq) tidak menangkapnya karena nextSeq = MAX(seq) + 1.
+  assert.equal(listModelRows(session.id).length, 1)
+
+  // Penulisan akhir-giliran sesudah flush yang gagal: mengirim ulang giliran
+  // yang sama, karena offset `flushed` pemanggil memang tidak pernah maju.
+  appendModelMessages(session.id, [{ role: "user", content: "giliran dua, bagian pertama" }])
+
+  const isi = listModelRows(session.id).map((row) => row.message.content)
+  assert.deepEqual(isi, ["giliran satu", "giliran dua, bagian pertama"])
+  // Tidak ada pesan berdampingan yang sama — inilah bentuk penggandaannya.
+  for (const [index, pesan] of isi.entries()) {
+    if (index > 0) assert.notEqual(pesan, isi[index - 1])
+  }
+})
+
 test("menghapus sesi ikut menghapus pesannya (foreign key ON DELETE CASCADE)", () => {
   const session = createSession("/proyek/hapus")
   createMessage(session.id, "user", [{ type: "text", text: "halo" }])
