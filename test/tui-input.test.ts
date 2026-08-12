@@ -149,6 +149,43 @@ async function tick(times = 4): Promise<void> {
   for (let i = 0; i < times; i += 1) await new Promise((resolve) => setTimeout(resolve, 15))
 }
 
+/**
+ * Menunggu sampai KONDISI-nya terpenuhi, bukan sampai durasi tertentu habis.
+ *
+ * `tick()` menunggu 4 × 15 ms dan berharap itu cukup. Di mesin idle memang cukup;
+ * di bawah kontensi CPU tidak selalu — dan kegagalannya senyap serta acak. Terukur
+ * di berkas ini: satu kegagalan dalam 24 kali menjalankan suite penuh dengan beban
+ * satu proses per core, pada `ctrl+x d memperlihatkan rincian tool yang MASIH
+ * berjalan`. Frame yang terbaca saat itu masih memperlihatkan `● ctrl+x …` di
+ * footer — leader-nya menyala, artinya tombol KEDUA belum sempat diproses. Bukan
+ * render yang tertinggal, dan bukan bug produk: test-nya yang melihat terlalu dini.
+ *
+ * Menaikkan angka 15 ms cuma memindahkan ambangnya dan memperlambat 263 pemakaian
+ * `tick()` yang lain. Menunggu kondisinya menghapus kelas kegagalan itu DAN lebih
+ * cepat: ia berhenti begitu polanya muncul, biasanya jauh di bawah 60 ms.
+ *
+ * Kalau deadline-nya lewat, `assert.match` yang melaporkan — dengan frame apa
+ * adanya, jadi diagnosanya persis sama informatifnya dengan sebelumnya.
+ *
+ * Dipakai di SATU tempat untuk saat ini, yaitu satu-satunya yang terbukti flake.
+ * 262 pemakaian `tick()` lain punya risiko laten yang sama; kalau salah satunya
+ * menyusul, ini polanya — bukan angka 15 yang dinaikkan.
+ */
+async function frameEventually(
+  h: Harness,
+  pattern: RegExp,
+  message: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let frame = h.frame()
+  while (!pattern.test(frame) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    frame = h.frame()
+  }
+  assert.match(frame, pattern, message)
+}
+
 interface Harness {
   stdin: FakeStdin
   /** Klik/roda mouse, disuntik langsung tanpa terminal sungguhan. */
@@ -1008,9 +1045,11 @@ test("ctrl+x d memperlihatkan rincian tool yang MASIH berjalan", async () => {
     h.stdin.press("\u0018")
     await tick(1)
     h.stdin.press("d")
-    await tick()
 
-    assert.match(h.frame(), /npm run build/, "argumennya terlihat tanpa menunggu selesai")
+    // Menunggu KONDISI, bukan durasi: `await tick()` di sini pernah membaca frame
+    // saat leader `ctrl+x` masih menyala — tombol `d` belum diproses — dan
+    // gagal secara acak. Lihat `frameEventually`.
+    await frameEventually(h, /npm run build/, "argumennya terlihat tanpa menunggu selesai")
   } finally {
     h.cleanup()
   }
