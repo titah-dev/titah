@@ -355,15 +355,42 @@ about 6,300 tokens — above the 6,144 budget but below the window. Judged again
 the budget it was discarded on every step and the model never saw the file it
 had just read; judged against the window it arrives intact.
 
-Finally, when the tail *alone* already fills the window, the tail is pruned
-before the summariser is called rather than after: summarisation can only free
-what lies before the cut, so if what lies after it already fills the window,
-the call is knowably wasted.
+A fourth change was tried and **removed again**: pruning the tail *before*
+calling the summariser when the tail alone already fills the window. The
+reasoning was sound — summarisation can only free what lies before the cut — but
+it was measured to be inert, producing identical series and identical summariser
+counts at 22, 26, 28 and 32 KB. It survived only because nothing pinned it. An
+unpinned line that changes no outcome is a liability, not a safeguard.
 
-After all four, no request exceeds the window at any result size: 22 KB peaks at
-6,755 with the file delivered, 26 KB alternates 7,895 / 501 with the file
-delivered every other step, and 28–32 KB — which cannot fit at all — is replaced
-by the pruned marker, peaking at 501.
+### One comparison, one ruler
+
+The projection asks a question about **size**: will the next request fit? Both
+sides of it must therefore be measured the same way. They were not: arrivals were
+debited at the realistic 4 bytes per token while the bytes pruning freed were
+credited at the conservative 8, so a real saving was scored at half its value and
+a tail that fitted was discarded anyway. Measured: a 22 KB file reached the model
+on only **15 of 30** steps, alternating with a bare marker — read, discard, read,
+discard.
+
+Two rulers in one comparison is not conservatism, it is inconsistency. The fit
+question now uses 4:1 on both sides.
+
+The conservative 8:1 stays exactly where section 4 put it, on the **second-order**
+question — *was pruning enough, or must we summarise too?* — where the asymmetry
+argument genuinely applies: under-counting the saving costs one extra `smallModel`
+call, over-counting it skips a needed summarisation and sends an oversized
+request. That argument is about a decision under uncertainty. "Will it fit" is
+about arithmetic, and arithmetic does not get two rulers.
+
+After all of it, no request exceeds the window at any result size, and a file
+that fits is delivered on every step that could carry it:
+
+| result | peak | over-window | file delivered |
+|---|---|---|---|
+| 22 KB | 6,755 | none | 29 of 30 |
+| 26 KB | 7,895 | none | 29 of 30 |
+| 28 KB | 501 | none | 0 of 30 — cannot fit; replaced by the marker |
+| 32 KB | 501 | none | 0 of 30 — cannot fit; replaced by the marker |
 
 ### Preserving the running instruction
 

@@ -3,7 +3,6 @@ import {
   compactPrompt,
   estimateTokens,
   growthTokens,
-  messageBytes,
   midTurnCut,
   overBudget,
   planAtCut,
@@ -118,13 +117,33 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
 
   if (compaction.prune && cut > 0) prune(0, cut)
 
-  // Estimasi HANYA untuk keputusan tingkat kedua ini. Pemicunya sendiri tetap
-  // memakai angka yang dilaporkan provider, tidak pernah taksiran.
-  //
-  // Basisnya `projected`, BUKAN `lastStepTokens`: mengkreditkan byte yang
-  // terbebas sambil tidak pernah mendebit hasil tool yang baru tiba membuat
-  // jawabannya selalu "sudah muat" justru pada kasus yang paling tidak muat.
-  const remaining = (freedBytes: number): number =>
+  /**
+   * Ukuran permintaan berikutnya, SEIMBANG: yang masuk dan yang keluar dihitung
+   * dengan rasio yang sama (4 byte/token, `growthTokens`).
+   *
+   * Ini pertanyaan "apakah muat" — pertanyaan tentang UKURAN, bukan tentang
+   * risiko. Yang tiba didebit 4:1 sementara yang terbebas dikredit 8:1 bukan
+   * kehati-hatian, melainkan ketidakkonsistenan: satu perbandingan dengan dua
+   * penggaris. Terukur akibatnya — berkas 22 KB yang muat hanya sampai ke model
+   * di 15 dari 30 langkah, berselang-seling dengan penanda kosong, karena
+   * penghematan yang nyata dinilai separuhnya lalu ekornya dibuang.
+   */
+  const remainingBalanced = (freedBytes: number): number =>
+    (projected ?? 0) - growthTokens(freedBytes)
+
+  /**
+   * Ukuran permintaan berikutnya, dengan taksiran penghematan yang sengaja
+   * MEREMEHKAN (8 byte/token, `estimateTokens`).
+   *
+   * Dipakai HANYA untuk keputusan tingkat kedua: "prune saja sudah cukup, atau
+   * perlu diringkas juga?". Asimetrinya disengaja dan alasannya khusus untuk
+   * pertanyaan ITU: meremehkan penghematan berarti satu panggilan smallModel
+   * yang mubazir, melebih-lebihkannya berarti melewatkan peringkasan yang
+   * dibutuhkan lalu mengirim permintaan kebesaran. Jangan dipindah ke
+   * pertanyaan "apakah muat" di atas — di sana keduanya bukan soal risiko,
+   * cuma soal ukuran.
+   */
+  const remainingConservative = (freedBytes: number): number =>
     (projected ?? 0) - estimateTokens(freedBytes)
 
   /**
@@ -134,7 +153,7 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
    * anggaran berarti langkah berikutnya meluap lagi.
    */
   const needsMore = (freedBytes: number): boolean =>
-    overBudget(remaining(freedBytes), input.contextWindow, compaction.reserved, growth)
+    overBudget(remainingConservative(freedBytes), input.contextWindow, compaction.reserved, growth)
 
   /**
    * Sungguh-sungguh tidak MUAT — diukur terhadap JENDELA, bukan anggaran.
@@ -159,11 +178,7 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
    * yang ia baca sendiri; diukur terhadap jendela, ia sampai utuh.
    */
   const doesNotFit = (freedBytes: number): boolean =>
-    input.contextWindow !== undefined && remaining(freedBytes) >= input.contextWindow
-
-  /** Ukuran ekor apa adanya — yang akan dikirim utuh, berapa pun besarnya. */
-  const tailTokens = (): number =>
-    growthTokens(current.slice(cut).reduce((sum, message) => sum + messageBytes(message), 0))
+    input.contextWindow !== undefined && remainingBalanced(freedBytes) >= input.contextWindow
 
   const pruneTail = (): void => {
     if (compaction.prune) prune(cut, current.length)
@@ -175,15 +190,6 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
     summarised,
     changed: prunedBytes > 0 || summarised,
   })
-
-  // Ekor yang SENDIRIAN saja sudah mengisi jendela tidak bisa ditolong
-  // peringkasan: ringkasan sependek apa pun tetap ditempelkan DI ATAS ekor itu.
-  // Memangkasnya sebelum memanggil peringkas bukan pelanggaran urutan "yang
-  // murah dulu" — ia menghindari satu panggilan model yang sudah pasti sia-sia.
-  // Peringkasan hanya bisa membebaskan bagian SEBELUM potong; kalau bagian
-  // sesudahnya saja sudah sebesar jendela, tidak ada yang tersisa untuk
-  // ditolong.
-  if (input.contextWindow !== undefined && tailTokens() >= input.contextWindow) pruneTail()
 
   if (!needsMore(prunedBytes)) return done(false)
 

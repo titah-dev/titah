@@ -1463,8 +1463,17 @@ test("focus giliran diteruskan ke peringkas di KEDUA jalur, antar-giliran maupun
  * itu sebabnya residu F1 lolos dari seluruh suite. Bentuk ini sama dengan
  * harness pengukuran yang menemukannya. Mengembalikan seri konteks per langkah.
  */
-function sizedModel(file: string, steps: number): number[] {
+function sizedModel(
+  file: string,
+  steps: number,
+  marker = "",
+): { series: number[]; delivered: boolean[] } {
   const series: number[] = []
+  // Berapa permintaan yang SUNGGUH membawa isi berkasnya — bukan sekadar
+  // permintaan yang besar. Ditandai lewat satu baris khas dari dalam berkas:
+  // ukuran saja tidak bisa membedakan "isi berkas sampai" dari "riwayat lain
+  // yang kebetulan menumpuk".
+  const delivered: boolean[] = []
   let calls = 0
   const model = new MockLanguageModelV4({
     doStream: async (options) => {
@@ -1481,6 +1490,7 @@ function sizedModel(file: string, steps: number): number[] {
       }
 
       series.push(tokens)
+      delivered.push(marker !== "" && serialised.includes(marker))
       calls += 1
       return {
         stream: simulateReadableStream({
@@ -1503,11 +1513,14 @@ function sizedModel(file: string, steps: number): number[] {
   })
   restore?.()
   restore = setModelResolver(() => model)
-  return series
+  return { series, delivered }
 }
 
-/** Berkas berisi baris-baris yang terasa nyata, sebesar `kb` kilobyte. */
-function bigFile(dir: string, name: string, kb: number): void {
+/**
+ * Berkas berisi baris-baris yang terasa nyata, sebesar `kb` kilobyte.
+ * Mengembalikan satu baris dari TENGAHNYA, sebagai penanda "isi ini sampai".
+ */
+function bigFile(dir: string, name: string, kb: number): string {
   const line = "baris berkas besar nomor xxxx yang cukup panjang untuk terasa nyata"
   const lines: string[] = []
   for (let i = 0, acc = 0; acc < kb * 1024; i += 1) {
@@ -1515,6 +1528,7 @@ function bigFile(dir: string, name: string, kb: number): void {
     acc += line.length + 6
   }
   fs.writeFileSync(path.join(dir, name), lines.join("\n"))
+  return lines[Math.floor(lines.length / 2)] as string
 }
 
 const WINDOW = 8192
@@ -1534,10 +1548,16 @@ test("satu hasil tool yang jauh lebih besar dari anggaran tidak pernah membuat p
   // "masih kelebihan?" yang MENGKREDITKAN byte yang terbebas tanpa pernah
   // MENDEBIT hasil yang baru tiba — jawabannya "sudah muat", dan ekornya tidak
   // pernah tersentuh.
+  //
+  // 28 KB, bukan 30: ini pita yang PALING sempit dan karena itu yang paling
+  // perlu dijaga. Ekornya ~8.000 token, tepat DI BAWAH jendela 8192, jadi
+  // tidak ada pintasan apa pun yang menolongnya lebih awal — satu-satunya yang
+  // mencegah luapan adalah pemangkasan ekor sebagai upaya TERAKHIR. Terukur
+  // tanpa baris itu: 29 dari 30 langkah meluap di 8.304 token.
   const dir = projectWith(windowConfig(WINDOW, { agent: { pembaca: { steps: 8 } } }))
-  bigFile(dir, "raksasa.txt", 30)
+  const marker = bigFile(dir, "raksasa.txt", 28)
   const session = createSession(dir)
-  const series = sizedModel("raksasa.txt", 8)
+  const { series } = sizedModel("raksasa.txt", 8, marker)
 
   const turn = await prompt({ sessionID: session.id, text: "baca raksasa berulang", agent: "pembaca" })
   assert.equal(turn.error, undefined)
@@ -1579,20 +1599,27 @@ test("hasil tool yang MASIH MUAT tetap sampai ke model — obatnya tidak boleh k
   // langkah (puncak konteks jatuh ke ~1.200) dan model tidak pernah melihat
   // isi berkas yang ia baca sendiri.
   const dir = projectWith(windowConfig(WINDOW, { agent: { pembaca: { steps: 6 } } }))
-  bigFile(dir, "sedang.txt", 22)
+  const marker = bigFile(dir, "sedang.txt", 22)
   const session = createSession(dir)
-  const series = sizedModel("sedang.txt", 6)
+  const { series, delivered } = sizedModel("sedang.txt", 6, marker)
 
   const turn = await prompt({ sessionID: session.id, text: "baca sedang berulang", agent: "pembaca" })
   assert.equal(turn.error, undefined)
   assert.ok(series.length >= 4, `hanya ${series.length} langkah`)
 
-  // Klaimnya: isi berkas itu SUNGGUH sampai ke model — sekurang-kurangnya satu
-  // permintaan membawa lebih dari anggaran, yang mustahil kalau ekornya selalu
-  // dipangkas lebih dulu.
-  assert.ok(
-    series.some((tokens) => tokens > 6144),
-    `puncak cuma ${Math.max(...series)} — isi berkas yang masih muat tidak pernah sampai ke model (seri: ${series.join(", ")})`,
+  // Klaimnya diukur sebagai LAJU, bukan "ada satu langkah di suatu tempat".
+  // Versi pertama test ini memakai `series.some(t => t > 6144)`, dan itu tidak
+  // bisa mendeteksi apa yang namanya janjikan: pola berselang-seling
+  // (kirim, penanda, kirim, penanda) memenuhinya sambil membuang isi berkas di
+  // separuh langkah. Terukur pada pola itu — 15 dari 30 — dan testnya hijau.
+  //
+  // Langkah pertama tidak pernah bisa membawa isi berkas (belum ada yang
+  // dibaca), jadi yang dituntut adalah SELURUH sisanya.
+  const hit = delivered.filter(Boolean).length
+  assert.equal(
+    hit,
+    series.length - 1,
+    `isi berkas cuma sampai di ${hit}/${series.length} permintaan — obatnya kebablasan (seri: ${series.join(", ")})`,
   )
 
   // Dan tetap tanpa luapan.

@@ -17,6 +17,7 @@ import {
   overBudget,
   planAtCut,
   planCompaction,
+  projectedContext,
   pruneToolOutputs,
   REAL_BYTES_PER_TOKEN,
   renderMessage,
@@ -438,6 +439,25 @@ test("potong mid-turn mundur melewati DUA pesan tool berurutan", () => {
   const cut = midTurnCut(messages, 1)
   assert.equal(cut, 1, "harus mundur DUA kali, sampai pesan assistant pemanggilnya")
   assert.notEqual(messages[cut]?.role, "tool")
+})
+
+test("projectedContext menjumlahkan yang baru tiba, dan MEMPERTAHANKAN 'belum terukur'", () => {
+  // Cabang `undefined` bukan hiasan: ia yang membedakan "belum ada giliran yang
+  // sempat mengukur apa pun" dari "konteksnya nol". Meratakannya jadi
+  // `(lastStepTokens ?? 0) + arrivedTokens` mengubah sesi yang belum pernah
+  // terukur menjadi angka yang bisa dibandingkan dengan ambang — dan pada hasil
+  // tool yang cukup besar, angka itu langsung melewati ambang, sehingga
+  // pemadatan menyala di giliran yang belum punya apa pun untuk dipadatkan.
+  //
+  // Positif dulu: penjumlahannya sungguh terjadi.
+  assert.equal(projectedContext(6142, 1500), 7642)
+  assert.equal(projectedContext(0, 0), 0)
+  // Baru negatif: yang belum terukur tetap belum terukur, berapa pun yang tiba.
+  assert.equal(projectedContext(undefined, 0), undefined)
+  assert.equal(projectedContext(undefined, 9_999), undefined)
+  // Dan itu berarti `overBudget` tetap diam untuknya — akibat yang sebenarnya
+  // dijaga, bukan sekadar bentuk nilainya.
+  assert.equal(overBudget(projectedContext(undefined, 9_999), 8192, 8192), false)
 })
 
 test("margin pertumbuhan menurunkan ambang, dan dijepit seperempat anggaran", () => {

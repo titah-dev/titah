@@ -734,6 +734,12 @@ What it does, precisely:
   threshold. Without that, a single result larger than the growth margin slipped
   in unnoticed and the next request was already over the window — measured at
   110% of an 8k window with a 30 KB read.
+- "Will it fit" is measured with one ruler on both sides. What arrives and what
+  pruning frees are both counted at the same bytes-per-token ratio; the
+  deliberately pessimistic ratio is kept for the separate question of whether
+  pruning alone was enough or a summary is also needed. Mixing the two made a
+  22 KB file reach the model on only half its steps, alternating with a bare
+  marker, on a window where it comfortably fits.
 - A failed compaction — a broken `smallModel`, a provider error — never fails
   the turn. That step's compaction is simply skipped and the turn continues
   with whatever context it already had.
