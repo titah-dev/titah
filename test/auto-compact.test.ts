@@ -12,6 +12,7 @@ process.env.TITAH_DB = path.join(root, "autocompact.db")
 process.env.HOME = path.join(root, "home")
 
 const { autoCompact } = await import("../src/core/auto-compact.ts")
+const { requestTokens } = await import("../src/core/compact.ts")
 const {
   createSession,
   appendModelMessages,
@@ -66,6 +67,33 @@ function seed(): string {
   return session.id
 }
 
+/**
+ * Riwayat yang bulk-nya TIDAK bisa dijangkau prune: teks assistant, bukan output
+ * tool.
+ *
+ * Dibutuhkan sejak keputusan "prune saja cukup?" diukur langsung dari permintaan
+ * yang akan dikirim. Dengan `seed()` yang bulk-nya 20 KB output tool, prune
+ * SUNGGUH cukup — permintaan sisanya cuma ratusan byte — jadi peringkas tidak
+ * dipanggil, dan itu perilaku yang benar (issue #2: terukur 490 token, peringkas
+ * menyala 29 dari 30 langkah). Test yang memang menguji jalur peringkasan harus
+ * memakai riwayat yang peringkasan sungguh dibutuhkan untuknya, bukan riwayat
+ * yang tampak besar hanya lewat angka provider yang basi.
+ */
+function seedTextHeavy(): string {
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "giliran satu" },
+    call("a"),
+    bigResult("a"),
+    // 6 KB teks: di luar jangkauan prune, jadi hanya peringkasan yang bisa
+    // menghilangkannya. 6.000 byte ÷ 4 = 1.500 token, di atas anggaran 900.
+    { role: "assistant", content: `selesai satu — catatan panjang ${"z".repeat(6_000)}` },
+    { role: "user", content: "giliran dua" },
+    { role: "assistant", content: "selesai dua" },
+  ])
+  return session.id
+}
+
 test("compaction.auto: false tidak menjalankan apa pun, walau jauh di atas ambang", async () => {
   // Saklarnya tidak terpatok sama sekali sebelumnya: menghapus penjaga
   // `if (!compaction.auto) return IDLE` meninggalkan seluruh suite hijau,
@@ -85,7 +113,11 @@ test("compaction.auto: false tidak menjalankan apa pun, walau jauh di atas amban
     summarise: async () => "RINGKASAN",
   })
   assert.equal(proof.ran, true)
-  assert.equal(proof.summarised, true)
+  // `changed`, bukan `summarised`: yang dibuktikan kontrol positif ini adalah
+  // "dengan auto: true, angka-angka ini SUNGGUH memadatkan". Pada riwayat ini
+  // prune sendiri sudah cukup, dan tidak naik ke peringkasan justru perilaku
+  // yang benar — lihat `seedTextHeavy`.
+  assert.equal(proof.changed, true)
 
   // Baru negatif, di sesi yang baru disemai persis sama.
   const off = seed()
@@ -288,6 +320,236 @@ test("prune jalan lebih dulu, dan tersimpan ke baris", async () => {
   assert.equal(latestCompaction(sessionID), undefined)
 })
 
+test("prune yang CUKUP tidak naik ke peringkasan, walau angka provider terakhir masih raksasa", async () => {
+  // Ini regresi issue #2, dan pemakunya. Keputusan "prune saja cukup, atau
+  // perlu diringkas juga?" dulu beraritmetika di atas `lastStepTokens` — angka
+  // yang dilaporkan provider untuk permintaan LAIN satu langkah sebelumnya —
+  // dikurangi taksiran 8 byte/token. Terukur akibatnya: pada hasil 28 KB dan
+  // 32 KB dengan jendela 8192, permintaan yang SUNGGUH akan dikirim cuma 490
+  // token (6% jendela) dan peringkas tetap menyala di 29 dari 30 langkah.
+  //
+  // `lastStepTokens: 999_999` di sini mewakili angka basi yang raksasa itu.
+  // Yang menentukan sekarang adalah ukuran permintaan yang diukur langsung
+  // sesudah prune — dan permintaan itu memang kecil, jadi peringkas tidak boleh
+  // dipanggil sama sekali.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "baca berkas besar" },
+    call("a"),
+    bigResult("a"), // 20 KB, DI LUAR ekor — sepenuhnya bisa dibebaskan prune
+    { role: "assistant", content: "selesai" },
+    { role: "user", content: "giliran dua" },
+    { role: "assistant", content: "selesai dua" },
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    // Angka provider yang REALISTIS untuk jendela ini: sedikit melewatinya.
+    // Sebelumnya 999_999 — seratus kali jendelanya — dan angka sebesar itu tidak
+    // bisa dikreditkan oleh penghematan apa pun, jadi ia menguji aritmetika
+    // fiktif alih-alih perilaku. Yang dijaga tetap sama: prune yang CUKUP tidak
+    // boleh naik ke peringkasan.
+    lastStepTokens: 1_200,
+    summarise: async () => {
+      throw new Error("permintaan yang terukur sudah muat — peringkas tidak boleh dipanggil")
+    },
+  })
+
+  // Positif dulu: prune SUNGGUH jalan dan membebaskan 20 KB itu. Tanpa ini,
+  // `summarised: false` di bawah bisa lolos karena pemadatan tidak menyala.
+  assert.equal(result.ran, true)
+  assert.ok(result.prunedBytes > 10_000)
+  assert.equal(result.summarised, false)
+  assert.equal(latestCompaction(session.id), undefined)
+})
+
+test("luapan yang dilaporkan provider TETAP memadatkan, walau pengukuran bilang muat", async () => {
+  // Ronde review ketiga, dan ini REGRESI terhadap main — terverifikasi dengan
+  // menjalankan skenario yang sama di kedua sisi:
+  //
+  //   main   : {summarised:true,  changed:true }  1 panggilan, ringkasan tersimpan
+  //   branch : {summarised:false, changed:false}  0 panggilan, tidak ada apa-apa
+  //
+  // `doesNotFit` sudah memakai dua sinyal, tapi `needsMore` tidak — dan justru
+  // `needsMore` yang berdiri paling depan, dengan `return done(false)` di
+  // belakangnya. Jadi luapan yang dilaporkan provider tidak menghasilkan apa pun,
+  // dan permintaan berikutnya dipotong diam-diam. Tiap giliran.
+  const session = createSession(root)
+  const msgs: ModelMessage[] = [
+    { role: "user", content: "mulai" },
+    // Teks polos: prune tidak menjangkaunya, jadi hanya peringkasan yang bisa.
+    { role: "assistant", content: "z".repeat(24_000) },
+    { role: "user", content: "lanjut" },
+    { role: "assistant", content: "selesai" },
+  ]
+  appendModelMessages(session.id, msgs)
+
+  // Positif dulu: pengukuran memang bilang MUAT (di bawah jendela 8192),
+  // sementara provider melaporkan luapan. Tanpa selisih itu test ini kosong.
+  const terukur = requestTokens(msgs)
+  assert.ok(terukur < 8192, `terukur ${terukur} harus di bawah jendela`)
+
+  let calls = 0
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: { auto: true, reserved: 2048, tailTurns: 1, prune: true },
+    contextWindow: 8192,
+    lastStepTokens: 8354, // FAKTA dari provider: sudah melewati jendela
+    summarise: async () => {
+      calls += 1
+      return "RINGKASAN"
+    },
+  })
+
+  // >= 1, bukan tepat 1: transkrip 24 KB memang melewati anggaran potongan, jadi
+  // peringkasnya dipanggil beberapa kali. Yang dijaga adalah bahwa ia dipanggil
+  // SAMA SEKALI — sebelum perbaikan, nol.
+  assert.ok(calls >= 1, "angka provider adalah fakta — ia harus didengar")
+  assert.equal(result.summarised, true)
+  assert.equal(result.changed, true)
+  assert.ok(latestCompaction(session.id))
+})
+
+test("angka provider yang sudah melewati jendela tetap memicu pemangkasan ekor", async () => {
+  // Ronde review kedua: `doesNotFit` sekarang MURNI pengukuran byte/4, dan
+  // pemeriksaan itu sengaja melewati `reserved` — jadi tidak ada kelapangan yang
+  // menyerap remehnya. Kalau provider melaporkan 8354 token untuk jendela 8192
+  // (luapan NYATA) sementara pesan yang sama terukur ~6100 lewat byte/4, ekor
+  // tidak pernah dipangkas dan permintaan berikutnya dipotong diam-diam — tiap
+  // langkah. Versi sebelum issue #2 memakai angka provider dan memangkasnya.
+  const session = createSession(root)
+  // Teks yang cukup besar untuk melewati ANGGARAN (900) tapi masih di bawah
+  // JENDELA (1000) menurut pengukuran — di situlah celahnya.
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    { role: "assistant", content: "z".repeat(3_200) },
+    { role: "user", content: "dua" },
+    call("b"),
+    smallResult("b"), // di dalam ekor, dan bisa diprune
+  ])
+
+  const before = listModelRows(session.id).map((row) => row.message)
+  const terukur = requestTokens(before)
+  // Positif dulu: fixture-nya memang berada di celah itu, kalau tidak test ini
+  // menguji sesuatu yang lain.
+  assert.ok(terukur >= 900, `terukur ${terukur} harus di atas anggaran 900`)
+  assert.ok(terukur < 1000, `terukur ${terukur} harus di bawah jendela 1000`)
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    // Angka provider yang SUNGGUH melewati jendela.
+    lastStepTokens: 5_000,
+    summarise: async () => "", // gagal, jadi tidak ada ringkasan yang menolong
+  })
+
+  assert.equal(result.ran, true)
+  assert.equal(result.summarised, false)
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[4]?.message),
+    /output was dropped/,
+    "angka provider bilang tidak muat, jadi ekor harus dipangkas",
+  )
+})
+
+test("byte yang sudah diprune tidak dikreditkan DUA KALI saat peringkasan berhasil", async () => {
+  // Ronde review keempat, dan ia membatalkan perbaikan ronde ketiga dari dalam.
+  //
+  // `plan.dropped` berasal dari `rows` — pesan SEBELUM prune — sementara
+  // `prunedBytes` sudah menghitung byte yang sama. Keduanya lalu dijumlahkan di
+  // `freedTokens()`. Terukur: kepala 20 KB memberi prunedBytes 19.929 DAN
+  // summaryFreed ~19.900, jadi kreditnya ~9.957 token melawan `projected` 7.000
+  // — hasilnya negatif, `projectedSize` runtuh ke pengukuran saja, dan sinyal
+  // provider yang ada justru untuk menangkap remehnya pengukuran itu hilang.
+  // Ekor tidak pernah dipangkas walau provider bilang luapannya 7x jendela.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "mulai" },
+    call("a"),
+    bigResult("a"), // kepala 20 KB — diprune, dan ikut diringkas
+    { role: "user", content: "lanjut" },
+    call("b"),
+    smallResult("b"), // ekor — inilah yang harus ikut dipangkas
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 7_000, // FAKTA provider: luapan 7x jendela
+    summarise: async () => "RINGKASAN",
+  })
+
+  // Positif dulu: kepala memang diprune DAN diringkas, jadi kedua sumber kredit
+  // sungguh aktif — tanpa itu test ini tidak menguji penggandaannya.
+  assert.ok(result.prunedBytes > 10_000)
+  assert.equal(result.summarised, true)
+
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[5]?.message),
+    /output was dropped/,
+    "provider bilang masih jauh di atas jendela, jadi ekor harus dipangkas",
+  )
+})
+
+test("kredit peringkasan dihitung dari byte pesan NYATA, bukan byte hasil render", async () => {
+  // Ronde review ketiga. `summaryFreed` dijumlahkan dari `parts` — hasil
+  // `renderMessage`, yang MEMOTONG setiap tool-result di 400 karakter — lalu
+  // dikreditkan ke `projected`, hitungan token atas pesan yang SUNGGUHAN. Dua
+  // satuan yang berbeda.
+  //
+  // Dengan pengecualian `task`, hasil 30 KB di riwayat lama dilewati prune (jadi
+  // tidak masuk `prunedBytes`) DAN menyusut ke ~450 byte di `parts` (jadi
+  // `summaryFreed` nyaris nol). Kreditnya hilang, `anchored` tetap di atas
+  // jendela, dan `pruneTail` menghancurkan hasil tool yang baru saja diminta
+  // model di ekor — padahal permintaan sesudah peringkasan sebenarnya jauh di
+  // bawah jendela.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    call("t"),
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "t",
+          toolName: "task",
+          output: { type: "text", value: "jawaban sub-agent ".repeat(1_700) }, // ~30 KB
+        },
+      ],
+    },
+    { role: "user", content: "dua" },
+    call("b"),
+    smallResult("b"), // di ekor, dan yang TIDAK boleh dihancurkan
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 8192,
+    // 8.400: DI ATAS jendela 8192, dan itu yang membuat test ini membedakan.
+    // Tanpa perbaikan, kredit dari byte hasil render cuma ~112 token, `anchored`
+    // mendarat di 8.288 — masih di atas jendela — dan ekor dihancurkan. Dengan
+    // perbaikan, kredit 30 KB (~7.500 token) menjatuhkannya ke ~900.
+    lastStepTokens: 8_400,
+    summarise: async () => "RINGKASAN",
+  })
+
+  assert.equal(result.summarised, true, "peringkasan harus jadi, kalau tidak test ini menguji hal lain")
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[5]?.message),
+    /isi ekor/,
+    "ekor tidak boleh dihancurkan: peringkasan sudah membebaskan cukup banyak",
+  )
+})
+
 test("hasil task di riwayat lama MENGALAH kalau peringkasan gagal", async () => {
   // Ronde review kedua. Perlindungan hasil sub-agent (#4) bertumpu pada
   // peringkas yang mewakilinya. Kalau peringkasnya GAGAL, tidak ada ringkasan,
@@ -335,9 +597,47 @@ test("hasil task di riwayat lama MENGALAH kalau peringkasan gagal", async () => 
   assert.ok(result.prunedBytes > 10_000)
 })
 
+test("peringkas yang GAGAL tidak mematikan pemangkasan ekor", async () => {
+  // Review menemukan ini. `summariseInChunks` memulangkan string kosong — bukan
+  // melempar — ketika model gagal atau dibatalkan. Di jalur itu `saveCompaction`
+  // tidak dipanggil dan batas air TIDAK maju, jadi permintaan berikutnya masih
+  // memuat seluruh riwayat di atas batas air. Mengukur ekor saja meremehkannya,
+  // `pruneTail` — satu-satunya tuas yang masih tersisa — tidak pernah jalan, dan
+  // permintaan kebesaran berangkat untuk dipotong diam-diam provider.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    // 6 KB teks: di luar jangkauan prune, jadi hanya peringkasan yang bisa
+    // menghilangkannya — dan peringkasan itu yang gagal di test ini.
+    { role: "assistant", content: `catatan ${"z".repeat(6_000)}` },
+    { role: "user", content: "dua" },
+    call("b"),
+    smallResult("b"), // DI DALAM ekor, dan cukup besar untuk bisa diprune
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 1000,
+    lastStepTokens: 999_999,
+    summarise: async () => "", // gagal, atau dibatalkan lewat Esc
+  })
+
+  // Positif dulu: pemadatan memang menyala dan peringkasannya memang tidak jadi.
+  assert.equal(result.ran, true)
+  assert.equal(result.summarised, false)
+  assert.equal(latestCompaction(session.id), undefined, "tidak ada ringkasan yang disimpan")
+
+  // Inti klaimnya: hasil tool di dalam ekor SUNGGUH dipangkas, karena tanpa
+  // ringkasan permintaannya memang tidak muat.
+  const after = listModelRows(session.id)
+  assert.match(JSON.stringify(after[4]?.message), /output was dropped/)
+  assert.ok(result.prunedBytes > 0)
+})
+
 test("prune yang tidak cukup naik ke peringkasan", async () => {
-  const sessionID = seed()
-  let called = 0
+  const sessionID = seedTextHeavy()
+  const prompts: string[] = []
 
   const result = await autoCompact({
     sessionID,
@@ -345,22 +645,28 @@ test("prune yang tidak cukup naik ke peringkasan", async () => {
     contextWindow: 1000,
     lastStepTokens: 999_999, // jauh di atas apa pun yang bisa dibebaskan prune
     summarise: async (system, prompt) => {
-      called += 1
+      prompts.push(prompt)
       assert.match(system, /compress a coding session/)
-      assert.match(prompt, /giliran satu/)
-      // Positif dulu: isi ASLI hasil tool (20.000 karakter "x", dipotong 400
-      // oleh renderMessage) memang ada di transkrip yang dikirim ke peringkas.
-      assert.match(prompt, /x{100,}/)
       // Baru negatif: bukan penanda yang tersimpan ke BARIS setelah prune.
       // `planAtCut` harus dijalankan atas `rows` dari SEBELUM prune menimpa
       // database — meringkas dari penanda berarti kehilangan detail yang
-      // sama dua kali (sekali oleh prune, sekali oleh peringkas).
+      // sama dua kali (sekali oleh prune, sekali oleh peringkas). Diperiksa
+      // per prompt, karena tidak satu pun potongan boleh memuatnya.
       assert.doesNotMatch(prompt, /output was dropped/)
       return "RINGKASAN"
     },
   })
 
-  assert.equal(called, 1)
+  // Diperiksa atas GABUNGAN prompt, bukan prompt pertama: sejak issue #1
+  // transkrip yang lebih besar dari jendela peringkas dikirim BERPOTONG, jadi
+  // "bahannya sampai ke peringkas" berarti sampai di salah satu potongan.
+  const joined = prompts.join("\n")
+  assert.ok(prompts.length > 0, "peringkas harus dipanggil")
+  assert.match(joined, /giliran satu/)
+  // Positif: isi ASLI hasil tool (20.000 karakter "x", dipotong 400 oleh
+  // renderMessage) memang ada di transkrip yang dikirim ke peringkas.
+  assert.match(joined, /x{100,}/)
+
   assert.equal(result.summarised, true)
   assert.equal(latestCompaction(sessionID)?.summary.includes("RINGKASAN"), true)
 
@@ -370,7 +676,7 @@ test("prune yang tidak cukup naik ke peringkasan", async () => {
 })
 
 test("focus diteruskan ke prompt peringkas", async () => {
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
   let seen = ""
   await autoCompact({
     sessionID,
@@ -387,7 +693,7 @@ test("focus diteruskan ke prompt peringkas", async () => {
 })
 
 test("prune: false melewatkan prune dan langsung meringkas", async () => {
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
   const result = await autoCompact({
     sessionID,
     compaction: { ...CONFIG, prune: false },
@@ -404,7 +710,7 @@ test("ringkasan kosong dari peringkas TIDAK disimpan, riwayat tidak diganti", as
   // promise-nya — jadi `synthesizerFor` mengembalikan string kosong, bukan
   // melempar, kalau smallModel-nya sedang down. Sebuah 503 sesaat TIDAK boleh
   // berarti seluruh riwayat lama diganti ringkasan yang membungkus kekosongan.
-  const sessionID = seed()
+  const sessionID = seedTextHeavy()
 
   const result = await autoCompact({
     sessionID,
@@ -440,7 +746,11 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
     { role: "assistant", content: "balasan purba" }, // seq1 — sudah diringkas (batas air)
     call("a"), // seq2
     bigResult("a"), // seq3 — 20 KB, seharusnya yang diprune
-    { role: "assistant", content: "selesai satu" }, // seq4
+    // seq4 — 6 KB TEKS: di luar jangkauan prune, jadi peringkasan sungguh
+    // dibutuhkan di sini. Pesan yang sudah ada ini yang dibesarkan, bukan pesan
+    // baru yang disisipkan, supaya nomor `seq` yang dipaku test ini tidak
+    // bergeser.
+    { role: "assistant", content: `selesai satu ${"z".repeat(6_000)}` },
     { role: "user", content: "giliran dua" }, // seq5
     { role: "assistant", content: "selesai dua" }, // seq6
   ])
@@ -454,14 +764,18 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
   assert.equal(before[3]?.seq, 3)
   assert.match(JSON.stringify(before[3]?.message), /x{100,}/)
 
-  let capturedPrompt = ""
+  // SEMUA prompt, bukan yang terakhir: sejak issue #1 transkrip yang lebih besar
+  // dari jendela peringkas dikirim berpotong, dan prompt terakhir adalah
+  // "ringkas ringkasannya" — memeriksa hanya itu berarti memeriksa ringkasan,
+  // bukan bahan yang dikirim.
+  const prompts: string[] = []
   const result = await autoCompact({
     sessionID: session.id,
     compaction: CONFIG,
     contextWindow: 1000,
     lastStepTokens: 999_999,
     summarise: async (_system, prompt) => {
-      capturedPrompt = prompt
+      prompts.push(prompt)
       return "RINGKASAN BARU"
     },
   })
@@ -481,11 +795,14 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
 
   // Ringkasan lama ikut dilipat ke sumber ringkasan baru, bukan ditumpuk
   // terpisah — dan materi giliran yang BARU (belum diringkas) memang masuk.
+  const capturedPrompt = prompts.join("\n")
+  assert.ok(prompts.length > 0, "peringkas harus dipanggil")
   assert.match(capturedPrompt, /RINGKASAN LAMA/)
   assert.match(capturedPrompt, /selesai satu/)
   // Baru negatif: materi yang SUDAH ada di belakang batas air tidak
   // diringkas ulang — kalau ia diikutkan lagi, ringkasan membesar tanpa henti.
-  assert.doesNotMatch(capturedPrompt, /purba satu/)
+  // Per prompt, bukan gabungan: tidak SATU pun potongan boleh memuatnya.
+  for (const one of prompts) assert.doesNotMatch(one, /purba satu/)
   assert.doesNotMatch(capturedPrompt, /balasan purba/)
 
   assert.equal(latestCompaction(session.id)?.summary.includes("RINGKASAN BARU"), true)

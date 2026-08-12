@@ -6,6 +6,9 @@ import {
   resolveModel,
   ProviderError,
   contextWindowFor,
+  summariserModelFor,
+  summariserWindowFor,
+  turnModelFor,
   undeclaredContextWindows,
 } from "../src/core/provider.ts"
 import { Config, Provider } from "../src/core/schema.ts"
@@ -17,6 +20,83 @@ const compatible = (overrides: Record<string, unknown> = {}) =>
     models: { m: {} },
     ...overrides,
   })
+
+test("jendela peringkas: milik peringkasnya, dengan jendela giliran sebagai jaring", () => {
+  // Ronde review ketiga menemukan dua hal di sini. `/compact` tidak punya jaring
+  // sama sekali — jendela yang tidak dideklarasikan berarti `Infinity`, jadi
+  // seluruh transkrip dikirim sebagai satu potongan tanpa batas — sementara baris
+  // `doctor` yang ditambahkan siklus ini justru MENJANJIKAN jaring itu ("bounded
+  // by the turn model's window instead"). Satu fungsi untuk kedua jalur menutup
+  // keduanya sekaligus.
+  const cfg = (extra: Record<string, unknown>) =>
+    ({
+      model: "ollama/giliran",
+      provider: {
+        ollama: {
+          models: {
+            giliran: { contextWindow: 8192 },
+            kecil: { contextWindow: 4096 },
+            "tanpa-jendela": {},
+          },
+        },
+      },
+      ...extra,
+    }) as unknown as Config
+
+  // smallModel dengan jendela sendiri: itu yang berlaku.
+  assert.equal(summariserWindowFor(cfg({ smallModel: "ollama/kecil" }), "ollama/giliran"), 4096)
+  // smallModel TANPA jendela: jatuh ke jendela giliran — bukan tak terbatas.
+  assert.equal(
+    summariserWindowFor(cfg({ smallModel: "ollama/tanpa-jendela" }), "ollama/giliran"),
+    8192,
+  )
+  // Tanpa smallModel: model giliran sendiri yang meringkas.
+  assert.equal(summariserWindowFor(cfg({}), "ollama/giliran"), 8192)
+  // Tidak ada yang dideklarasikan sama sekali: undefined, yang berarti "jangan
+  // potong" — bukan nol, dan bukan potongan terkecil yang mungkin.
+  assert.equal(summariserWindowFor(cfg({}), "ollama/tanpa-jendela"), undefined)
+})
+
+test("model giliran: milik agent kalau ia menyatakannya, kalau tidak override-nya", () => {
+  // Ronde review keempat: aturan ini hidup di DUA tempat dan sempat menyimpang —
+  // jalur giliran biasa memakai `agentDef?.model ?? modelOverride`, sementara
+  // `/compact` memakai `input.model` mentah. Akibatnya sebuah `defaultAgent` yang
+  // menyatakan modelnya sendiri diringkas oleh model bawaan, sedangkan pemadatan
+  // otomatis di sesi yang SAMA memakai model agent itu: dua ringkasan dengan mutu
+  // berbeda dalam satu sesi, persis yang dihindari saat `/compact` dipindah ke
+  // `smallModel`.
+  const cfg = {
+    model: "ollama/bawaan",
+    agent: { pembaca: { model: "openai/besar" }, polos: {} },
+    provider: {},
+  } as unknown as Config
+
+  assert.equal(turnModelFor(cfg, "pembaca", undefined), "openai/besar")
+  // Override eksplisit tetap kalah dari model yang dinyatakan agent — itu aturan
+  // yang sudah berlaku di jalur giliran biasa, dan kini berlaku di kedua tempat.
+  assert.equal(turnModelFor(cfg, "pembaca", "ollama/lain"), "openai/besar")
+  assert.equal(turnModelFor(cfg, "polos", "ollama/lain"), "ollama/lain")
+  assert.equal(turnModelFor(cfg, undefined, "ollama/lain"), "ollama/lain")
+  assert.equal(turnModelFor(cfg, undefined, undefined), undefined)
+})
+
+test("model peringkas: smallModel dulu, lalu model giliran, lalu model bawaan", () => {
+  // Ronde review kedua menemukan dua ekspresi berbeda untuk satu keputusan:
+  // peringkasnya di-resolve dari `smallModel ?? input.model`, jendelanya dihitung
+  // dari `agentDef?.model ?? modelOverride`. Keduanya menyimpang persis pada
+  // kasus nyata — `subagent.ts` memanggil `prompt()` TANPA model — sehingga
+  // sebuah agent dengan `model` sendiri memberi jendela 400.000 sementara yang
+  // meringkas adalah model bawaan berjendela 8192. Satu fungsi menutup celahnya.
+  const base = { model: "ollama/besar", provider: {}, agent: {} } as unknown as Config
+
+  assert.equal(summariserModelFor(base, "openai/giliran"), "openai/giliran")
+  assert.equal(summariserModelFor(base, undefined), "ollama/besar")
+  assert.equal(
+    summariserModelFor({ ...base, smallModel: "ollama/kecil" } as Config, "openai/giliran"),
+    "ollama/kecil",
+    "smallModel selalu menang: ia memang yang menulis ringkasan",
+  )
+})
 
 test("parseModelId memisah pada slash pertama saja", () => {
   assert.deepEqual(parseModelId("ollama/qwen3.5:27b"), {

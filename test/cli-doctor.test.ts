@@ -118,6 +118,61 @@ test("doctor tidak mengeluh saat semua model sudah punya contextWindow", () => {
   assert.doesNotMatch(output, /ollama\/llama3:8b/)
 })
 
+test("doctor menyebut smallModel yang jendelanya belum dideklarasikan", () => {
+  // Acceptance ketiga issue #1: batas prompt peringkas tidak bisa ditegakkan
+  // pada angka yang tidak ada. Ia jatuh ke jendela model giliran — aman, tapi
+  // lebih longgar dari yang user maksud, dan satu-satunya cara ia bisa tahu
+  // adalah kalau ada yang menyebutkannya. Bedanya dengan peringatan
+  // "contextWindow belum dideklarasikan" biasa: yang ini soal model yang MENULIS
+  // ringkasan, bukan model yang menjalankan giliran.
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      compaction: { reserved: 2048 },
+      smallModel: "ollama/kecil",
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "llama3:8b": { contextWindow: 8192 }, kecil: {} },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /Context windows/)
+  assert.match(output, /smallModel/)
+  assert.match(output, /ollama\/kecil/)
+  // Menyebut akibatnya, bukan cuma faktanya: yang penting bagi user adalah
+  // batas mana yang jadi berlaku.
+  assert.match(output, /summariser/i)
+})
+
+test("doctor diam soal smallModel yang jendelanya sudah dideklarasikan", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      compaction: { reserved: 2048 },
+      smallModel: "ollama/kecil",
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: {
+            "llama3:8b": { contextWindow: 8192 },
+            kecil: { contextWindow: 4096 },
+          },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /all configured models declare one/)
+  assert.doesNotMatch(output, /smallModel/)
+})
+
 test("doctor tidak menegur angka reserved yang tidak pernah ditulis user", () => {
   // Bawaan `reserved` (8192) lebih besar dari seperempat SETIAP jendela di
   // bawah 32768, jadi peringatan yang tidak membedakan asal angkanya akan

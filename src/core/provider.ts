@@ -173,6 +173,86 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
   return config.provider[providerId]?.models[modelId]?.contextWindow
 }
 
+/**
+ * Model yang MENJALANKAN giliran: milik agent kalau ia menyatakannya, kalau tidak
+ * override yang diminta pemanggil.
+ *
+ * Satu fungsi karena aturannya dipakai dua tempat — jalur giliran biasa dan jalur
+ * `/compact` — dan sempat menyimpang di antaranya: `/compact` memakai
+ * `input.model` mentah, sehingga sebuah `defaultAgent` yang menyatakan modelnya
+ * sendiri diringkas oleh model bawaan, sementara pemadatan otomatis di sesi yang
+ * SAMA memakai model agent itu. Dua ringkasan dengan mutu berbeda dalam satu sesi
+ * adalah persis yang dihindari saat `/compact` dipindah ke `smallModel`.
+ */
+export function turnModelFor(
+  config: Config,
+  agentID: string | undefined,
+  override: string | undefined,
+): string | undefined {
+  return (agentID ? config.agent[agentID]?.model : undefined) ?? override
+}
+
+/**
+ * Model yang BENAR-BENAR menulis ringkasan.
+ *
+ * Satu fungsi, dipakai untuk dua hal yang wajib sepakat: me-resolve modelnya, dan
+ * menentukan jendela yang membatasi promptnya. Sebelumnya keduanya dihitung dari
+ * ekspresi yang BERBEDA — peringkasnya `config.smallModel ?? input.model`,
+ * jendelanya dari `agentDef?.model ?? modelOverride` — dan keduanya menyimpang
+ * pada kasus yang sangat nyata: `subagent.ts` memanggil `prompt()` TANPA `model`,
+ * jadi sebuah agent yang menyatakan `model` sendiri memberi jendela model itu
+ * (mis. 400.000) sementara yang meringkas adalah `config.model` (mis. 8192).
+ * Transkrip 1,2 MB lalu dikirim sebagai satu panggilan ke jendela 8k dan dipotong
+ * diam-diam — kegagalan yang sama yang seluruh siklus ini tutup.
+ *
+ * Dua sumber kebenaran untuk satu keputusan adalah bug yang menunggu; ini
+ * membuatnya tidak mungkin lagi.
+ */
+export function summariserModelFor(config: Config, turnModel?: string): string | undefined {
+  return config.smallModel ?? turnModel ?? config.model
+}
+
+/**
+ * Jendela yang membatasi prompt peringkas — DAN jaringnya.
+ *
+ * Dua hal yang ronde review ketiga temukan, dan keduanya di sini:
+ *
+ *   - `/compact` tidak punya jaring sama sekali. Jendela yang tidak
+ *     dideklarasikan berarti `Number.POSITIVE_INFINITY`, jadi seluruh transkrip
+ *     dikirim sebagai satu potongan tanpa batas — sementara baris `doctor` yang
+ *     ditambahkan siklus ini justru MENJANJIKAN jaring itu ("bounded by the turn
+ *     model's window instead"). Janji yang tidak benar di satu jalur lebih buruk
+ *     daripada tidak berjanji.
+ *   - Jalur otomatis punya jaringnya sendiri di dalam `autoCompact`, sehingga ada
+ *     DUA aturan untuk satu keputusan — bentuk kesalahan yang sama yang sudah
+ *     dua kali menghasilkan cacat di siklus ini.
+ *
+ * Satu fungsi, dipakai kedua jalur, dan `autoCompact` tidak lagi menebak apa pun:
+ * pemanggil yang tahu modelnya juga yang menyelesaikan jendelanya.
+ *
+ * `undefined` berarti tidak ada satu pun jendela dideklarasikan — bukan nol, dan
+ * pemanggilnya memperlakukannya sebagai "jangan potong".
+ */
+export function summariserWindowFor(config: Config, turnModel?: string): number | undefined {
+  return (
+    contextWindowFor(config, summariserModelFor(config, turnModel)) ??
+    contextWindowFor(config, turnModel)
+  )
+}
+
+/**
+ * `smallModel` yang disetel tapi jendelanya belum dideklarasikan.
+ *
+ * Batas prompt peringkas tidak bisa ditegakkan pada angka yang tidak ada, jadi
+ * ia jatuh ke jendela model giliran — lebih longgar dari yang user maksud, dan
+ * satu-satunya cara ia bisa tahu adalah kalau ada yang menyebutkannya.
+ */
+export function smallModelWindowMissing(config: Config): string | undefined {
+  const small = config.smallModel
+  if (small === undefined) return undefined
+  return contextWindowFor(config, small) === undefined ? small : undefined
+}
+
 /** Model yang dikonfigurasi tapi belum punya `contextWindow`, untuk dilaporkan `doctor`. */
 export function undeclaredContextWindows(config: Config): string[] {
   const out: string[] = []

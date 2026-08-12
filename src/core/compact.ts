@@ -49,31 +49,19 @@ export function tailStart(messages: ModelMessage[], keepTurns = KEEP_TURNS): num
 }
 
 /**
- * Rasio byte→token yang SENGAJA meremehkan.
+ * Rasio byte→token, satu-satunya di berkas ini.
  *
- * Teks nyata kira-kira 4 byte per token. Angka 8 di sini membuat penghematan
- * hasil prune selalu ditaksir lebih kecil dari sebenarnya, sehingga keputusan
- * "masih perlu diringkas?" condong ke arah meringkas. Dua arah kesalahannya
- * tidak setara: menaksir terlalu rendah cuma menambah satu panggilan
- * smallModel; menaksir terlalu tinggi berarti melewatkan peringkasan yang
- * dibutuhkan lalu mengirim permintaan kebesaran.
- */
-export const BYTES_PER_TOKEN = 8
-
-export function estimateTokens(bytes: number): number {
-  return Math.floor(bytes / BYTES_PER_TOKEN)
-}
-
-/**
- * Rasio byte→token untuk hal yang harus ditaksir TERLALU BESAR, bukan terlalu
- * kecil — kebalikan arah dari `BYTES_PER_TOKEN`.
+ * Empat byte per token adalah angka teks nyata. Dipakai tiga tempat: ukuran ekor
+ * mid-turn, margin pertumbuhan satu langkah, dan pengukuran permintaan
+ * (`requestTokens`). Ketiganya BATAS atau UKURAN, bukan penghematan yang
+ * ditaksir, jadi satu penggaris sudah cukup.
  *
- * Dipakai dua tempat: ukuran ekor mid-turn dan margin pertumbuhan satu langkah.
- * Keduanya BATAS, bukan penghematan, jadi arah amannya terbalik: meremehkan
- * ukuran sebuah hasil tool berarti membiarkan ekor yang terlalu gemuk atau
- * margin yang terlalu tipis, dan permintaan kebesaran tetap terkirim. Empat
- * byte per token adalah angka teks nyata; delapan hanya aman ketika salahnya
- * berarti satu panggilan smallModel yang mubazir.
+ * Dulu ada penggaris kedua, 8 byte/token, khusus untuk menaksir penghematan
+ * prune supaya keputusan "masih perlu diringkas?" condong ke arah meringkas.
+ * Asimetri itu hilang bersama alasannya: penghematan tidak lagi ditaksir sama
+ * sekali — permintaan yang akan dikirim diukur langsung. Menaksir dua arah
+ * dengan dua penggaris adalah satu perbandingan dengan dua satuan, dan itu
+ * kesalahan yang lebih halus daripada rasio yang keliru.
  */
 export const REAL_BYTES_PER_TOKEN = 4
 
@@ -85,6 +73,49 @@ export function growthTokens(bytes: number): number {
 /** Ukuran satu pesan seperti yang benar-benar dikirim, dalam byte JSON. */
 export function messageBytes(message: ModelMessage): number {
   return Buffer.byteLength(JSON.stringify(message))
+}
+
+/**
+ * Ukuran permintaan yang AKAN dikirim, diukur langsung dari pesannya.
+ *
+ * Menggantikan aritmetika di atas angka provider yang basi: dulu keputusan
+ * "prune saja cukup?" mengambil `inputTokens` yang dilaporkan untuk permintaan
+ * LAIN satu langkah sebelumnya, lalu menguranginya dengan taksiran byte yang
+ * dibebaskan prune. Taksiran itu tidak mungkin benar, dan salahnya ke arah yang
+ * membakar kuota: terukur, pada hasil 28 KB dengan jendela 8192, permintaan yang
+ * sungguh akan dikirim hanya 490 token — 6% jendela — sementara peringkas tetap
+ * menyala di 29 dari 30 langkah.
+ *
+ * Yang membuat ini benar bukan rasionya, melainkan bahwa objeknya nyata:
+ * pesan-pesan ini persis yang akan berangkat. `extraBytes` untuk bagian yang
+ * TIDAK ada di daftar pesan tapi tetap ikut terkirim — system prompt. Tanpanya
+ * pengukuran ini meremehkan permintaan, dan meremehkan ukuran permintaan berarti
+ * mengirim yang kebesaran: arah kesalahan yang paling mahal dari semuanya.
+ *
+ * Dua hal yang MASIH tidak terlihat, disebut di sini supaya tidak disangka
+ * lengkap — dan yang kedua lebih besar daripada yang pernah tertulis:
+ *
+ *   - **Definisi tool.** Skema tool ikut dikirim tiap permintaan tapi tidak ada
+ *     di daftar pesan maupun di system prompt, dan merakit ulang skema JSON-nya
+ *     di sini berarti menebak bentuk yang dihasilkan AI SDK. Besarnya tetap:
+ *     beberapa ratus token.
+ *   - **Variasi tokenisasi.** Empat byte per token adalah angka TEKS NYATA. Isi
+ *     yang padat token — kode, CJK, base64 — bisa mendarat di 2–3 byte per
+ *     token, jadi pengukuran ini bisa meremehkan 30–50%, bukan "beberapa ratus
+ *     token" seperti yang pernah tertulis di sini. Itu koreksi, bukan nuansa.
+ *
+ * Yang menahan keduanya adalah `reserved`: ia kelapangan di ATAS anggaran, jadi
+ * remeh sampai sekitar sepertiga terserap tanpa permintaan mana pun melewati
+ * jendela. Di atas itu ia bisa melewati jendela, dan satu-satunya pemulihnya
+ * adalah pemicu — yang membaca angka provider SUNGGUHAN, termasuk definisi tool —
+ * menyala lagi di langkah berikutnya. Pengganti yang benar adalah menghitung token
+ * lewat tokenizer provider alih-alih rasio; itu belum ada di Titah, dan sampai ada,
+ * batas ini nyata.
+ */
+export function requestTokens(messages: ModelMessage[], extraBytes = 0): number {
+  let bytes = extraBytes
+  for (const message of messages) bytes += messageBytes(message)
+  return growthTokens(bytes)
 }
 
 /** Penanda yang menggantikan output tool yang dibuang. */
@@ -376,6 +407,227 @@ export function compactPrompt(transcript: string, focus?: string): string {
     ? `\n\nThe user asked you to pay particular attention to: ${focus.trim()}\nKeep that material in full detail. Summarise the rest normally — do not drop it.`
     : ""
   return `Here is the session transcript to compress.\n\n<transcript>\n${transcript}\n</transcript>${instruction}`
+}
+
+/**
+ * Penanda pemotongan yang EKSPLISIT.
+ *
+ * Satu pesan yang sendirian lebih besar dari jendela peringkas tetap harus
+ * dipotong — bedanya, dipotong di sini dan diberi tahu, bukan dipotong provider
+ * tanpa jejak. Itu seluruh perbedaan antara "ada yang hilang, dan model tahu"
+ * dengan "ada yang hilang, dan model menjawab yakin seolah tidak".
+ */
+const TRUNCATED = "\n[… this part of the transcript was truncated to fit the summariser's window …]"
+
+/**
+ * Anggaran satu potongan transkrip untuk peringkas, dalam byte.
+ *
+ * Dikurangi instruksi peringkas dan teks pembungkus `compactPrompt`: keduanya
+ * ikut memakan jendela yang sama dengan transkripnya. Anggaran yang mengabaikan
+ * itu tetap meluap, dan itu versi naif dari perbaikan ini.
+ *
+ * Lantai `MIN_CHUNK_BYTES` bukan kehati-hatian: potongan nol atau negatif berarti
+ * pemotongan tidak pernah maju, dan giliran menggantung selamanya di jalur yang
+ * user tidak pernah minta. Kalau jendelanya sungguh lebih kecil dari instruksinya
+ * sendiri, tidak ada anggaran yang bisa menolong — yang bisa dilakukan hanyalah
+ * memotong sekecil mungkin dan tetap bergerak.
+ */
+const MIN_CHUNK_BYTES = 512
+
+/**
+ * Jendela yang TIDAK diketahui berarti jangan memotong sama sekali.
+ *
+ * Aturan yang sama yang sudah berlaku di `contextWindowFor`: batas yang tidak
+ * dideklarasikan berarti MATI, bukan ditebak. Untuk pemotongan, "mati" berarti
+ * satu panggilan seperti sebelum pemotongan ada.
+ *
+ * Versi pertama memulangkan `0` untuk kasus ini, dan `0` melewati aritmetika di
+ * bawah menjadi angka negatif yang lalu dijinakkan lantai jadi 512 byte —
+ * potongan TERKECIL yang mungkin, bukan tidak memotong. Terukur akibatnya di
+ * jalur `/compact`: transkrip 200 KB jadi ~400 panggilan smallModel berurutan,
+ * pada konfigurasi yang memang didukung (doctor hanya memperingatkan), padahal
+ * sebelum pemotongan ada ia satu panggilan.
+ */
+export function summariserChunkBytes(contextWindow: number | undefined, reserved: number): number {
+  if (contextWindow === undefined) return Number.POSITIVE_INFINITY
+  return budgetTokens(contextWindow, reserved) * REAL_BYTES_PER_TOKEN
+}
+
+/**
+ * Bagian anggaran prompt yang paling banyak boleh diambil teks FOKUS: seperempat,
+ * angka yang sama dengan `RESERVE_FRACTION` dan `TAIL_FRACTION`.
+ *
+ * `focus` adalah teks prompt user apa adanya (`focus: text` di agent.ts), jadi ia
+ * tidak dibatasi apa pun — dan `compactPrompt` menempelkannya ke SETIAP potongan.
+ * Terukur sebelum batas ini ada: anggaran potongan 11.047 byte, prompt nyata
+ * 42.515 byte ≈ 10.629 token pada jendela 4096 — 2,6x, dan transkripnya duduk di
+ * DEPAN prompt, jadi yang dipotong provider justru bahan yang sedang diringkas.
+ * Batas issue #1 dikalahkan oleh satu paste berkas sebagai prompt.
+ *
+ * Dipotong, bukan dibuang: fokus tetap menajamkan ringkasan, ia cuma tidak lagi
+ * boleh menelan jendela yang seharusnya memuat transkripnya.
+ */
+export const FOCUS_FRACTION = 4
+
+/**
+ * Berapa kali paling banyak "ringkas ringkasannya" boleh berulang.
+ *
+ * Rekursinya hanya menyelesaikan sesuatu kalau hasilnya MENYUSUT. Peringkas yang
+ * membalas sepanjang bahannya adalah kejadian nyata pada model kecil yang
+ * bingung, dan tanpa batas ini giliran menggantung — di jalur yang user tidak
+ * pernah minta, jadi ia bahkan tidak akan tahu harus menekan Esc.
+ */
+const MAX_CHUNK_ROUNDS = 3
+
+/**
+ * Memotong teks ke `limit` BYTE, tanpa membelah karakter multibyte.
+ *
+ * `String.prototype.slice` memotong per code unit UTF-16, dan seluruh anggaran di
+ * berkas ini dalam byte. Terukur pada versi yang memakai `slice`: satu bagian
+ * 2.000 karakter CJK dengan anggaran 1.000 byte menghasilkan potongan 2.834 byte
+ * — 2,8x. Untuk transkrip non-ASCII prompt peringkas jadi tetap melewati
+ * jendelanya, yaitu luapan yang justru mau dicegah.
+ *
+ * Karakter yang terbelah di ujung didekode `TextDecoder` menjadi U+FFFD; itu
+ * dibuang, bukan dibiarkan masuk ke prompt sebagai sampah.
+ */
+export function sliceBytes(text: string, limit: number): string {
+  if (limit <= 0) return ""
+  if (Buffer.byteLength(text) <= limit) return text
+  let out = new TextDecoder().decode(Buffer.from(text, "utf8").subarray(0, limit))
+  while (out.endsWith("�")) out = out.slice(0, -1)
+  return out
+}
+
+/**
+ * Pemisah antar-bagian di dalam satu potongan. Ikut DIHITUNG, bukan hanya
+ * ditempelkan: `bytes` yang cuma menjumlahkan bagiannya membuat potongan sebesar
+ * `limit + 2×(jumlah−1)`. Untuk giliran agentic dengan puluhan pesan pendek per
+ * potongan, itu beberapa persen di atas anggaran peringkas — kecil, tapi
+ * satu-satunya tugas fungsi ini adalah "tiap potongan muat".
+ */
+const CHUNK_SEPARATOR = "\n\n"
+
+/** Memaketkan bagian transkrip jadi potongan yang tiap potongnya muat. */
+export function packChunks(parts: string[], chunkBytes: number): string[] {
+  const limit = Math.max(MIN_CHUNK_BYTES, chunkBytes)
+  const separator = Buffer.byteLength(CHUNK_SEPARATOR)
+  const chunks: string[] = []
+  let current: string[] = []
+  let bytes = 0
+
+  const flush = (): void => {
+    if (current.length === 0) return
+    chunks.push(current.join(CHUNK_SEPARATOR))
+    current = []
+    bytes = 0
+  }
+
+  for (const part of parts) {
+    const size = Buffer.byteLength(part)
+    // Satu bagian yang sendirian tidak muat: ia potongannya sendiri, dipotong
+    // eksplisit. Memaksanya berbagi potongan dengan bagian lain cuma membuat
+    // keduanya terpotong.
+    if (size > limit) {
+      flush()
+      chunks.push(sliceBytes(part, limit - Buffer.byteLength(TRUNCATED)) + TRUNCATED)
+      continue
+    }
+    // Pemisah lahir dari PENGGABUNGAN, jadi bagian pertama sebuah potongan tidak
+    // membawanya. Dihitung dua kali — sekali untuk memutuskan apakah masih muat,
+    // sekali lagi setelah `flush()` mungkin mengosongkan potongannya.
+    if (bytes + (current.length === 0 ? size : separator + size) > limit) flush()
+    bytes += current.length === 0 ? size : separator + size
+    current.push(part)
+  }
+  flush()
+  return chunks
+}
+
+/**
+ * Meringkas transkrip yang mungkin JAUH lebih besar dari jendela peringkas.
+ *
+ * Ini perbaikan issue #1, dan satu-satunya pintu masuk ke peringkas: `/compact`
+ * maupun jalur otomatis melewati fungsi yang sama, supaya keduanya tidak bisa
+ * berbeda perilaku. Sebelum ini prompt peringkas tidak dibatasi apa pun —
+ * terukur 78.964 token pada smallModel yang menyatakan jendela 4096, dan
+ * provider tidak menolaknya melainkan memotong bagian paling awal, lalu
+ * peringkas menulis ringkasan yang yakin tentang bahan yang tidak dilihatnya.
+ *
+ * Panggilan dibuat BERURUTAN, bukan paralel: paralel menggandakan beban model
+ * kecil sekaligus membuat pembatalan lewat Esc lebih sulit dihormati, dan tidak
+ * ada urutan yang bisa dipercepat di sini — hasilnya toh disatukan.
+ *
+ * `focus` dipasang di panggilan TERAKHIR juga, bukan cuma per potongan: yang
+ * dibaca model adalah ringkasan akhir, dan fokus yang hanya hidup di potongan
+ * bisa hilang justru saat ringkasan-ringkasan itu diringkas lagi.
+ */
+export async function summariseInChunks(
+  summarise: (system: string, prompt: string) => Promise<string>,
+  parts: string[],
+  promptBytes: number,
+  focus?: string,
+  round = 0,
+): Promise<string> {
+  // Seluruh aritmetika batas hidup DI SINI, bukan dibagi dengan pemanggil.
+  // `promptBytes` adalah anggaran SELURUH prompt — instruksi, pembungkus, fokus,
+  // dan transkripnya — karena itulah yang dilihat provider. Pemanggil yang
+  // menghitung sebagian sendiri adalah bagaimana teks fokus bisa lolos dari
+  // hitungan sama sekali.
+  const trimmedFocus =
+    focus === undefined ? undefined : sliceBytes(focus, Math.floor(promptBytes / FOCUS_FRACTION))
+  const overhead =
+    Buffer.byteLength(COMPACT_SYSTEM) + Buffer.byteLength(compactPrompt("", trimmedFocus))
+  const chunkBytes = Math.max(MIN_CHUNK_BYTES, promptBytes - overhead)
+
+  const chunks = packChunks(parts, chunkBytes)
+  if (chunks.length === 0) return ""
+  if (chunks.length === 1) {
+    return summarise(COMPACT_SYSTEM, compactPrompt(chunks[0] as string, trimmedFocus))
+  }
+
+  const summaries: string[] = []
+  for (const chunk of chunks) {
+    const written = await summarise(COMPACT_SYSTEM, compactPrompt(chunk, trimmedFocus))
+    // SATU potongan kosong menghentikan semuanya, dan mengembalikan kosong.
+    //
+    // Dua alasan, dan keduanya menolak "lewati saja yang gagal":
+    //
+    //   - Melewatinya berarti ringkasan yang diam-diam kehilangan satu bagian
+    //     transkrip, lalu disimpan seolah utuh. Itu PERSIS kegagalan yang
+    //     seluruh fitur ini ada untuk mencegah — ringkasan yang yakin tentang
+    //     bahan yang tidak pernah dilihatnya. Kosong jauh lebih baik: pemanggil
+    //     membiarkan riwayat lama apa adanya.
+    //   - `synthesizerFor` mengembalikan string kosong, bukan melempar, ketika
+    //     model gagal ATAU dibatalkan (streamText meneruskan error ke `onError`).
+    //     Melanjutkan sesudah pembatalan berarti memanggil model dengan signal
+    //     yang SUDAH abort — dan pendengar `abort` di sana tidak akan menyala
+    //     lagi, jadi panggilan itu menggantung selamanya. Terukur: satu giliran
+    //     tergantung 20 detik sampai test-nya menyerah, di jalur yang user tidak
+    //     pernah minta.
+    if (written.trim() === "") return ""
+    summaries.push(written)
+  }
+
+  if (round + 1 >= MAX_CHUNK_ROUNDS) {
+    // Batas kedalaman tercapai: satukan SEMUA ringkasan, lalu potong ke anggaran
+    // dengan penanda kalau memang harus memotong.
+    //
+    // Versi pertama mengambil `packChunks(...)[0]` — potongan PERTAMA — dan
+    // menjatuhkan sisanya. Terukur: bahan 15.908 byte jadi ringkasan 506 byte,
+    // tanpa satu pun penanda, lalu disimpan sementara batas air maju. Sekitar
+    // 97% riwayat hilang permanen, senyap — persis kegagalan yang seluruh berkas
+    // ini ada untuk mencegah, dan komentarnya sendiri menjanjikan "dipotong
+    // eksplisit" yang tidak pernah terjadi.
+    //
+    // Dibatasi anggaran, bukan dibiarkan sepanjang apa adanya: ringkasan ini
+    // ikut di SETIAP permintaan berikutnya, jadi ringkasan yang tidak dibatasi
+    // adalah masalah konteks yang kedua.
+    const joined = summaries.join("\n\n")
+    if (Buffer.byteLength(joined) <= chunkBytes) return joined
+    return sliceBytes(joined, chunkBytes - Buffer.byteLength(TRUNCATED)) + TRUNCATED
+  }
+  return summariseInChunks(summarise, summaries, promptBytes, trimmedFocus, round + 1)
 }
 
 /** Membungkus ringkasan supaya model tahu ini catatan, bukan ucapan user. */

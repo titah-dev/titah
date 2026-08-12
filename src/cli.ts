@@ -7,6 +7,7 @@ import { checkPermissions, readAuth, removeCredential, setCredential } from "./c
 import {
   listModels,
   resolveCredential,
+  smallModelWindowMissing,
   undeclaredContextWindows,
   ProviderError,
 } from "./core/provider.ts"
@@ -363,6 +364,19 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       out(`  ! ${id} — no contextWindow, automatic compaction is off for it`)
       out(`      add provider.${providerId}.models."${modelId}".contextWindow`)
     }
+  }
+  // `smallModel` dilaporkan TERPISAH dari daftar di atas, walau modelnya juga
+  // muncul di sana: yang dibatasi jendela ini adalah prompt PERINGKAS, dan
+  // akibat hilangnya berbeda dari model giliran. Model giliran tanpa jendela
+  // berarti pemadatan otomatis mati; peringkas tanpa jendela berarti batasnya
+  // jatuh ke jendela model giliran — masih aman, tapi lebih longgar dari yang
+  // user maksud, dan tanpa disebutkan ia tidak punya cara mengetahuinya.
+  const smallMissing = smallModelWindowMissing(loaded.config)
+  if (smallMissing !== undefined) {
+    out(
+      `  ! smallModel ${smallMissing} — no contextWindow; the summariser's prompt is ` +
+        "bounded by the turn model's window instead",
+    )
   }
   // Angka yang dilaporkan HARUS lewat `effectiveReserved`, bukan aritmetika
   // sendiri — dua rumus yang seharusnya sama bisa diam-diam menyimpang begitu
