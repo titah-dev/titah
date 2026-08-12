@@ -758,8 +758,11 @@ What it does, precisely:
   each chunk small enough to fit, then the chunk summaries summarised in turn.
   Without this the prompt was unbounded: measured at 78,964 tokens against a
   `smallModel` declaring 4,096 — 19.3× — and providers do not reject that, they
-  truncate it. `titah doctor` names a `smallModel` with no declared
-  `contextWindow`, because the bound cannot be enforced without one.
+  truncate it. When `smallModel` declares no window the bound falls back to the turn
+  model's — the same thing `titah doctor` tells you it will do — and only when
+  nothing at all is declared is chunking off, which is the same rule the rest of
+  compaction follows. The user's focus text (`/compact <focus>`) is counted against
+  that budget and clamped to a quarter of it, because it rides every chunk.
 - If any chunk comes back empty — a provider error, or `Esc` — the whole
   summarisation is abandoned and nothing is saved. A summary missing one chunk,
   stored as though complete, is exactly the failure this feature exists to

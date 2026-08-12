@@ -499,16 +499,26 @@ export function sliceBytes(text: string, limit: number): string {
   return out
 }
 
+/**
+ * Pemisah antar-bagian di dalam satu potongan. Ikut DIHITUNG, bukan hanya
+ * ditempelkan: `bytes` yang cuma menjumlahkan bagiannya membuat potongan sebesar
+ * `limit + 2×(jumlah−1)`. Untuk giliran agentic dengan puluhan pesan pendek per
+ * potongan, itu beberapa persen di atas anggaran peringkas — kecil, tapi
+ * satu-satunya tugas fungsi ini adalah "tiap potongan muat".
+ */
+const CHUNK_SEPARATOR = "\n\n"
+
 /** Memaketkan bagian transkrip jadi potongan yang tiap potongnya muat. */
 export function packChunks(parts: string[], chunkBytes: number): string[] {
   const limit = Math.max(MIN_CHUNK_BYTES, chunkBytes)
+  const separator = Buffer.byteLength(CHUNK_SEPARATOR)
   const chunks: string[] = []
   let current: string[] = []
   let bytes = 0
 
   const flush = (): void => {
     if (current.length === 0) return
-    chunks.push(current.join("\n\n"))
+    chunks.push(current.join(CHUNK_SEPARATOR))
     current = []
     bytes = 0
   }
@@ -523,9 +533,12 @@ export function packChunks(parts: string[], chunkBytes: number): string[] {
       chunks.push(sliceBytes(part, limit - Buffer.byteLength(TRUNCATED)) + TRUNCATED)
       continue
     }
-    if (bytes > 0 && bytes + size > limit) flush()
+    // Pemisah lahir dari PENGGABUNGAN, jadi bagian pertama sebuah potongan tidak
+    // membawanya. Dihitung dua kali — sekali untuk memutuskan apakah masih muat,
+    // sekali lagi setelah `flush()` mungkin mengosongkan potongannya.
+    if (bytes + (current.length === 0 ? size : separator + size) > limit) flush()
+    bytes += current.length === 0 ? size : separator + size
     current.push(part)
-    bytes += size
   }
   flush()
   return chunks

@@ -263,10 +263,41 @@ in each case, is to give the bound everything it needs and let it do its own
 arithmetic — `summariseInChunks` now owns the whole prompt budget, `doesNotFit`
 consults both signals, and one function resolves the summariser model.
 
-**Not every fix has a test that would catch a regression.** S4's fix is structural
-(one expression used twice); its test pins `summariserModelFor`'s semantics, not
-agent.ts's wiring. S5's guard is unreachable today, so nothing exercises it. Both
-are stated here rather than counted as covered.
+## Third review round, 2026-08-12
+
+Six more, and one of them was a **regression against `main`** — the sharpest single
+result of the whole cycle, because it means the branch was briefly worse than what
+it was fixing.
+
+| # | Where | What |
+|---|---|---|
+| T1 | `needsMore()` | The round-two fix gave `doesNotFit` two signals and left `needsMore` on the byte measurement alone — and `needsMore` stands in FRONT of both levers behind an early `return done(false)`. Verified on both sides with provider reporting 8,354 tokens on an 8,192 window and the same messages measuring 6,035: `main` summarised, this branch did **nothing**, every turn. One rule, `projectedSize`, now serves both gates. |
+| T2 | `summariserModelFor(config, input.model)` | The turn model is `modelID` (`agentDef?.model ?? modelOverride`), not `input.model` — and `subagent.ts` calls `prompt()` with **no** model. So an agent declaring its own model was summarised by the *default* model while its window came from the agent's. The same divergence T-round-two closed, through another door. |
+| T3 | `/compact`'s window | No fallback at all: an undeclared `smallModel` window became `Infinity`, so the whole transcript went in one unbounded chunk — while the `doctor` line added this cycle *promises* the turn-window fallback. A promise that is false on one path is worse than no promise. `summariserWindowFor` now serves both paths, and `autoCompact` stopped guessing. |
+| T4 | `summaryFreed` | Summed from `parts` — `renderMessage` output, which clips every tool result to 400 chars — then credited against `projected`, a count of the real messages. Two units. With the `task` exemption, a 30 KB result is skipped by prune **and** shrinks to ~450 bytes in `parts`, so the credit collapsed, `anchored` stayed above the window, and `pruneTail` destroyed tool output the model had just requested. Now `messageBytes(plan.dropped)` — what actually leaves the request. |
+| T5 | `packChunks` separators | `bytes` counted only the parts, while `flush()` joins with `"\n\n"`, so a chunk could reach `limit + 2×(count−1)`. |
+| T6 | `transaction` (shipped with #3) | `BEGIN` DEFERRED upgrades lazily and can fail with `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` does not retry — while the bare inserts it replaced *were* covered. Fixed on the #3 branch. |
+
+**The cycle in one sentence:** eleven of the seventeen findings across three rounds
+were a bound trusting a number computed somewhere else, and the recurring fix was to
+give the bound everything it needs — `summariseInChunks` owns the whole prompt
+budget, `projectedSize` is one rule for both gates, `summariserWindowFor` is one
+rule for both paths, and `summaryFreed` is measured in the same unit it is credited
+against.
+
+**Not every fix has a test that would catch a regression**, and it is worth listing
+rather than glossing:
+
+- The summariser-model wiring (S4, T2) is structural — which argument `agent.ts`
+  passes. Its tests pin `summariserModelFor` and `summariserWindowFor`'s semantics,
+  not the wiring.
+- `BEGIN IMMEDIATE` (T6) would need two processes racing on one database to
+  reproduce, and a flaky test is worse than a documented gap. The `ROLLBACK`-masking
+  fix beside it *is* pinned.
+
+Everything else in all three rounds has a test that fails without its fix; the two
+behavioural ones from round three were verified by reverting each fix and watching
+its test go red.
 
 ## Out of scope
 

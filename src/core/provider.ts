@@ -194,6 +194,34 @@ export function summariserModelFor(config: Config, turnModel?: string): string |
 }
 
 /**
+ * Jendela yang membatasi prompt peringkas — DAN jaringnya.
+ *
+ * Dua hal yang ronde review ketiga temukan, dan keduanya di sini:
+ *
+ *   - `/compact` tidak punya jaring sama sekali. Jendela yang tidak
+ *     dideklarasikan berarti `Number.POSITIVE_INFINITY`, jadi seluruh transkrip
+ *     dikirim sebagai satu potongan tanpa batas — sementara baris `doctor` yang
+ *     ditambahkan siklus ini justru MENJANJIKAN jaring itu ("bounded by the turn
+ *     model's window instead"). Janji yang tidak benar di satu jalur lebih buruk
+ *     daripada tidak berjanji.
+ *   - Jalur otomatis punya jaringnya sendiri di dalam `autoCompact`, sehingga ada
+ *     DUA aturan untuk satu keputusan — bentuk kesalahan yang sama yang sudah
+ *     dua kali menghasilkan cacat di siklus ini.
+ *
+ * Satu fungsi, dipakai kedua jalur, dan `autoCompact` tidak lagi menebak apa pun:
+ * pemanggil yang tahu modelnya juga yang menyelesaikan jendelanya.
+ *
+ * `undefined` berarti tidak ada satu pun jendela dideklarasikan — bukan nol, dan
+ * pemanggilnya memperlakukannya sebagai "jangan potong".
+ */
+export function summariserWindowFor(config: Config, turnModel?: string): number | undefined {
+  return (
+    contextWindowFor(config, summariserModelFor(config, turnModel)) ??
+    contextWindowFor(config, turnModel)
+  )
+}
+
+/**
  * `smallModel` yang disetel tapi jendelanya belum dideklarasikan.
  *
  * Batas prompt peringkas tidak bisa ditegakkan pada angka yang tidak ada, jadi

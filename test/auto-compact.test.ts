@@ -456,6 +456,59 @@ test("angka provider yang sudah melewati jendela tetap memicu pemangkasan ekor",
   )
 })
 
+test("kredit peringkasan dihitung dari byte pesan NYATA, bukan byte hasil render", async () => {
+  // Ronde review ketiga. `summaryFreed` dijumlahkan dari `parts` — hasil
+  // `renderMessage`, yang MEMOTONG setiap tool-result di 400 karakter — lalu
+  // dikreditkan ke `projected`, hitungan token atas pesan yang SUNGGUHAN. Dua
+  // satuan yang berbeda.
+  //
+  // Dengan pengecualian `task`, hasil 30 KB di riwayat lama dilewati prune (jadi
+  // tidak masuk `prunedBytes`) DAN menyusut ke ~450 byte di `parts` (jadi
+  // `summaryFreed` nyaris nol). Kreditnya hilang, `anchored` tetap di atas
+  // jendela, dan `pruneTail` menghancurkan hasil tool yang baru saja diminta
+  // model di ekor — padahal permintaan sesudah peringkasan sebenarnya jauh di
+  // bawah jendela.
+  const session = createSession(root)
+  appendModelMessages(session.id, [
+    { role: "user", content: "satu" },
+    call("t"),
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "t",
+          toolName: "task",
+          output: { type: "text", value: "jawaban sub-agent ".repeat(1_700) }, // ~30 KB
+        },
+      ],
+    },
+    { role: "user", content: "dua" },
+    call("b"),
+    smallResult("b"), // di ekor, dan yang TIDAK boleh dihancurkan
+  ])
+
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: 8192,
+    // 8.400: DI ATAS jendela 8192, dan itu yang membuat test ini membedakan.
+    // Tanpa perbaikan, kredit dari byte hasil render cuma ~112 token, `anchored`
+    // mendarat di 8.288 — masih di atas jendela — dan ekor dihancurkan. Dengan
+    // perbaikan, kredit 30 KB (~7.500 token) menjatuhkannya ke ~900.
+    lastStepTokens: 8_400,
+    summarise: async () => "RINGKASAN",
+  })
+
+  assert.equal(result.summarised, true, "peringkasan harus jadi, kalau tidak test ini menguji hal lain")
+  const after = listModelRows(session.id)
+  assert.match(
+    JSON.stringify(after[5]?.message),
+    /isi ekor/,
+    "ekor tidak boleh dihancurkan: peringkasan sudah membebaskan cukup banyak",
+  )
+})
+
 test("hasil task di riwayat lama MENGALAH kalau peringkasan gagal", async () => {
   // Ronde review kedua. Perlindungan hasil sub-agent (#4) bertumpu pada
   // peringkas yang mewakilinya. Kalau peringkasnya GAGAL, tidak ada ringkasan,

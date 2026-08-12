@@ -5,7 +5,12 @@ import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { contextWindowFor, resolveModel, summariserModelFor } from "./provider.ts"
+import {
+  contextWindowFor,
+  resolveModel,
+  summariserModelFor,
+  summariserWindowFor,
+} from "./provider.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -391,8 +396,13 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // sepakat: me-resolve modelnya di bawah, dan menentukan jendela yang membatasi
   // promptnya. Dua ekspresi berbeda untuk satu keputusan adalah bug yang
   // menunggu — dan sudah terjadi sekali (lihat `summariserModelFor`).
-  const summariserModel = summariserModelFor(config, input.model)
-  const summariserWindow = contextWindowFor(config, summariserModel)
+  // `modelID`, BUKAN `input.model`: model giliran yang sebenarnya sudah memuat
+  // `agentDef.model` dan override dari slash command. `subagent.ts` memanggil
+  // `prompt()` tanpa `model`, jadi memakai `input.model` membuat sebuah agent yang
+  // menyatakan modelnya sendiri diringkas oleh model BAWAAN — sementara jendelanya
+  // datang dari model agent itu. Divergensi yang sama, lewat pintu lain.
+  const summariserModel = summariserModelFor(config, modelID)
+  const summariserWindow = summariserWindowFor(config, modelID)
 
   const summarise = (system: string, userPrompt: string): Promise<string> =>
     synthesizerFor(resolver(config, summariserModel), controller.signal)(system, userPrompt)
@@ -1014,7 +1024,7 @@ async function compactTurn(
     const summary = await summariseInChunks(
       summarise,
       parts,
-      summariserChunkBytes(contextWindowFor(config, summariserModel), config.compaction.reserved),
+      summariserChunkBytes(summariserWindowFor(config, input.model), config.compaction.reserved),
       focus,
     )
 

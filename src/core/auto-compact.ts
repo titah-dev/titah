@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai"
 import {
   growthTokens,
+  messageBytes,
   midTurnCut,
   overBudget,
   planAtCut,
@@ -291,19 +292,31 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
     const written = await summariseInChunks(
       input.summarise,
       parts,
-      // TANPA `?? 0`: nol terlihat seperti angka dan ikut terhitung — ia jatuh ke
-      // potongan terkecil yang mungkin, persis bug yang `summariserChunkBytes`
-      // diubah untuk menghindari. `undefined` sudah ditangani di sana sebagai
-      // "jangan potong". Hari ini baris ini tidak terjangkau karena `overBudget`
-      // pulang lebih dulu, tapi penjaga yang benar tidak boleh bergantung pada itu.
-      summariserChunkBytes(input.summariserWindow ?? input.contextWindow, compaction.reserved),
+      // `input.summariserWindow` SAJA — tanpa jaring ke `contextWindow` di sini.
+      // Jaringnya milik `summariserWindowFor` di sisi pemanggil, karena hanya
+      // pemanggil yang tahu model mana yang meringkas. Dua aturan untuk satu
+      // keputusan adalah bentuk kesalahan yang sudah dua kali menghasilkan cacat
+      // di siklus ini; `undefined` di sini berarti "jangan potong", dan itu satu
+      // aturan yang dipegang `summariserChunkBytes`.
+      summariserChunkBytes(input.summariserWindow, compaction.reserved),
       input.focus,
     )
     if (written.trim() !== "") {
       summary = wrapSummary(written)
       saveCompaction(sessionID, plan.watermark, summary)
       summarised = true
-      const droppedBytes = parts.reduce((total, part) => total + Buffer.byteLength(part), 0)
+      // Byte pesan SUNGGUHAN, bukan byte hasil render.
+      //
+      // `parts` datang dari `renderMessage`, yang memotong setiap tool-result di
+      // 400 karakter — jadi menjumlahkannya lalu mengkreditkannya ke `projected`
+      // (hitungan token atas pesan yang nyata) adalah mencampur dua satuan.
+      // Dengan pengecualian `task`, hasil 30 KB di riwayat lama dilewati prune DAN
+      // menyusut ke ~450 byte di `parts`: kreditnya hilang, `anchored` tetap di
+      // atas jendela, dan `pruneTail` menghancurkan hasil tool yang baru saja
+      // diminta model — padahal permintaan sesudah peringkasan jauh di bawahnya.
+      const droppedBytes =
+        plan.dropped.reduce((total, message) => total + messageBytes(message), 0) +
+        (previous ? Buffer.byteLength(previous.summary) : 0)
       summaryFreed = Math.max(0, droppedBytes - Buffer.byteLength(summary))
     }
   }

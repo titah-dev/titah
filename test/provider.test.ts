@@ -7,6 +7,7 @@ import {
   ProviderError,
   contextWindowFor,
   summariserModelFor,
+  summariserWindowFor,
   undeclaredContextWindows,
 } from "../src/core/provider.ts"
 import { Config, Provider } from "../src/core/schema.ts"
@@ -18,6 +19,42 @@ const compatible = (overrides: Record<string, unknown> = {}) =>
     models: { m: {} },
     ...overrides,
   })
+
+test("jendela peringkas: milik peringkasnya, dengan jendela giliran sebagai jaring", () => {
+  // Ronde review ketiga menemukan dua hal di sini. `/compact` tidak punya jaring
+  // sama sekali — jendela yang tidak dideklarasikan berarti `Infinity`, jadi
+  // seluruh transkrip dikirim sebagai satu potongan tanpa batas — sementara baris
+  // `doctor` yang ditambahkan siklus ini justru MENJANJIKAN jaring itu ("bounded
+  // by the turn model's window instead"). Satu fungsi untuk kedua jalur menutup
+  // keduanya sekaligus.
+  const cfg = (extra: Record<string, unknown>) =>
+    ({
+      model: "ollama/giliran",
+      provider: {
+        ollama: {
+          models: {
+            giliran: { contextWindow: 8192 },
+            kecil: { contextWindow: 4096 },
+            "tanpa-jendela": {},
+          },
+        },
+      },
+      ...extra,
+    }) as unknown as Config
+
+  // smallModel dengan jendela sendiri: itu yang berlaku.
+  assert.equal(summariserWindowFor(cfg({ smallModel: "ollama/kecil" }), "ollama/giliran"), 4096)
+  // smallModel TANPA jendela: jatuh ke jendela giliran — bukan tak terbatas.
+  assert.equal(
+    summariserWindowFor(cfg({ smallModel: "ollama/tanpa-jendela" }), "ollama/giliran"),
+    8192,
+  )
+  // Tanpa smallModel: model giliran sendiri yang meringkas.
+  assert.equal(summariserWindowFor(cfg({}), "ollama/giliran"), 8192)
+  // Tidak ada yang dideklarasikan sama sekali: undefined, yang berarti "jangan
+  // potong" — bukan nol, dan bukan potongan terkecil yang mungkin.
+  assert.equal(summariserWindowFor(cfg({}), "ollama/tanpa-jendela"), undefined)
+})
 
 test("model peringkas: smallModel dulu, lalu model giliran, lalu model bawaan", () => {
   // Ronde review kedua menemukan dua ekspresi berbeda untuk satu keputusan:
