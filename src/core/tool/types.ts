@@ -38,7 +38,7 @@ export interface ToolResult {
 
 /** Izin yang harus diminta sebelum tool dijalankan (Q9). */
 export interface PermissionNeed {
-  kind: "edit" | "write" | "bash"
+  kind: "edit" | "write" | "bash" | "network" | "delete"
   title: string
   detail: string
   /** Pola yang masuk allowlist kalau user menjawab "selalu izinkan". */

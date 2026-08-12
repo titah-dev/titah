@@ -313,14 +313,34 @@ snapshots resend every part each time.
 | `list` | Recursive directory listing, skipping `node_modules`/`.git`/`dist`/… | — |
 | `glob` | Find files by pattern, newest first | — |
 | `grep` | Search contents by regex, results as `file:line: text` | — |
-| `edit` | Exact text replace; must be unique; **fails hard** on no match | yes |
-| `write` | Write full file contents, creating parent directories | yes |
-| `bash` | Run a shell command with a timeout | yes |
+| `edit` | Exact text replace; must be unique; **fails hard** on no match | `edit` |
+| `write` | Write full file contents, creating parent directories | `write` |
+| `bash` | Run a shell command with a timeout | `bash` |
+| `skill` | Load a skill's full instructions on demand | — |
+| `task` | Dispatch a sub-agent, one level deep | — |
+| `plan` | Record a plan that survives compaction | — |
+| `webfetch` | Fetch a URL; HTML is stripped to readable text | `network` |
+| `websearch` | Search the web; backend set by `search.backend` | `network` |
 
 All filesystem access is confined to the session working directory — paths that
 escape it are refused. Tool output larger than 32 KB is written to
 `~/.local/share/titah/tool-output/`, and only the head plus a pointer enters the
 context.
+
+The web tools sit on their own `network` permission axis rather than borrowing
+`bash`. They touch no files; what they risk is **confidentiality** — they are the
+only tools that send repository content off the machine, and none of the older
+axes says that. `network: "deny"` turns both off outright.
+
+Private addresses are deliberately **not** blocked: checking your own dev server
+on `localhost` is one of the things a coding agent is for. `webfetch` does refuse
+every scheme except `http` and `https` — `file:` in particular, since it would
+sidestep the working-directory confinement that every filesystem tool relies on.
+
+`websearch` defaults to the `ddg` backend, which needs no API key and scrapes
+HTML — so it can break without warning. `titah doctor` says so out loud. Set
+`search.backend` to `brave` or `tavily` with `search.apiKey` for something
+stable.
 
 `edit` fails hard on purpose: if `oldString` is missing or appears more than
 once, the tool refuses and **writes nothing**. Refusing is far better than

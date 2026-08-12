@@ -440,6 +440,24 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
     out()
   }
 
+  out("Web search")
+  {
+    const search = loaded.config.search
+    const needsKey = search.backend !== "ddg"
+    const hasKey = (search.apiKey ?? "") !== ""
+    if (needsKey && !hasKey) {
+      out(`  ! backend ${search.backend} needs an API key, and none is set`)
+      out("      set search.apiKey, or switch search.backend to \"ddg\"")
+    } else if (search.backend === "ddg") {
+      // Kerapuhannya dinyatakan, bukan disembunyikan: backend yang diam-diam
+      // berhenti bekerja lebih buruk daripada yang menyatakan dirinya rapuh.
+      out("  ddg — no API key needed; it scrapes HTML, so it can break without warning")
+    } else {
+      out(`  ${search.backend} — API key present`)
+    }
+  }
+  out()
+
   // Q24: agent yang tidak terpasang tetap ditampilkan, tidak disembunyikan.
   out("External agents")
   for (const [id, agent] of Object.entries(loaded.config.externalAgent)) {

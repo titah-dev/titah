@@ -133,6 +133,8 @@ export const Agent = z
         edit: z.enum(["ask", "allow", "deny"]).optional(),
         write: z.enum(["ask", "allow", "deny"]).optional(),
         bash: z.enum(["ask", "allow", "deny"]).optional(),
+        network: z.enum(["ask", "allow", "deny"]).optional(),
+        delete: z.enum(["ask", "allow", "deny"]).optional(),
         allowlist: z.array(z.string()).optional(),
       })
       .optional()
@@ -191,6 +193,23 @@ export const Permission = z
     edit: z.enum(["ask", "allow", "deny"]).default("ask"),
     write: z.enum(["ask", "allow", "deny"]).default("ask"),
     bash: z.enum(["ask", "allow", "deny"]).default("ask"),
+    /*
+     * Sumbu untuk `webfetch` dan `websearch`.
+     *
+     * Ia ada terpisah bukan karena berbahaya bagi berkas — ia tidak menyentuh
+     * berkas sama sekali — melainkan karena ini satu-satunya kelas tool yang
+     * mengirim isi repo KELUAR dari mesin. Tidak satu pun dari tiga sumbu di
+     * atas menyatakan itu, dan `docs/gap-analysis.md` sudah memperingatkannya
+     * sebelum tool webnya ada.
+     */
+    network: z.enum(["ask", "allow", "deny"]).default("ask"),
+    /*
+     * Sumbu untuk `remove`. Menghapus bukan menulis.
+     *
+     * Agent dengan `write: allow` yang dimaksudkan sebagai "boleh membuat berkas
+     * baru" tidak pernah dimaksudkan sebagai "boleh menghapus berkas saya".
+     */
+    delete: z.enum(["ask", "allow", "deny"]).default("ask"),
     allowlist: z
       .array(z.string())
       .default([])
@@ -225,6 +244,26 @@ export const Compaction = z
   })
   .describe("Automatic context compaction. Requires contextWindow on the model in use.")
 
+/**
+ * Backend pencarian web.
+ *
+ * Tidak ada mesin pencari yang bisa dipakai tanpa syarat, jadi backendnya
+ * dinyatakan alih-alih ditebak. `ddg` jalan tanpa kunci dan karena itu jadi
+ * bawaan — tapi ia mengurai HTML milik orang lain, dan HTML itu boleh berubah
+ * kapan saja. Kerapuhan itu dinyatakan di deskripsi tool dan di `titah doctor`,
+ * bukan disembunyikan: backend yang diam-diam berhenti bekerja lebih buruk
+ * daripada backend yang menyatakan dirinya rapuh.
+ */
+export const Search = z
+  .object({
+    backend: z.enum(["ddg", "brave", "tavily"]).default("ddg"),
+    apiKey: z
+      .string()
+      .optional()
+      .describe("Required by brave and tavily. Prefer `${env:VAR_NAME}` over a literal."),
+  })
+  .describe("Web search backend for the `websearch` tool")
+
 export const Config = z.object({
   $schema: z.string().optional(),
   model: z
@@ -257,7 +296,15 @@ export const Config = z.object({
     .string()
     .optional()
     .describe("Agent used when none is selected"),
-  permission: Permission.default({ edit: "ask", write: "ask", bash: "ask", allowlist: [] }),
+  permission: Permission.default({
+    edit: "ask",
+    write: "ask",
+    bash: "ask",
+    network: "ask",
+    delete: "ask",
+    allowlist: [],
+  }),
+  search: Search.default({ backend: "ddg" }),
   compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())
@@ -279,6 +326,7 @@ export type ExternalAgent = z.infer<typeof ExternalAgent>
 export type Agent = z.infer<typeof Agent>
 export type Command = z.infer<typeof Command>
 export type Compaction = z.infer<typeof Compaction>
+export type Search = z.infer<typeof Search>
 
 /**
  * Tiga mode bawaan, mengikuti pola opencode (`plan` / `build`) tapi memisahkan
@@ -305,7 +353,14 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
     // sepatah kata pun — terbukti saat diuji. Dengan penolakan eksplisit, ia
     // menerima alasan yang bisa diteruskan ke user. Sama amannya: izin
     // diperiksa sebelum eksekusi, jadi tidak ada yang pernah dijalankan.
-    permission: { edit: "deny", write: "deny", bash: "deny" },
+    //
+    // `delete` ikut ditolak: mode ini menjanjikan "tidak mengubah apa pun", dan
+    // menghapus adalah bentuk mengubah yang paling tidak bisa ditarik kembali.
+    //
+    // `network` sengaja TIDAK ditolak, dan itu bukan kelalaian. Membaca
+    // dokumentasi sebelum menyusun rencana justru pekerjaan mode ini; ia tidak
+    // mengubah apa pun di mesin, jadi ia mengikuti kebijakan global user.
+    permission: { edit: "deny", write: "deny", bash: "deny", delete: "deny" },
   },
   build: {
     description: "Build Manual — do the work, confirm every change",
@@ -314,7 +369,7 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "Read files before changing them. Keep changes as small and targeted as possible. " +
       "Each change is confirmed by the user one at a time — that is deliberate, so do " +
       "not batch many changes into one large step.",
-    permission: { edit: "ask", write: "ask", bash: "ask" },
+    permission: { edit: "ask", write: "ask", bash: "ask", network: "ask", delete: "ask" },
   },
   "build-auto": {
     description: "Build Auto — work autonomously, no confirmations",
@@ -323,7 +378,16 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "Since nobody is checking each step, the responsibility is yours: read before " +
       "changing, run the tests after changing, and report failures exactly as they are. " +
       "Never claim success without verifying it.",
-    permission: { edit: "allow", write: "allow", bash: "allow" },
+    // Termasuk `delete` dan `network`, dan itu memang arti "no confirmations".
+    // Tidak ada risiko baru yang ditambahkan keduanya di sini: mode ini sudah
+    // punya `bash: allow`, yang bisa menghapus dan mengunduh apa pun.
+    permission: {
+      edit: "allow",
+      write: "allow",
+      bash: "allow",
+      network: "allow",
+      delete: "allow",
+    },
   },
 }
 
