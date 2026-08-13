@@ -258,6 +258,14 @@
                   "deny"
                 ]
               },
+              "mcp": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
               "allowlist": {
                 "type": "array",
                 "items": {
@@ -372,6 +380,7 @@
         "bash": "ask",
         "network": "ask",
         "delete": "ask",
+        "mcp": "ask",
         "allowlist": []
       },
       "type": "object",
@@ -413,6 +422,15 @@
           ]
         },
         "delete": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
+        "mcp": {
           "default": "ask",
           "type": "string",
           "enum": [
@@ -466,6 +484,83 @@
         "command"
       ],
       "description": "Project checker for the `diagnostics` tool"
+    },
+    "mcp": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Executable that speaks MCP over stdio"
+          },
+          "args": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "env": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    "lsp": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Language server binary, e.g. \"typescript-language-server\""
+          },
+          "args": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "File extensions it handles, e.g. [\".ts\", \".tsx\"]"
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command",
+          "extensions"
+        ]
+      }
     },
     "compaction": {
       "default": {

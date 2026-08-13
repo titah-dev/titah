@@ -330,6 +330,7 @@ snapshots resend every part each time.
 | `diagnostics` | Run `diagnostics.command` and return its output | `bash` |
 | `memory` | Record a durable project fact, recalled into every request | — |
 | `question` | Ask the user and wait for their answer | — |
+| *(from MCP)* | Every tool an MCP server offers, as `<server>_<tool>` | `mcp` |
 
 All filesystem access is confined to the session working directory — paths that
 escape it are refused. Tool output larger than 32 KB is written to
@@ -383,6 +384,35 @@ pick wrong, and when retrieval picks wrong the missing fact leaves no trace.
 `question` is the only tool that stops and waits for a human. With no client
 connected it does not hang: it returns "nobody answered, continue with your best
 assumption and say what you assumed", which is what headless and CI need.
+
+## MCP and language servers
+
+Both speak JSON-RPC 2.0 over a subprocess's stdio, so they share one transport
+(`src/core/rpc.ts`). They differ only in framing: LSP uses `Content-Length`
+headers, MCP uses one JSON object per line.
+
+```jsonc
+"mcp": { "github": { "command": "mcp-server-github", "args": [] } },
+"lsp": { "ts": { "command": "typescript-language-server",
+                 "args": ["--stdio"], "extensions": [".ts", ".tsx"] } }
+```
+
+MCP support is **stdio only, tools only** — that is what closes the gap, and
+saying so is better than half-building everything. Its tools are namespaced
+`<server>_<tool>`, because two servers both offering `search` is ordinary and
+the second would otherwise silently replace the first. They sit on their own
+`mcp` permission axis: an MCP server is code Titah did not write and cannot
+classify, so forcing it onto `edit` or `bash` would ask the user to approve
+something other than what happens. A server that fails to start loses its tools
+and says why — it never brings the turn down with it.
+
+Language servers give **automatic** diagnostics: after `edit`, `patch`, `write`,
+or `move`, the diagnostics for that file are appended to the tool result, so the
+model sees the error it just introduced without having to remember to look. Only
+`initialize`/`didOpen`/`publishDiagnostics` are used — a full LSP client would
+be an editor, and what is needed here is a checker. No diagnostics at all is
+reported as **unknown**, deliberately distinct from an empty list, which means
+checked and clean.
 
 `edit` fails hard on purpose: if `oldString` is missing or appears more than
 once, the tool refuses and **writes nothing**. Refusing is far better than
