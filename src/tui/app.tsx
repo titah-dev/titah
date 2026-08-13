@@ -15,7 +15,8 @@ import {
 import {
   Editor,
   Footer,
-  History,
+  HistoryLine,
+  Scrollback,
   InfoPanel,
   PermissionDialog,
   QuestionDialog,
@@ -262,34 +263,24 @@ export function App({
 
 
   // Klik dan roda mouse.
-  useEffect(() => {
-    if (!mouse) return
-    return mouse.subscribe((event) => {
-      const { top, lines, total } = view.current
+  /*
+   * Klik-untuk-membuka detail tool DICABUT, dan ini konsekuensi yang tidak bisa
+   * dihindari dari `<Static>`.
+   *
+   * Riwayat sekarang tercetak ke scrollback TERMINAL, dan posisi layar bingkai
+   * dinamis bergantung pada seberapa jauh terminal digulir — sesuatu yang tidak
+   * pernah diberitahukan kepada aplikasi. Memetakan `y` sebuah klik ke baris
+   * riwayat berarti menebak, dan tebakan yang meleset membuka detail tool yang
+   * SALAH tanpa ada yang tahu.
+   *
+   * Menukar fitur ini dengan hilangnya kedipan adalah pertukaran yang disengaja:
+   * opencode dan Claude Code sama-sama tidak punya klik-untuk-membuka, karena
+   * keduanya memakai model scrollback yang sama.
+   *
+   * `ctrl+x d` tetap ada dan membuka SEMUA detail sekaligus, jadi isinya tidak
+   * pernah benar-benar tidak terjangkau.
+   */
 
-      if (event.kind === "wheel-up" || event.kind === "wheel-down") {
-        const step = event.kind === "wheel-up" ? WHEEL_LINES : -WHEEL_LINES
-        setScroll((value) => Math.max(0, Math.min(value + step, Math.max(0, total - 1))))
-        return
-      }
-      if (event.kind !== "press") return
-
-      // y berbasis 1 dari terminal; `top` adalah baris layar tempat riwayat mulai.
-      const line = lines[event.y - 1 - top]
-      if (!line?.toolID) return
-      const id = line.toolID
-
-      // Klik saat ctrl+x d sedang membuka SEMUANYA berarti "cukup yang ini":
-      // sisanya menutup, yang diklik tetap terbuka.
-      setExpandAll(false)
-      setOpenTools((current) => {
-        const next = new Set(current)
-        if (next.has(id)) next.delete(id)
-        else next.add(id)
-        return next
-      })
-    })
-  }, [mouse])
 
   const flash = useCallback((text: string) => {
     setNotice(text)
@@ -916,38 +907,34 @@ export function App({
       return
     }
 
-    const scrollAction = resolve(keymap, press, false, [
-      "messages_line_up",
-      "messages_line_down",
-      "messages_half_page_up",
-      "messages_half_page_down",
-      "messages_page_up",
-      "messages_page_down",
-      "messages_first",
-      "messages_last",
-    ])
-    if (scrollAction) {
-      // Batas atas dihitung dari riwayat yang ada. Tanpa ini, ↑ terus menaikkan
-      // nilai scroll meski layar sudah menampilkan baris paling awal, dan ↓
-      // berikutnya terasa tidak melakukan apa-apa selama puluhan tekanan.
-      // Lebar yang SAMA dengan yang dipakai saat merender di bawah. Kalau
-              // berbeda, jumlah baris untuk menghitung batas gulir tidak sama
-              // dengan jumlah baris yang benar-benar tampil, dan gulirnya meleset.
-              const totalLines = allLines(state.messages, expandTools, textWidth).length
-      const page = Math.max(1, size.rows - 8)
-      const maxScroll = Math.max(0, totalLines - 1)
-      const clamp = (value: number) => Math.max(0, Math.min(value, maxScroll))
-      if (scrollAction === "messages_line_up") setScroll((v) => clamp(v + 1))
-      if (scrollAction === "messages_line_down") setScroll((v) => clamp(v - 1))
-      if (scrollAction === "messages_half_page_up") setScroll((v) => clamp(v + Math.floor(page / 2)))
-      if (scrollAction === "messages_half_page_down")
-        setScroll((v) => clamp(v - Math.floor(page / 2)))
-      if (scrollAction === "messages_page_up") setScroll((v) => clamp(v + page))
-      if (scrollAction === "messages_page_down") setScroll((v) => clamp(v - page))
-      // length, bukan length-1: menggulir sejauh jumlah pesan akan menyisakan
-      // layar kosong, bukan memperlihatkan pesan pertama.
-      if (scrollAction === "messages_first") setScroll(maxScroll)
-      if (scrollAction === "messages_last") setScroll(0)
+    /*
+     * Gulir kustom DICABUT, dan itu konsekuensi langsung dari `<Static>`.
+     *
+     * Riwayat yang sudah selesai sekarang tercetak ke scrollback TERMINAL, jadi
+     * yang menggulirnya adalah terminal itu sendiri — roda mouse, shift+PageUp,
+     * dan pencarian bawaan terminal semuanya bekerja, dan semuanya lebih baik
+     * daripada yang pernah ditiru di sini. Menyisakan tombol gulir yang tidak
+     * lagi menggulir apa pun cuma mengajari user bahwa tombolnya rusak.
+     *
+     * Ini juga yang menghapus keluhan "jarak prompt tidak menentu": tidak ada
+     * lagi jendela yang bisa bergeser lepas dari prompt.
+     *
+     * Tombolnya tetap DITELAN, dan itu bukan sisa. Tanpa ini PageUp berakhir
+     * sebagai `[5~` yang terketik di dalam prompt — tombol yang tidak melakukan
+     * apa-apa masih jauh lebih baik daripada tombol yang mengotori masukan.
+     */
+    if (
+      resolve(keymap, press, false, [
+        "messages_line_up",
+        "messages_line_down",
+        "messages_half_page_up",
+        "messages_half_page_down",
+        "messages_page_up",
+        "messages_page_down",
+        "messages_first",
+        "messages_last",
+      ])
+    ) {
       return
     }
 
@@ -1069,6 +1056,35 @@ export function App({
     ) : null
 
   const lines = allLines(state.messages, expandTools, textWidth)
+
+  /*
+   * Riwayat dibelah: yang SUDAH SELESAI dicetak sekali ke scrollback terminal,
+   * yang masih hidup digambar ulang tiap frame.
+   *
+   * Ini yang menghapus kedipan. Sebelumnya seluruh layar adalah satu bingkai
+   * dinamis setinggi `size.rows`, jadi setiap detak spinner — sepuluh kali per
+   * detik — menghapus lalu menulis ulang SELURUH layar.
+   *
+   * Yang hidup hanya pesan TERAKHIR, dan hanya selama giliran berjalan. Begitu
+   * giliran selesai ia ikut menetap. `<Static>` menuntut daftarnya hanya
+   * bertambah, dan pembagian ini memenuhinya: pesan berpindah dari hidup ke
+   * menetap tepat sekali, dengan cara ditambahkan.
+   */
+  const liveCount = state.status === "working" && state.messages.length > 0 ? 1 : 0
+  const settledMessages = state.messages.slice(0, state.messages.length - liveCount)
+  const liveMessages = state.messages.slice(state.messages.length - liveCount)
+  const settledLines = allLines(settledMessages, expandTools, textWidth)
+  const liveLines = allLines(liveMessages, expandTools, textWidth)
+
+  /*
+   * Kunci yang memaksa scrollback dicetak ulang seluruhnya.
+   *
+   * `<Static>` tidak pernah memperbarui yang sudah tercetak, jadi dua hal harus
+   * memaksanya mulai dari nol: berganti sesi (isinya milik percakapan lain) dan
+   * membuka/menutup detail tool (baris yang sama berubah isinya). Tanpa ini,
+   * ctrl+x d tidak mengubah apa pun di layar.
+   */
+  const scrollbackKey = `${session.id}:${expandAll ? "all" : "some"}:${openTools.size}`
   const editorHeight = editorRows(draft, size.rows)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   // Pertanyaan memakan tinggi juga, kalau tidak riwayat digambar di atasnya.
@@ -1092,7 +1108,16 @@ export function App({
     editorHeight + permissionHeight + questionHeight + popupHeight + workingHeight + subagentPanelHeight,
     headerHeight,
   )
-  const window = viewport(lines, available, scroll)
+  /*
+   * Bagian hidup DIBATASI tinggi layar, dan itu bukan gulir.
+   *
+   * Satu jawaban bisa lebih panjang dari terminal, dan bingkai dinamis yang
+   * lebih tinggi dari layar membuat Ink menulis di luar batas — layarnya lalu
+   * kacau, bukan sekadar terpotong. `scroll: 0` berarti selalu menempel pada
+   * baris terbaru, yang memang satu-satunya perilaku yang masuk akal untuk
+   * jawaban yang sedang mengalir.
+   */
+  const liveWindow = viewport(liveLines, available, 0)
 
   // Peta baris layar → baris riwayat, disegarkan tiap render.
   //
@@ -1100,10 +1125,26 @@ export function App({
   // keberapa riwayat dimulai; klik datang belakangan, lewat listener yang tidak
   // ikut dirender. Ref inilah jembatannya.
   useEffect(() => {
+    /*
+     * Hanya bagian HIDUP yang bisa diklik sekarang.
+     *
+     * Yang sudah menetap ada di scrollback terminal, dan Titah tidak tahu di
+     * baris layar keberapa ia berada — terminal boleh menggulirnya kapan saja
+     * tanpa memberi tahu siapa pun. Memetakan klik ke sana berarti menebak, dan
+     * tebakan yang meleset membuka detail tool yang salah.
+     */
+    /*
+     * Baris layar tempat bagian HIDUP dimulai = tinggi header + jumlah baris
+     * yang sudah menetap. Keduanya dicetak `<Static>` di atas bingkai dinamis.
+     *
+     * Memakai `headerHeight` saja — seperti sebelum riwayat pindah ke Static —
+     * membuat klik meleset sebanyak jumlah baris yang sudah menetap, dan
+     * melesetnya diam: yang terbuka adalah detail tool yang salah.
+     */
     view.current = {
-      top: headerHeight + (window.hiddenAbove > 0 ? 1 : 0),
-      lines: window.lines,
-      total: lines.length,
+      top: headerHeight + settledLines.length,
+      lines: liveWindow.lines,
+      total: liveLines.length,
     }
   })
 
@@ -1143,22 +1184,37 @@ export function App({
 
 
   return (
-    <Box height={size.rows} flexDirection="column">
-      <InfoPanel
-        cwd={cwd}
-        model={model}
-        {...(activeAgent ? { agent: activeAgent } : {})}
-        {...(state.session ? { session: state.session } : {})}
-        columns={size.columns}
-        showMark={withMark}
+    <>
+      {/* Dicetak SEKALI ke scrollback terminal, di atas bingkai dinamis.
+          Menggulirnya memakai gulir terminal sendiri — itu yang membuat
+          posisi prompt tidak pernah lagi mengambang di atas ruang kosong. */}
+      {/* Panel atas ikut dicetak SEKALI, di puncak scrollback.
+          `<Static>` menulis di ATAS bingkai dinamis, jadi panel yang tinggal di
+          bingkai itu akan terdorong ke tengah layar — di bawah riwayat, bukan di
+          atasnya. Dicetak sekali juga lebih jujur terhadap isinya: cwd, model,
+          dan sesi adalah keadaan saat percakapan DIMULAI. */}
+      <Scrollback
+        lines={settledLines}
+        resetKey={scrollbackKey}
+        header={
+          <InfoPanel
+            cwd={cwd}
+            model={model}
+            {...(activeAgent ? { agent: activeAgent } : {})}
+            {...(state.session ? { session: state.session } : {})}
+            columns={size.columns}
+            showMark={withMark}
+          />
+        }
       />
 
-      <History
-        lines={window.lines}
-        hiddenAbove={window.hiddenAbove}
-        hiddenBelow={window.hiddenBelow}
-        jumpHint={jumpKey}
-      />
+      {/* Bingkai DINAMIS, dan sengaja sekecil mungkin: hanya inilah yang
+          digambar ulang tiap detak spinner. */}
+      <Box flexDirection="column">
+
+      {liveWindow.lines.map((line) => (
+        <HistoryLine key={line.key} line={line} />
+      ))}
 
       {state.error ? <Text color="red">⚠ {state.error}</Text> : null}
       {/* Redup dan tanpa warna peringatan: ini informasi, bukan kegagalan, dan
@@ -1180,7 +1236,8 @@ export function App({
         {...(notice ? { hint: notice } : {})}
         mouseCapture={mouseCapture}
       />
-    </Box>
+      </Box>
+    </>
   )
 }
 
