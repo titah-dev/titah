@@ -87,6 +87,7 @@ export const patchTool: TitahTool<typeof inputSchema> = {
         .map((edit, index) => `--- edit ${index + 1} ---\n- ${edit.find}\n+ ${edit.replace}`)
         .join("\n\n"),
       pattern: "edit",
+      subject: input.path,
     }
   },
   async execute(input, ctx) {

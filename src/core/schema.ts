@@ -136,6 +136,9 @@ export const Agent = z
         network: z.enum(["ask", "allow", "deny"]).optional(),
         delete: z.enum(["ask", "allow", "deny"]).optional(),
         mcp: z.enum(["ask", "allow", "deny"]).optional(),
+        external_directory: z.enum(["deny", "ask", "allow"]).optional(),
+        doom_loop: z.enum(["ask", "allow", "deny"]).optional(),
+        rules: z.record(z.string(), z.enum(["ask", "allow", "deny"])).optional(),
         allowlist: z.array(z.string()).optional(),
       })
       .optional()
@@ -221,10 +224,47 @@ export const Permission = z
      * memberi izin untuk hal yang berbeda dari yang sebenarnya terjadi.
      */
     mcp: z.enum(["ask", "allow", "deny"]).default("ask"),
+    /*
+     * Sumbu untuk path DI LUAR direktori kerja.
+     *
+     * Berbeda dari lima di atas: ia tidak pernah bawaan `ask`, melainkan
+     * `deny`. Batas cwd sekarang ditegakkan `resolveInside` sebagai tembok
+     * struktural yang tidak bisa salah, dan menjadikannya bisa ditanya berarti
+     * menukar jaminan dengan kebijakan. Yang ditawarkan di sini bukan itu:
+     * jalan keluarnya harus disebut PER PATH lewat `rules`, dan tidak ada
+     * bentuk `allow` umum yang membuka segalanya.
+     */
+    external_directory: z.enum(["deny", "ask", "allow"]).default("deny"),
+    /*
+     * Sumbu untuk perulangan yang terdeteksi.
+     *
+     * Ia tidak pernah MENGIZINKAN apa pun — ia hanya menyela sesuatu yang sudah
+     * diizinkan. Karena itu bawaannya `ask`: nilai `allow` berarti "jangan
+     * pernah sela", dan `deny` berarti "hentikan begitu berputar".
+     */
+    doom_loop: z.enum(["ask", "allow", "deny"]).default("ask"),
     allowlist: z
       .array(z.string())
       .default([])
       .describe("Command patterns that are always allowed, e.g. \"git *\""),
+    /*
+     * Dimensi ARGUMEN: aturan yang melihat ke DALAM panggilan.
+     *
+     *   { "bash(git *)": "allow", "bash(git push *)": "deny",
+     *     "webfetch(https://docs.*)": "allow",
+     *     "external_directory(/Users/me/other-repo/*)": "allow" }
+     *
+     * Penilaiannya seluruhnya di `src/core/decide.ts`, satu fungsi, dan
+     * `titah permission explain` memanggil fungsi yang SAMA — supaya yang
+     * dijelaskan tidak pernah berbeda dari yang dijalankan.
+     */
+    rules: z
+      .record(z.string(), z.enum(["ask", "allow", "deny"]))
+      .default({})
+      .describe(
+        'Argument-level rules, e.g. {"bash(git *)": "allow"}. deny always wins; ' +
+          "among ask and allow the most specific pattern wins.",
+      ),
   })
   .describe("Deny by default. With no client connected, every ask becomes a deny.")
 
@@ -361,7 +401,10 @@ export const Config = z.object({
     network: "ask",
     delete: "ask",
     mcp: "ask",
+    external_directory: "deny",
+    doom_loop: "ask",
     allowlist: [],
+    rules: {},
   }),
   search: Search.default({ backend: "ddg" }),
   diagnostics: Diagnostics.optional(),

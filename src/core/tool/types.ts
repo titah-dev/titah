@@ -54,6 +54,11 @@ export interface PermissionNeed {
    * Lihat issue #12 dan `commandSegments` di `tool/bash.ts`.
    */
   segments?: string[]
+  /**
+   * Argumen yang dinilai aturan setingkat argumen untuk sumbu NON-bash: URL
+   * untuk `network`, path untuk `edit`/`write`/`delete`, nama server untuk `mcp`.
+   */
+  subject?: string
 }
 
 export interface TitahTool<Schema extends z.ZodType = z.ZodType> {
@@ -78,15 +83,53 @@ export class ToolError extends Error {}
  * Meski M1 hanya punya tool baca, batas ini dipasang sekarang: menambahkannya
  * belakangan berarti mengaudit ulang setiap tool yang sudah ada.
  */
+/**
+ * Akar TAMBAHAN yang boleh disentuh, di luar cwd.
+ *
+ * Dinyatakan lewat config (`permission.rules` dengan sumbu `external_directory`),
+ * bukan ditanyakan saat berjalan — dan itu keputusan sadar. `resolveInside`
+ * dipanggil sinkron dari dalam sebelas tool; menjadikannya bisa bertanya berarti
+ * menjadikannya async dan menyalurkan mesin izin ke setiap tool berkas.
+ *
+ * Lebih penting dari ongkos itu: batas cwd sekarang adalah tembok STRUKTURAL
+ * yang tidak bisa salah, dan menjadikannya keputusan saat berjalan menukar
+ * jaminan dengan kebijakan. Bentuk ini menahan sebagian besar jaminannya —
+ * himpunan akar yang sah ditetapkan sekali, saat config dimuat, dan tidak ada
+ * yang bisa menambahnya di tengah giliran.
+ */
+let extraRoots: string[] = []
+
+/**
+ * Dipasang sekali oleh pemuat config. Path harus ABSOLUT dan sudah diresolusi;
+ * pola (`/repo/*`) dipangkas jadi direktorinya.
+ */
+export function setExternalRoots(roots: string[]): void {
+  extraRoots = roots.map((root) => path.resolve(root.replace(/[/\\]\*+$/, "")))
+}
+
+export function externalRoots(): string[] {
+  return [...extraRoots]
+}
+
+function within(root: string, resolved: string): boolean {
+  return resolved === root || resolved.startsWith(root + path.sep)
+}
+
 export function resolveInside(cwd: string, target: string): string {
   const resolved = path.resolve(cwd, target)
   const root = path.resolve(cwd)
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new ToolError(
-      `Path "${target}" is outside the session working directory (${root}). Refused.`,
-    )
-  }
-  return resolved
+  if (within(root, resolved)) return resolved
+  // Akar tambahan diperiksa SESUDAH cwd, dan hanya kalau user menyebutkannya.
+  // Tidak ada bentuk umum yang membuka segalanya: setiap akar disebut satu per
+  // satu, dan daftar kosong berarti perilaku lama persis.
+  if (extraRoots.some((extra) => within(extra, resolved))) return resolved
+
+  throw new ToolError(
+    `Path "${target}" is outside the session working directory (${root}). Refused.` +
+      (extraRoots.length === 0
+        ? ' Add permission.rules {"external_directory(/path/*)": "allow"} to widen it.'
+        : ` Allowed extras: ${extraRoots.join(", ")}.`),
+  )
 }
 
 export function relative(cwd: string, target: string): string {

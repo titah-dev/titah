@@ -1,5 +1,7 @@
 import crypto from "node:crypto"
 import { bus } from "./event.ts"
+import { decide, parseRule, type Policy, type Rule } from "./decide.ts"
+import { matchesPattern } from "./match.ts"
 import type { Agent, Config } from "./schema.ts"
 
 /**
@@ -12,7 +14,17 @@ import type { Agent, Config } from "./schema.ts"
  * otomasi adalah `--auto` atau allowlist eksplisit, bukan perilaku implisit.
  */
 
-export type PermissionKind = "edit" | "write" | "bash" | "network" | "delete" | "mcp"
+export { matchesPattern }
+
+export type PermissionKind =
+  | "edit"
+  | "write"
+  | "bash"
+  | "network"
+  | "delete"
+  | "mcp"
+  | "external_directory"
+  | "doom_loop"
 
 export type PermissionDecision = "once" | "always" | "reject"
 
@@ -111,6 +123,23 @@ export function clearTurn(sessionID: string): void {
   turnAllowlist.delete(sessionID)
 }
 
+/**
+ * Grant "always" disimpan sebagai ATURAN UTUH, bukan pola telanjang.
+ *
+ * Versi pertama menyimpan polanya saja lalu membungkusnya jadi `bash(...)` saat
+ * dipakai — dan itu memutus setiap grant non-bash: `"edit"` jadi `bash(edit)`,
+ * yang tidak pernah cocok dengan apa pun. Ditemukan oleh test sub-agent.
+ *
+ * Dengan bentuk ini, grant dari dialog dinilai `decide()` dengan mesin yang
+ * sama persis dengan aturan yang user tulis di config — dan tidak ada tebakan
+ * di titik pemakaian.
+ */
+export function ruleSource(kind: PermissionKind, pattern: string): string {
+  // Tool tanpa argumen memakai nama sumbunya sendiri sebagai pola (`edit`,
+  // `write`). Itu berarti setingkat kelas, dan dibiarkan tanpa kurung.
+  return pattern === kind ? kind : `${kind}(${pattern})`
+}
+
 function remember(sessionID: string, pattern: string): void {
   const set = sessionAllowlist.get(sessionID) ?? new Set<string>()
   set.add(pattern)
@@ -125,16 +154,6 @@ function rememberForTurn(sessionID: string, pattern: string): void {
 
 function turnAllowlistFor(sessionID: string): string[] {
   return [...(turnAllowlist.get(sessionID) ?? [])]
-}
-
-/**
- * Pencocokan pola gaya glob sederhana: `*` cocok dengan apa saja.
- * Dipakai untuk allowlist bash seperti `git *` atau `npm test`.
- */
-export function matchesPattern(pattern: string, value: string): boolean {
-  if (pattern === value) return true
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
-  return new RegExp(`^${escaped}$`).test(value)
 }
 
 /** Operator shell — tidak pernah muncul di dalam satu segmen perintah. */
@@ -189,6 +208,10 @@ export interface EffectivePermission {
   network: "ask" | "allow" | "deny"
   delete: "ask" | "allow" | "deny"
   mcp: "ask" | "allow" | "deny"
+  external_directory: "deny" | "ask" | "allow"
+  doom_loop: "ask" | "allow" | "deny"
+  /** Dimensi argumen, sudah diurai. */
+  rules: Rule[]
   allowlist: string[]
   /** Nama agent yang menentukan kebijakan ini, untuk pesan yang bisa dilacak. */
   source?: string
@@ -214,6 +237,15 @@ export function effectivePermission(
     network: override?.network ?? base.network,
     delete: override?.delete ?? base.delete,
     mcp: override?.mcp ?? base.mcp,
+    external_directory: override?.external_directory ?? base.external_directory,
+    doom_loop: override?.doom_loop ?? base.doom_loop,
+    // Aturan agent DITAMBAHKAN di belakang aturan global, bukan menggantinya.
+    // Menggantinya berarti seorang agent yang menambah satu aturan diam-diam
+    // membuang seluruh kebijakan argumen milik user.
+    rules: [
+      ...Object.entries(base.rules).map(([source, policy]) => parseRule(source, policy)),
+      ...Object.entries(override?.rules ?? {}).map(([source, policy]) => parseRule(source, policy)),
+    ],
     allowlist: [...base.allowlist, ...(override?.allowlist ?? [])],
     ...(override && agentID ? { source: agentID } : {}),
   }
@@ -233,6 +265,20 @@ export interface AskOptions {
    * bisa menyala sama sekali — lihat `matchAllowlist`.
    */
   segments?: string[]
+  /**
+   * Argumen yang dinilai untuk sumbu NON-bash: URL untuk `network`, path untuk
+   * `edit`/`write`/`delete`/`external_directory`, nama server untuk `mcp`.
+   *
+   * Tidak diisi berarti hanya kebijakan kelas dan aturan setingkat kelas yang
+   * berlaku — bukan penolakan. Sumbu yang memang tidak punya argumen (`edit`
+   * sebagai kelas) memang begitu.
+   */
+  subject?: string
+  /**
+   * Apakah panggilan ini terdeteksi berulang. Diisi pemanggil, karena hanya ia
+   * yang melihat riwayat giliran.
+   */
+  looping?: boolean
   permission: EffectivePermission
   /** Jumlah klien yang sedang mendengarkan sesi ini. 0 berarti tolak. */
   listeners: number
@@ -284,16 +330,61 @@ export async function ask(options: AskOptions): Promise<PermissionResult> {
   }
 
   const allowlistSessionID = options.allowlistSessionID ?? options.sessionID
-  const configAllowlist = options.permission.allowlist
-  const matched = matchAllowlist(
-    [
-      ...configAllowlist,
-      ...allowlistFor(allowlistSessionID),
-      ...turnAllowlistFor(allowlistSessionID),
-    ],
-    options,
-  )
-  if (matched) return { granted: true, reason: `Matched allowlist: "${matched}".` }
+
+  /*
+   * Penilaian tiga dimensi, SATU fungsi.
+   *
+   * Jawaban "always" milik user ikut masuk sebagai aturan setingkat argumen —
+   * bukan jalur terpisah — supaya grant yang ia berikan lewat dialog dinilai
+   * dengan mesin yang sama dengan aturan yang ia tulis di config. Dua jalur
+   * berarti dua perilaku yang harus dijaga tetap sama, dan itu persis bentuk
+   * kesalahan yang menghasilkan bug allowlist #12.
+   */
+  const remembered = [...allowlistFor(allowlistSessionID), ...turnAllowlistFor(allowlistSessionID)]
+  const rules = [
+    ...options.permission.rules,
+    // Allowlist lama tetap didukung dan berarti apa yang selalu ia berarti:
+    // pola perintah bash yang diizinkan.
+    ...options.permission.allowlist.map((pattern) => parseRule(`bash(${pattern})`, "allow")),
+    // Sudah berbentuk aturan utuh sejak disimpan — lihat `ruleSource`.
+    ...remembered.map((source) => parseRule(source, "allow")),
+  ]
+
+  const verdict = decide({
+    kind: options.kind,
+    classPolicy: options.permission[options.kind],
+    rules,
+    // Untuk bash, SETIAP segmen dinilai dan semuanya harus lolos (#12).
+    // Untuk sumbu lain, satu nilai kalau pemanggil memberikannya.
+    candidates:
+      options.kind === "bash"
+        ? (options.segments ?? []).map((value) => ({ value }))
+        : options.subject === undefined
+          ? []
+          : [{ value: options.subject }],
+  })
+
+  if (verdict.policy === "deny") return { granted: false, reason: verdict.reason }
+  if (verdict.policy === "allow") {
+    /*
+     * DIMENSI SITUASI, dan ia hanya boleh MENGETATKAN.
+     *
+     * Dipasang di sini, sesudah `allow` dan sebelum pengembalian, karena itu
+     * satu-satunya tempat yang benar: sesuatu yang sudah ditolak tidak perlu
+     * disela, dan sesuatu yang akan ditanyakan sudah menyela dengan sendirinya.
+     */
+    if (options.looping === true && options.permission.doom_loop !== "allow") {
+      if (options.permission.doom_loop === "deny") {
+        return {
+          granted: false,
+          reason: "Stopped: this call is repeating, and doom_loop = \"deny\".",
+        }
+      }
+      // Jatuh ke dialog di bawah, dengan alasannya disebutkan.
+    } else {
+      return { granted: true, reason: verdict.reason }
+    }
+  }
 
   // Sama seperti allowlist: sub-agent memeriksa --auto INDUKNYA, bukan
   // dirinya sendiri — `setAutoApprove` hanya pernah dipanggil untuk sesi
@@ -378,8 +469,9 @@ export function respond(permissionID: string, decision: PermissionDecision): boo
     // Sub-agent menulis ke gudang KHUSUS GILIRAN, bukan allowlist permanen —
     // lihat komentar `turnAllowlist`. Grant top-level tetap permanen, seperti
     // sebelum fitur sub-agent ada.
-    if (entry.turnScoped) rememberForTurn(entry.allowlistSessionID, entry.request.pattern)
-    else remember(entry.allowlistSessionID, entry.request.pattern)
+    const source = ruleSource(entry.request.kind, entry.request.pattern)
+    if (entry.turnScoped) rememberForTurn(entry.allowlistSessionID, source)
+    else remember(entry.allowlistSessionID, source)
   }
   entry.resolve({
     granted: true,

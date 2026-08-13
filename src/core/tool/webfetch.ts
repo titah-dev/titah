@@ -119,7 +119,9 @@ export const webfetchTool: TitahTool<typeof inputSchema> = {
       // memberi izin adalah ke mana permintaan itu pergi, dan host bisa
       // bersembunyi di belakang path yang panjang.
       detail: `Fetch ${input.url}\n\nThis sends a request outside your machine.`,
-      pattern: `webfetch ${safeOrigin(input.url)}/*`,
+      pattern: `${safeOrigin(input.url)}/*`,
+      // Dinilai aturan setingkat argumen: `network(https://docs.*)`.
+      subject: input.url,
     }
   },
   async execute(input, ctx) {

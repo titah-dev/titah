@@ -33,6 +33,7 @@ export const moveTool: TitahTool<typeof moveInput> = {
       title: `move ${input.from} → ${input.to}`,
       detail: `Move ${input.from}\n    to ${input.to}\n\nNothing is overwritten: if the destination exists, this fails.`,
       pattern: "write",
+      subject: input.to,
     }
   },
   async execute(input, ctx) {
@@ -93,6 +94,7 @@ export const removeTool: TitahTool<typeof removeInput> = {
         ? `Delete ${input.path} AND EVERYTHING INSIDE IT.`
         : `Delete ${input.path}.`,
       pattern: "delete",
+      subject: input.path,
     }
   },
   async execute(input, ctx) {

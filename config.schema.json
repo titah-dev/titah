@@ -266,6 +266,36 @@
                   "deny"
                 ]
               },
+              "external_directory": {
+                "type": "string",
+                "enum": [
+                  "deny",
+                  "ask",
+                  "allow"
+                ]
+              },
+              "doom_loop": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "allow",
+                  "deny"
+                ]
+              },
+              "rules": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "deny"
+                  ]
+                }
+              },
               "allowlist": {
                 "type": "array",
                 "items": {
@@ -381,7 +411,10 @@
         "network": "ask",
         "delete": "ask",
         "mcp": "ask",
-        "allowlist": []
+        "external_directory": "deny",
+        "doom_loop": "ask",
+        "allowlist": [],
+        "rules": {}
       },
       "type": "object",
       "properties": {
@@ -439,12 +472,46 @@
             "deny"
           ]
         },
+        "external_directory": {
+          "default": "deny",
+          "type": "string",
+          "enum": [
+            "deny",
+            "ask",
+            "allow"
+          ]
+        },
+        "doom_loop": {
+          "default": "ask",
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "deny"
+          ]
+        },
         "allowlist": {
           "default": [],
           "description": "Command patterns that are always allowed, e.g. \"git *\"",
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "rules": {
+          "default": {},
+          "description": "Argument-level rules, e.g. {\"bash(git *)\": \"allow\"}. deny always wins; among ask and allow the most specific pattern wins.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "allow",
+              "deny"
+            ]
           }
         }
       },

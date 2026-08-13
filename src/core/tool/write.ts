@@ -28,6 +28,7 @@ export const writeTool: TitahTool<typeof inputSchema> = {
       detail:
         preview + (lines.length > PREVIEW_LINES ? `\n… ${lines.length - PREVIEW_LINES} more lines` : ""),
       pattern: "write",
+      subject: input.path,
     }
   },
   async execute(input, ctx) {

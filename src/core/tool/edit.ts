@@ -42,6 +42,7 @@ export const editTool: TitahTool<typeof inputSchema> = {
       title: `edit ${input.path}`,
       detail: `--- lama\n${input.oldString}\n--- baru\n${input.newString}`,
       pattern: "edit",
+      subject: input.path,
     }
   },
   async execute(input, ctx) {
