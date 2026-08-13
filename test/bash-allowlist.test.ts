@@ -82,7 +82,9 @@ test("pola sub-perintah sekarang benar-benar cocok — dulu tidak pernah", async
   // tidak ada satu pun sinyal yang memberi tahu user kenapa.
   const result = await askBash(nextSession(), "git status", ["git status*"])
   assert.equal(result.granted, true)
-  assert.match(result.reason, /allowlist/)
+  // Alasannya menyebut ATURAN MANA yang memutuskan, bukan sekadar "allowlist".
+  // Itu yang membuat `titah permission explain` bisa menjawab "kenapa".
+  assert.match(result.reason, /rule "bash\(git status\*\)"/)
 })
 
 test("pola yang cocok TIDAK ikut mengizinkan perintah yang dirantai", async () => {

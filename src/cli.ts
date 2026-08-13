@@ -23,7 +23,10 @@ import {
 import { listen } from "./server/index.ts"
 import { bus } from "./core/event.ts"
 import { prompt, AgentError } from "./core/agent.ts"
+import { decide, parseRule, type Policy } from "./core/decide.ts"
+import { commandSegments } from "./core/tool/bash.ts"
 import {
+  effectivePermission,
   neverMatchingAllowlistEntries,
   respond,
   type PermissionDecision,
@@ -87,6 +90,8 @@ Configuration:
   auth remove <provider>   Remove a provider's credentials
   models                   List configured models
   doctor                   Check environment, config, and external agents
+  permission explain <kind> [argument]
+                           Show what a call would be allowed to do, and which rule decides
 
 Options:
   -v, --version            Print the version
@@ -166,6 +171,10 @@ async function main(argv: string[]): Promise<void> {
       return cmdAuth(rest)
     case "models":
       return cmdModels()
+    case "permission": {
+      process.exitCode = cmdPermission(rest)
+      return
+    }
     case "doctor":
       return cmdDoctor(values.probe === true)
     case "serve":
@@ -314,6 +323,73 @@ async function probe(baseURL: string): Promise<string> {
       ? "timeout"
       : "unreachable"
   }
+}
+
+/**
+ * `titah permission explain <kind> [argument]`
+ *
+ * Wajib ada, bukan pemanis. Dengan enam sakelar user bisa memegang postur
+ * keamanannya di kepala; dengan tiga dimensi ia tidak bisa. Presisi yang tidak
+ * bisa diaudit hanyalah rasa aman.
+ *
+ * Ia memanggil `decide()` yang SAMA dengan yang dipakai `ask()` saat giliran
+ * berjalan — bukan salinan yang menjelaskan. Penjelas yang punya logikanya
+ * sendiri akan menyimpang, dan yang menyimpang justru dipercaya.
+ */
+function cmdPermission(argv: string[]): number {
+  const [action, kind, ...rest] = argv
+  if (action !== "explain" || kind === undefined) {
+    process.stderr.write('Usage: titah permission explain <kind> [argument]\n')
+    process.stderr.write('  e.g. titah permission explain bash "git push origin main"\n')
+    process.stderr.write("       titah permission explain network https://example.com/a\n")
+    return 1
+  }
+
+  const loaded = loadConfig(process.cwd())
+  const effective = effectivePermission(loaded.config)
+  const classPolicy = (effective as unknown as Record<string, Policy>)[kind]
+  if (classPolicy === undefined) {
+    process.stderr.write(`Unknown permission kind: ${kind}\n`)
+    return 1
+  }
+
+  const argument = rest.join(" ")
+  // bash dinilai PER SEGMEN, sama seperti saat sungguhan. Menjelaskan perintah
+  // berantai sebagai satu kesatuan akan memberi jawaban yang berbeda dari yang
+  // akan terjadi — persis kegagalan yang perintah ini ada untuk mencegahnya.
+  const candidates =
+    kind === "bash"
+      ? (commandSegments(argument) ?? []).map((value) => ({ value }))
+      : argument === ""
+        ? []
+        : [{ value: argument }]
+
+  const rules = [
+    ...effective.rules,
+    ...effective.allowlist.map((pattern) => parseRule(`bash(${pattern})`, "allow")),
+  ]
+  const verdict = decide({ kind, classPolicy, rules, candidates })
+
+  const out = (line = "") => process.stdout.write(`${line}\n`)
+  out(`${kind}${argument === "" ? "" : `: ${argument}`}`)
+  out()
+  out(`  class policy   ${kind} = "${classPolicy}"`)
+  if (kind === "bash") {
+    out(
+      `  segments       ${candidates.length === 0 ? "(none — cannot be judged, so never auto-allowed)" : candidates.map((c) => JSON.stringify(c.value)).join(", ")}`,
+    )
+  }
+  out(`  decided by     ${verdict.rule ? `rule "${verdict.rule.source}"` : "the class policy"}`)
+  for (const other of verdict.alsoMatched) {
+    out(`  also matched   "${other.source}" = ${other.policy} (less specific)`)
+  }
+  out()
+  out(`  → ${verdict.policy.toUpperCase()}`)
+  out(`    ${verdict.reason}`)
+  if (verdict.policy === "ask") {
+    out("    With no client connected (headless, CI), an ask becomes a deny.")
+  }
+  return 0
 }
 
 async function cmdDoctor(withProbe: boolean): Promise<void> {

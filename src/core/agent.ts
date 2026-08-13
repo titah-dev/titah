@@ -16,6 +16,7 @@ import {
 import { buildCachedRequest, shouldCache } from "./cag.ts"
 import { loadMcpTools } from "./mcp.ts"
 import { diagnoseFile, renderDiagnostics } from "./lsp.ts"
+import { clearLoopWindow, noteCall } from "./loop.ts"
 import { relative, resolveInside } from "./tool/types.ts"
 import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
@@ -453,6 +454,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * membawanya — jadi bagian terbesar dan paling stabil dari permintaan
      * justru bagian yang tidak bisa ditandai. Lihat src/core/cag.ts.
      */
+    // Perulangan adalah properti SATU giliran. Membawa hitungannya lintas
+    // giliran berarti user yang sengaja menjalankan perintah sama tiga kali
+    // di tiga giliran akan disela seolah model macet.
+    clearLoopWindow(session.id)
+
     const split = splitModelRequest(session.id)
     const cacheDecision = shouldCache({
       npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",
@@ -1462,6 +1468,9 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           // 1. Izin dulu. Tool yang mengubah sesuatu tidak pernah jalan tanpa ini.
           if (definition.permission) {
             const need = definition.permission(input, ctx)
+            // Dicatat SEBELUM tool jalan: kalau dicatat sesudah, panggilan yang
+            // memicu deteksi adalah yang sudah terlanjur dijalankan.
+            const looping = noteCall(sessionID, definition.name, input)
             const verdict = await ask({
               sessionID,
               permission: options.permission,
@@ -1473,6 +1482,8 @@ function buildTools(options: BuildToolsOptions): ToolSet {
               // bagaimana bash mengabarkan bahwa perintahnya tidak bisa dinilai
               // per bagian, dan allowlist tidak boleh menyala (issue #12).
               ...(need.segments === undefined ? {} : { segments: need.segments }),
+              ...(need.subject === undefined ? {} : { subject: need.subject }),
+              ...(looping ? { looping: true } : {}),
               // Dihitung dari `streamSessionID`, BUKAN `sessionID` milik anak
               // sendiri: klien (TUI/CLI/server) hanya berlangganan stream sesi
               // PALING ATAS, jadi `listenerCount(sessionID)` untuk giliran

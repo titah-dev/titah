@@ -218,6 +218,7 @@ export function mcpToolDefinition(server: McpServer, tool: McpTool): TitahTool {
           `${JSON.stringify(input, null, 2)}\n\n` +
           "This is third-party code. Titah cannot see what it does.",
         pattern: `mcp ${tool.serverId}`,
+        subject: `${tool.serverId}/${tool.remoteName}`,
       }
     },
     async execute(input) {

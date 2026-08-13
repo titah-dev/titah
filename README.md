@@ -337,6 +337,39 @@ escape it are refused. Tool output larger than 32 KB is written to
 `~/.local/share/titah/tool-output/`, and only the head plus a pointer enters the
 context.
 
+Permissions have **three dimensions**, evaluated in one function
+(`src/core/decide.ts`) that `titah permission explain` also calls — so what is
+explained can never differ from what runs.
+
+| Dimension | Question | Example |
+|---|---|---|
+| **class** | what kind of harm? | `"bash": "ask"` |
+| **argument** | which call exactly? | `"bash(git *)": "allow"` |
+| **situation** | what is happening around it? | repeated call → `doom_loop` |
+
+Two combining rules, and they are the whole design:
+
+1. **`deny` is a wall at every level.** One matching `deny` stops everything, and
+   no more specific rule can open it. Without that, "nothing leaves this machine"
+   stops being a guarantee the moment one `allow` pattern exists somewhere.
+2. **Between `ask` and `allow`, the most specific pattern wins** — measured in
+   non-wildcard characters, not file order. Ties go to `ask`: two equally
+   specific rules that disagree are an ambiguous config, and guessing loose on
+   ambiguity is how you get permissions nobody intended.
+
+The situation dimension can only **tighten**: `doom_loop` never allows anything,
+it only interrupts something already allowed.
+
+```
+titah permission explain bash "git push origin main"
+titah permission explain network https://docs.python.org/3/
+```
+
+`external_directory` widens the working-directory boundary, but only per path
+named in `permission.rules`, and only at config load — never at runtime. That
+boundary is a structural wall every file tool relies on; making it a runtime
+question would trade a guarantee for a policy.
+
 The web tools sit on their own `network` permission axis rather than borrowing
 `bash`. They touch no files; what they risk is **confidentiality** — they are the
 only tools that send repository content off the machine, and none of the older

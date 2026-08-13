@@ -2,6 +2,7 @@ import fs from "node:fs"
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { Agent, Config, ExternalAgent, DEFAULT_AGENTS, DEFAULT_EXTERNAL_AGENTS } from "./schema.ts"
 import { globalConfigFile, projectConfigFile } from "./paths.ts"
+import { setExternalRoots } from "./tool/types.ts"
 
 export class ConfigError extends Error {}
 
@@ -153,6 +154,18 @@ export function loadConfig(cwd: string = process.cwd()): LoadedConfig {
   if (config.defaultAgent === undefined && config.agent["build"] !== undefined) {
     config.defaultAgent = "build"
   }
+
+  /*
+   * Akar tambahan dipasang SEKALI, di sini, dari aturan `external_directory`
+   * yang berbunyi "allow". Hanya `allow` — `ask` tidak bisa dipenuhi oleh
+   * `resolveInside` yang sinkron, dan menganggapnya `allow` akan membuka lebih
+   * dari yang user tulis.
+   */
+  setExternalRoots(
+    Object.entries(config.permission.rules)
+      .filter(([source, policy]) => policy === "allow" && source.startsWith("external_directory("))
+      .map(([source]) => source.slice("external_directory(".length, -1)),
+  )
 
   return { config, sources, missingEnv, raw }
 }

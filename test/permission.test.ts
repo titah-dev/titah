@@ -78,7 +78,7 @@ test('config "allow" mengizinkan tanpa bertanya', async () => {
 test("allowlist di config mengizinkan tanpa dialog", async () => {
   const result = await request(nextSession(), base({ allowlist: ["git *"] }), 0)
   assert.equal(result.granted, true)
-  assert.match(result.reason, /allowlist/)
+  assert.match(result.reason, /rule "bash\(git \*\)"/)
 })
 
 test("mode --auto mengizinkan, tapi tidak menembus config deny", async () => {
@@ -132,7 +132,7 @@ test('jawaban "always" mengingat polanya untuk sesi itu saja', async () => {
     listeners: 1,
   })
   assert.equal(kedua.granted, true)
-  assert.match(kedua.reason, /allowlist/)
+  assert.match(kedua.reason, /rule "bash\(git \*\)"/)
 
   // Sesi lain tidak ikut kebagian.
   const asing = request(lain, base(), 0)
@@ -203,7 +203,7 @@ test('jawaban "always" dari satu sub-agent menutup seluruh giliran induk, bukan 
     allowlistSessionID: induk,
   })
   assert.equal(kedua.granted, true, "jawaban 'always' anak1 harus menutup seluruh giliran induk")
-  assert.match(kedua.reason, /allowlist/)
+  assert.match(kedua.reason, /rule "bash\(git \*\)"/)
 })
 
 test("respond untuk id yang tidak ada mengembalikan false", () => {

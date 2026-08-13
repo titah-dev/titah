@@ -143,6 +143,10 @@ export const websearchTool: TitahTool<typeof inputSchema> = {
       title: `websearch: ${input.query.slice(0, 60)}`,
       detail: `Search the web for:\n\n${input.query}\n\nThis sends your query to a third-party search engine.`,
       pattern: "websearch",
+      // Subject supaya grant "always" untuk pencarian tidak ikut membuka
+      // webfetch: keduanya di sumbu `network`, dan tanpa pembeda satu grant
+      // akan menutupi keduanya.
+      subject: "websearch",
     }
   },
   async execute(input, ctx) {
