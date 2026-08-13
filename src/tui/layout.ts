@@ -250,19 +250,42 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
   return lines
 }
 
+/**
+ * Apakah sebuah baris tidak menampilkan apa pun.
+ *
+ * Diputuskan dari ISI, bukan dari bentuknya. Baris kosong datang dalam dua rupa:
+ * pemisah antar pesan (`text: ""`, tanpa span) dan baris kosong hasil markdown
+ * (`spans: [{ text: "" }]`, karena setiap baris sumber selalu jadi satu baris
+ * keluaran). Memeriksa "tidak punya span" hanya menangkap yang pertama — dan
+ * yang kedua justru yang menumpuk paling banyak, karena jawaban model hampir
+ * selalu berakhir dengan satu-dua baris kosong.
+ */
+export function isBlank(line: Line | undefined): boolean {
+  if (!line) return false
+  if (line.text.trim() !== "") return false
+  return (line.spans ?? []).every((span) => span.text.trim() === "")
+}
+
 export function allLines(messages: Message[], expanded: Expansion, width = 0): Line[] {
   const lines = messages.flatMap((message) => messageLines(message, expanded, width))
 
   /*
-   * Setiap pesan membawa satu baris kosong di belakangnya sebagai PEMISAH antar
-   * pesan. Pesan terakhir tidak punya yang dipisahkan, jadi baris itu menumpuk
-   * di atas ruang tunggu dan jaraknya jadi tiga, bukan dua.
+   * Baris kosong di ekor riwayat dibuang seluruhnya.
    *
-   * Dibuang di sini, bukan di `messageLines`: yang tahu sebuah pesan adalah yang
-   * terakhir hanyalah daftar, dan `messageLines` juga dipakai sendirian.
+   * Ada dua sumbernya, dan keduanya menumpuk di tempat yang sama. Setiap pesan
+   * membawa satu baris kosong di belakangnya sebagai PEMISAH — pesan terakhir
+   * tidak punya yang dipisahkan. Dan jawaban model hampir selalu berakhir dengan
+   * baris kosong sendiri, yang dirender apa adanya. Karena isi dijangkarkan ke
+   * bawah, semuanya duduk tepat di atas ruang tunggu: dua baris yang diminta
+   * berubah jadi lima, enam, tergantung berapa banyak newline yang kebetulan
+   * dikirim model.
+   *
+   * Dibuang di sini, bukan di `messageLines` atau `renderMarkdown`: yang tahu
+   * sebuah baris ada di EKOR hanyalah daftar utuhnya. Baris kosong di tengah —
+   * antar paragraf, antar pesan — tidak tersentuh.
    */
   let end = lines.length
-  while (end > 0 && (lines[end - 1]?.text ?? "") === "" && !lines[end - 1]?.spans) end -= 1
+  while (end > 0 && isBlank(lines[end - 1])) end -= 1
 
   return end === lines.length ? lines : lines.slice(0, end)
 }

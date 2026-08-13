@@ -5,6 +5,7 @@ import {
   allLines,
   editorRows,
   historyRows,
+  isBlank,
   messageLines,
   promptLabel,
   viewport,
@@ -146,6 +147,64 @@ test("pemisah di belakang pesan TERAKHIR dibuang", () => {
     true,
     "pemisah DI ANTARA pesan tetap ada",
   )
+})
+
+test("baris kosong dari markdown di ekor riwayat juga dibuang", () => {
+  /*
+   * Ini yang sebenarnya menumpuk di layar. Baris kosong hasil markdown TIDAK
+   * berbentuk sama dengan pemisah antar pesan: ia membawa `spans: [{text: ""}]`,
+   * karena tiap baris sumber selalu jadi satu baris keluaran. Trim yang menolak
+   * baris ber-span melewatkan semuanya — dan jawaban model hampir selalu
+   * berakhir dengan satu-dua newline, jadi jarak dua baris yang diminta berubah
+   * jadi lima atau enam tanpa pola.
+   */
+  const lines = allLines(
+    [message("a", { parts: [{ type: "text", text: "Baris terakhir.\n\n\n" }] })],
+    false,
+  )
+
+  assert.match(lines.at(-1)?.text ?? "", /Baris terakhir\.$/)
+  assert.equal(
+    lines.filter((line) => line.text.trim() === "").length,
+    0,
+    "tidak menyisakan satu pun baris kosong di ekor",
+  )
+})
+
+test("baris kosong dikenali dari ISI, bukan dari punya-tidaknya span", () => {
+  /*
+   * `isBlank` dipakai dua kali dan harus berarti sama di keduanya: memangkas
+   * ekor riwayat, dan memutuskan sebuah baris digambar sebagai satu spasi.
+   *
+   * Yang kedua itu penting. Span kosong membuat Ink menggambar elemen setinggi
+   * NOL, jadi `viewport` menghitung satu baris sementara layar tidak memberinya
+   * baris sama sekali — jarak antar paragraf hilang, dan gulirnya meleset persis
+   * sebanyak baris kosong di dalam jendela.
+   */
+  assert.equal(isBlank({ kind: "blank", text: "", key: "a" }), true, "pemisah antar pesan")
+  assert.equal(
+    isBlank({ kind: "assistant", text: "", spans: [{ text: "" }], key: "b" }),
+    true,
+    "baris kosong hasil markdown",
+  )
+  assert.equal(isBlank({ kind: "assistant", text: "   ", key: "c" }), true, "spasi saja")
+  assert.equal(
+    isBlank({ kind: "assistant", text: "x", spans: [{ text: "x" }], key: "d" }),
+    false,
+  )
+  assert.equal(isBlank(undefined), false)
+})
+
+test("baris kosong DI TENGAH tidak ikut terbuang", () => {
+  // Trim-nya hanya untuk ekor. Jarak antar paragraf adalah isi, bukan sisa.
+  const lines = allLines(
+    [message("a", { parts: [{ type: "text", text: "Satu\n\nDua\n" }] })],
+    false,
+  )
+
+  const kosong = lines.findIndex((line) => line.text.trim() === "")
+  assert.ok(kosong > 0, "baris kosong antar paragraf masih ada")
+  assert.match(lines.at(-1)?.text ?? "", /Dua$/)
 })
 
 // ---------- viewport ----------

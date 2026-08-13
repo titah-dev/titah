@@ -4,6 +4,7 @@ import type { Session } from "../core/message.ts"
 import type { QuestionRequest } from "../core/question.ts"
 import type { PermissionRequest } from "../core/permission.ts"
 import { logoLines, markLines } from "./logo.ts"
+import { isBlank } from "./layout.ts"
 import type { Line, LineKind } from "./layout.ts"
 import type { Suggestion } from "./complete.ts"
 
@@ -144,6 +145,17 @@ export function History({
       {hiddenAbove > 0 ? <Text dimColor>{`  ↑ ${hiddenAbove} lines above`}</Text> : null}
       {lines.map((line) => {
         const style = COLOR[line.kind]
+
+        /*
+         * Baris kosong digambar sebagai satu spasi, apa pun bentuknya.
+         *
+         * Baris kosong hasil markdown membawa `spans: [{ text: "" }]`, dan span
+         * kosong membuat Ink menggambar elemen setinggi NOL. Jadi `viewport`
+         * menghitungnya satu baris sementara layar tidak memberinya baris sama
+         * sekali: jarak antar paragraf hilang, dan jendela gulir meleset persis
+         * sebanyak baris kosong yang kebetulan ada di dalamnya.
+         */
+        if (isBlank(line)) return <Text key={line.key}> </Text>
 
         // Baris markdown dirender per potongan supaya tebal, miring, dan kode
         // punya gaya sendiri di dalam satu baris.
