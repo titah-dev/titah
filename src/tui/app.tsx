@@ -24,7 +24,7 @@ import {
   Working,
 } from "./components.tsx"
 import { SubagentPanel, SUBAGENT_PANEL_ROWS } from "./subagent-panel.tsx"
-import { LoginPanel, type LoginProgress } from "./login.tsx"
+import { LoginPanel, loginLines, type LoginProgress } from "./login.tsx"
 import {
   AccountError,
   accountServer,
@@ -1180,6 +1180,11 @@ export function App({
     state.status === "working" ? (
       <Working tick={tick} elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))} />
     ) : null
+  // Didefinisikan SEKALI dan dipasang di kedua cabang render, seperti popupBox.
+  // Layar pembuka punya `return` sendiri, dan sebuah overlay yang hanya dipasang
+  // di cabang bawah tidak akan pernah terlihat oleh orang yang baru membuka
+  // Titah — justru saat `/login` paling mungkin diketik.
+  const loginBox = loginProgress ? <LoginPanel progress={loginProgress} /> : null
 
   const lines = allLines(state.messages, expandTools, textWidth)
   const editorHeight = editorRows(draft, size.rows)
@@ -1198,11 +1203,22 @@ export function App({
   const subagentPanelHeight = subagentPanelOpen
     ? Math.min(SUBAGENT_PANEL_ROWS, Math.max(1, state.subagents.length)) + 3
     : 0
+  // Diukur dari `loginLines` yang SAMA dengan yang dirender, bukan dari angka
+  // yang ditulis tangan di sini — itulah cara reservasi dan render menyimpang
+  // diam-diam, sebagaimana sudah pernah terjadi pada panel sub-agent di atas.
+  // Judul + dua baris bingkai.
+  const loginHeight = loginProgress ? loginLines(loginProgress).length + 3 : 0
   const withMark = shouldShowMark(size.columns, size.rows)
   const headerHeight = withMark ? markLines().length + 2 : 4
   const available = historyRows(
     size.rows,
-    editorHeight + permissionHeight + questionHeight + popupHeight + workingHeight + subagentPanelHeight,
+    editorHeight +
+      permissionHeight +
+      questionHeight +
+      popupHeight +
+      workingHeight +
+      subagentPanelHeight +
+      loginHeight,
     headerHeight,
   )
   const window = viewport(lines, available, scroll)
@@ -1233,6 +1249,7 @@ export function App({
           {...(activeAgent ? { agent: activeAgent } : {})}
           editor={
             <>
+              {loginBox}
               {subagentPanelBox}
               {popupBox}
               {editorBox}
@@ -1280,7 +1297,7 @@ export function App({
       {state.notice ? <Text dimColor>· {state.notice}</Text> : null}
       {state.question ? <QuestionDialog request={state.question} /> : null}
       {state.permission ? <PermissionDialog request={state.permission} /> : null}
-      {loginProgress ? <LoginPanel progress={loginProgress} /> : null}
+      {loginBox}
 
       {subagentPanelBox}
       {popupBox}
