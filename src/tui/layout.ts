@@ -215,6 +215,20 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
   const lines: Line[] = []
 
   for (const [index, part] of message.parts.entries()) {
+    /*
+     * Satu baris kosong sebelum tiap bagian — tiap bulatan `⏺` adalah satu
+     * "point", dan sebelumnya bagian-bagian itu ditempel tanpa jeda: keluaran
+     * sebuah tool langsung disusul judul tool berikutnya, jadi batas antar
+     * langkah harus dibaca dari glyph-nya, bukan terlihat sekilas.
+     *
+     * Hanya kalau belum ada yang kosong di sana. Jawaban markdown sering sudah
+     * berakhir dengan baris kosongnya sendiri, dan dua baris kosong berturut-
+     * turut adalah jarak yang tidak diminta siapa pun.
+     */
+    if (lines.length > 0 && !isBlank(lines.at(-1))) {
+      lines.push({ kind: "blank", text: "", key: `${message.id}:${index}:sep` })
+    }
+
     if (part.type === "text") {
       // Prompt user ditampilkan apa adanya: yang diketik user bukan markdown,
       // dan merendernya akan menyembunyikan karakter yang sengaja ia tulis.
@@ -250,8 +264,44 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
   return lines
 }
 
+/**
+ * Apakah sebuah baris tidak menampilkan apa pun.
+ *
+ * Diputuskan dari ISI, bukan dari bentuknya. Baris kosong datang dalam dua rupa:
+ * pemisah antar pesan (`text: ""`, tanpa span) dan baris kosong hasil markdown
+ * (`spans: [{ text: "" }]`, karena setiap baris sumber selalu jadi satu baris
+ * keluaran). Memeriksa "tidak punya span" hanya menangkap yang pertama — dan
+ * yang kedua justru yang menumpuk paling banyak, karena jawaban model hampir
+ * selalu berakhir dengan satu-dua baris kosong.
+ */
+export function isBlank(line: Line | undefined): boolean {
+  if (!line) return false
+  if (line.text.trim() !== "") return false
+  return (line.spans ?? []).every((span) => span.text.trim() === "")
+}
+
 export function allLines(messages: Message[], expanded: Expansion, width = 0): Line[] {
-  return messages.flatMap((message) => messageLines(message, expanded, width))
+  const lines = messages.flatMap((message) => messageLines(message, expanded, width))
+
+  /*
+   * Baris kosong di ekor riwayat dibuang seluruhnya.
+   *
+   * Ada dua sumbernya, dan keduanya menumpuk di tempat yang sama. Setiap pesan
+   * membawa satu baris kosong di belakangnya sebagai PEMISAH — pesan terakhir
+   * tidak punya yang dipisahkan. Dan jawaban model hampir selalu berakhir dengan
+   * baris kosong sendiri, yang dirender apa adanya. Karena isi dijangkarkan ke
+   * bawah, semuanya duduk tepat di atas ruang tunggu: dua baris yang diminta
+   * berubah jadi lima, enam, tergantung berapa banyak newline yang kebetulan
+   * dikirim model.
+   *
+   * Dibuang di sini, bukan di `messageLines` atau `renderMarkdown`: yang tahu
+   * sebuah baris ada di EKOR hanyalah daftar utuhnya. Baris kosong di tengah —
+   * antar paragraf, antar pesan — tidak tersentuh.
+   */
+  let end = lines.length
+  while (end > 0 && isBlank(lines[end - 1])) end -= 1
+
+  return end === lines.length ? lines : lines.slice(0, end)
 }
 
 export interface Viewport {
@@ -268,27 +318,74 @@ export interface Viewport {
  * merupakan perilaku yang diharapkan saat percakapan sedang berjalan.
  */
 export function viewport(lines: Line[], rows: number, scroll: number): Viewport {
-  const height = Math.max(1, rows)
-  if (lines.length <= height) {
+  const outer = Math.max(1, rows)
+  if (lines.length <= outer) {
     return { lines, hiddenAbove: 0, hiddenBelow: 0 }
   }
 
-  const maxScroll = lines.length - height
-  const clamped = Math.min(Math.max(0, scroll), maxScroll)
-  const end = lines.length - clamped
-  const start = end - height
+  /*
+   * Penunjuk "↑ N lines above" dan "↓ N lines below" tinggal di dalam kotak yang
+   * sama dengan riwayatnya, jadi mereka MEMAKAN baris. Sebelumnya jumlah baris
+   * yang dikembalikan di sini tidak menghitung mereka: kotaknya menerima satu
+   * atau dua baris lebih banyak daripada tingginya, dan Ink memotong kelebihan
+   * itu di bawah — diam-diam, justru pada baris paling baru, yang paling ingin
+   * dibaca orang.
+   *
+   * Jadi tingginya dihitung ulang sampai jumlah penunjuk berhenti berubah.
+   * Menambah penunjuk menyempitkan jendela, jendela yang menyempit bisa
+   * memunculkan penunjuk kedua, dan di situ ia berhenti — dua penunjuk adalah
+   * batasnya, maka tiga putaran selalu cukup.
+   */
+  let indicators = 0
+  let result: Viewport = { lines: [], hiddenAbove: 0, hiddenBelow: 0 }
 
-  return {
-    lines: lines.slice(start, end),
-    hiddenAbove: start,
-    hiddenBelow: lines.length - end,
+  for (let pass = 0; pass < 3; pass += 1) {
+    const height = Math.max(1, outer - indicators)
+    const maxScroll = lines.length - height
+    const clamped = Math.min(Math.max(0, scroll), maxScroll)
+    const end = lines.length - clamped
+    const start = end - height
+
+    result = {
+      lines: lines.slice(start, end),
+      hiddenAbove: start,
+      hiddenBelow: lines.length - end,
+    }
+
+    const needed = (result.hiddenAbove > 0 ? 1 : 0) + (result.hiddenBelow > 0 ? 1 : 0)
+    if (needed === indicators) return result
+    indicators = needed
   }
+
+  return result
 }
 
-/** Tinggi area riwayat setelah dikurangi panel atas, editor, dan footer. */
+/**
+ * Ruang tetap di atas prompt, dalam baris.
+ *
+ * Sebelumnya jarak antara baris terakhir dan prompt adalah SISA — ia berubah
+ * mengikuti panjang percakapan, kadang nol kadang dua puluh. Dua baris ini
+ * selalu ada, dan ukurannya tidak bergantung pada apa pun: tidak pada panjang
+ * isi, tidak pada posisi gulir.
+ *
+ * Ia juga ruang tunggu: pesan yang baru tiba muncul di situ tanpa mendorong apa
+ * pun, karena tempatnya sudah disediakan sejak awal.
+ *
+ * Yang membuatnya tetap saat digulir ada di dua tempat, dan keduanya harus ada:
+ * angka ini dikurangi di `historyRows` (jadi riwayat tidak pernah mengira punya
+ * dua baris lebih banyak daripada yang terlihat), dan `viewport` selalu
+ * mengembalikan tepat setinggi itu ketika isinya melebihi layar — maka menggulir
+ * menukar baris, bukan menambah atau mengurangi jumlahnya.
+ */
+export const RESERVED_ROWS = 2
+
+/** Tinggi area riwayat setelah dikurangi panel atas, ruang tunggu, editor, dan footer. */
 export function historyRows(totalRows: number, editorRows: number, headerRows = 4): number {
   const FOOTER = 1
-  return Math.max(1, totalRows - headerRows - FOOTER - editorRows)
+  // `RESERVED_ROWS` ikut dikurangi DI SINI, bukan hanya dirender. Kalau hanya
+  // dirender, viewport mengira punya dua baris lebih banyak daripada yang
+  // benar-benar terlihat, dan dua baris teratas terpotong diam-diam.
+  return Math.max(1, totalRows - headerRows - FOOTER - editorRows - RESERVED_ROWS)
 }
 
 /** Tinggi kotak editor: isi + dua baris bingkai, dibatasi supaya tidak menelan layar. */
