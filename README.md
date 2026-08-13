@@ -480,6 +480,39 @@ silently writing in the wrong place.
 
 ## Rendering
 
+Spacing between messages is exactly **one** blank line, everywhere. It used to
+be two before a user prompt and one elsewhere, because each message already
+ended with a blank line *and* the user block added one of its own — the
+transcript read as holed in one place and cramped in another. The complaint was
+never too little space; it was space that was not the same.
+
+Finished messages are printed **once** into the terminal's own scrollback (Ink's
+`<Static>`); only the live region — the message currently streaming, the tool
+running inside it, dialogs, the input, and the footer — is redrawn.
+
+That is what removed the flicker. Before, the whole screen was one dynamic frame
+`size.rows` tall, so every spinner tick — ten times a second — erased and
+rewrote **the entire screen**. Now a tick repaints a handful of lines.
+
+Two things follow from it, and both were asked for:
+
+- **Scrolling is the terminal's.** Mouse wheel, `shift+PageUp`, and the
+  terminal's own search all work on the transcript. Titah's custom scroll is
+  gone, along with the drifting gap between the prompt and the last line — there
+  is no window left that can slide away from the prompt.
+- **Shell output no longer disturbs the transcript.** A running command lives in
+  the live region, bounded to the screen height; the settled transcript above it
+  is never repainted while it runs.
+
+Two things were **lost**, deliberately. Clicking a history line to expand a tool
+no longer works — with the transcript in the terminal's scrollback, a click's
+`y` cannot be mapped to a line without guessing, and a wrong guess opens the
+wrong tool. `ctrl+x d` still opens every tool's detail. The scroll keybindings
+still exist but do nothing except get swallowed, so they never leak into the
+prompt as `[5~`.
+
+
+
 Answers are rendered to **lines, wrapped at render time** — not handed to the
 terminal to wrap. That matters more than it sounds: the history is scrolled by
 slicing a list of lines, so a logical line that the terminal silently wraps into

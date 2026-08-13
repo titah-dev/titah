@@ -854,24 +854,6 @@ function pushLongHistory(h: ReturnType<typeof mount>) {
   })
 }
 
-test("pageup menggulir riwayat, tidak masuk ke prompt", async () => {
-  const h = mount()
-  try {
-    await tick()
-    pushLongHistory(h)
-    await tick()
-
-    h.clear()
-    h.stdin.press("\u001b[5~")
-    await tick()
-
-    assert.match(h.frame(), /lines below/, "penunjuk gulir muncul setelah menggulir ke atas")
-    assert.deepEqual(h.recorded.sent, [])
-  } finally {
-    h.cleanup()
-  }
-})
-
 test("panah atas memanggil kembali prompt terakhir, bukan menggulir", async () => {
   const h = mount()
   try {
@@ -1055,56 +1037,28 @@ test("ctrl+x d memperlihatkan rincian tool yang MASIH berjalan", async () => {
   }
 })
 
-test("mengklik baris tool membuka rinciannya, dan tidak membatalkan giliran", async () => {
+test("ctrl+x d membuka detail tool — klik TIDAK lagi, dan itu disengaja", async () => {
+  /*
+   * Klik-untuk-membuka dicabut bersama gulir kustom, dan alasannya sama:
+   * riwayat sekarang tercetak ke scrollback TERMINAL, dan posisi layar bingkai
+   * dinamis bergantung pada seberapa jauh terminal digulir — sesuatu yang tidak
+   * pernah diberitahukan kepada aplikasi. Memetakan `y` sebuah klik ke baris
+   * riwayat berarti menebak, dan tebakan yang meleset membuka detail tool yang
+   * SALAH tanpa ada yang tahu.
+   *
+   * Isinya tidak jadi tak terjangkau: ctrl+x d membuka semuanya.
+   */
   const h = mount()
   try {
     await tick()
     pushRunningTool(h)
     await tick()
 
-    // Baris riwayat pertama ada tepat di bawah panel atas. Layar uji 100×30
-    // memenuhi syarat lambang, jadi tinggi panel = tinggi lambang + 2 bingkai.
-    //
-    // DIHITUNG, bukan ditulis tetap: mengganti seni lambang menggeser seluruh
-    // riwayat satu baris, dan angka tetap di sini akan gagal tanpa memberi tahu
-    // apa penyebabnya.
-    const barisPertama = markLines().length + 2 + 1
-    h.clear()
-    h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
-    await tick()
-
-    assert.match(h.frame(), /npm run build/, "klik membuka blok yang diklik")
-    assert.deepEqual(h.recorded.aborted, [], "klik TIDAK boleh terbaca sebagai Escape")
-
-    // Tanda yang HARUS tetap terlihat -- kalau toggle kedua mengembalikan
-    // referensi `Set` yang SAMA (lupa `.delete`), React membatalkan render
-    // karena referensinya identik, dan bingkai KOSONG lolos begitu saja dari
-    // `doesNotMatch` di bawah tanpa membuktikan blok benar-benar tertutup.
-    for (const ch of "zzz") h.stdin.press(ch)
+    h.stdin.press("\u0018") // ctrl+x
     await tick(1)
-
-    h.clear()
-    h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
-    await tick()
-    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
-    assert.doesNotMatch(h.frame(), /npm run build/, "klik kedua menutupnya lagi")
-  } finally {
-    h.cleanup()
-  }
-})
-
-test("roda mouse menggulir riwayat", async () => {
-  const h = mount()
-  try {
-    await tick()
-    pushLongHistory(h)
-    await tick()
-
-    h.clear()
-    h.mouse.emit({ kind: "wheel-up", x: 10, y: 10 })
-    await tick()
-
-    assert.match(h.frame(), /lines below/)
+    h.stdin.press("d")
+    await frameEventually(h, /npm run build/, "ctrl+x d harus membuka detail")
+    assert.deepEqual(h.recorded.aborted, [], "tidak boleh terbaca sebagai pembatalan")
   } finally {
     h.cleanup()
   }
@@ -1220,117 +1174,6 @@ test("ctrl+x m mematikan pelacakan mouse supaya teks bisa diblok dan disalin", a
     h.stdin.press("m")
     await tick()
     assert.deepEqual(h.captureLog, [false, true], "bisa dinyalakan lagi")
-  } finally {
-    h.cleanup()
-  }
-})
-
-test("mengirim prompt melompat ke bawah, walau riwayat sedang digulir ke atas", async () => {
-  // Tanpa ini, jawaban datang di luar layar dan dari tempat user berada tidak
-  // ada tanda apa pun bahwa ia sudah tiba.
-  const h = mount()
-  try {
-    await tick()
-    pushLongHistory(h)
-    await tick()
-
-    h.stdin.press("\u001b[5~")
-    await tick()
-    assert.match(h.frame(), /lines below/, "benar-benar sedang tergulir ke atas")
-
-    for (const ch of "halo") h.stdin.press(ch)
-    await tick(1)
-    h.clear()
-    h.stdin.press("\r")
-    await tick()
-
-    assert.doesNotMatch(h.frame(), /lines below/, "kembali menempel di bawah")
-  } finally {
-    h.cleanup()
-  }
-})
-
-test("penunjuk gulir menyebut tombol untuk melompat ke bawah", async () => {
-  const h = mount()
-  try {
-    await tick()
-    pushLongHistory(h)
-    await tick()
-
-    h.clear()
-    h.stdin.press("\u001b[5~")
-    await tick()
-
-    // Penunjuk yang cuma bilang "ada di bawah" tanpa memberi tahu cara ke sana
-    // membuat orang menekan panah bawah berkali-kali.
-    assert.match(h.frame(), /lines below · end to jump/)
-  } finally {
-    h.cleanup()
-  }
-})
-
-test("ctrl+x b juga melompat ke bawah", async () => {
-  const h = mount()
-  try {
-    await tick()
-    pushLongHistory(h)
-    await tick()
-    h.stdin.press("\u001b[5~")
-    await tick()
-    assert.match(h.frame(), /lines below/)
-
-    // Tanda yang HARUS tetap terlihat -- site ini lolos vakum saat ini HANYA
-    // karena `setLeaderActive(false)` di app.tsx memaksa render footer yang
-    // tidak terkait, bukan karena chord `<leader>b` ini sendiri terbukti
-    // menulis ulang apa pun. Kalau refactor nanti memindahkan
-    // `setLeaderActive(false)` ke dalam cabang switch atau ke tiap kasusnya
-    // satu-satu, site ini bisa diam-diam jadi vakum lagi tanpa satu pun
-    // assertion berubah. Tanda ini melepaskannya dari efek-samping yang
-    // tidak terkait itu.
-    for (const ch of "zzz") h.stdin.press(ch)
-    await tick(1)
-
-    // Dibersihkan SETELAH leader: menekan ctrl+x sendiri sudah menulis satu
-    // bingkai (footer berubah), dan bingkai itu masih memuat penunjuk gulir.
-    h.stdin.press("\u0018")
-    await tick(3)
-    h.clear()
-    h.stdin.press("b")
-    await tick()
-
-    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
-    assert.doesNotMatch(h.frame(), /lines below/)
-  } finally {
-    h.cleanup()
-  }
-})
-
-test("tombol End langsung juga melompat ke bawah, tanpa leader", async () => {
-  // `messages_last` punya TIGA jalan masuk (lihat keybinds.ts), dan test di atas
-  // hanya membuktikan jalan lewat leader (`<leader>b`) -- cabang `scrollAction`
-  // yang menangani "end"/"ctrl+alt+g" langsung (tanpa leader) tidak tersentuh
-  // satu test pun sebelum ini. Kalau cabang itu tidak pernah setScroll(0), tidak
-  // ada efek samping lain yang memaksa render (leader-chord punya
-  // `setLeaderActive(false)` yang tidak pernah nol di sini), jadi bingkai KOSONG
-  // pun lolos begitu saja dari `doesNotMatch` di bawah tanpa membuktikan apa pun.
-  const h = mount()
-  try {
-    await tick()
-    pushLongHistory(h)
-    await tick()
-    h.stdin.press("[5~") // pageup — gulir ke atas
-    await tick()
-    assert.match(h.frame(), /lines below/)
-
-    for (const ch of "zzz") h.stdin.press(ch)
-    await tick(1)
-
-    h.clear()
-    h.stdin.press("[F") // End (Ink: parse-keypress memetakan "[F" ke key.end)
-    await tick(8)
-
-    assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
-    assert.doesNotMatch(h.frame(), /lines below/)
   } finally {
     h.cleanup()
   }
@@ -2021,6 +1864,43 @@ test("dialog izin di tengah konfirmasi x melucutinya — defect 3 followup-1", a
       /press x again to cancel reviewer/,
       "harus kembali mempersenjatai dari awal, bukan mengeksekusi pembatalan lama",
     )
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("gulir kustom DICABUT — riwayat mengalir ke scrollback terminal", async () => {
+  /*
+   * Enam test gulir dihapus bersama perilakunya, dan ini penggantinya.
+   *
+   * Riwayat yang sudah selesai sekarang dicetak `<Static>` ke scrollback
+   * terminal, jadi yang menggulirnya adalah terminal — roda mouse, shift+PageUp,
+   * dan pencarian bawaannya. Tombol gulir yang tidak lagi menggulir apa pun cuma
+   * mengajari user bahwa tombolnya rusak, jadi ia dilepas.
+   */
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u001b[5~") // PageUp
+    await tick()
+    // Tidak ada penunjuk gulir, dan tidak ada yang bergeser.
+    assert.doesNotMatch(h.frame(), /lines above/)
+    assert.doesNotMatch(h.frame(), /lines below/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("PageUp tidak menyelinap masuk ke prompt", async () => {
+  // Yang HARUS tetap benar dari test gulir yang dihapus: tombol navigasi tidak
+  // boleh berakhir sebagai karakter di dalam prompt.
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u001b[5~")
+    h.stdin.press("\u001b[6~")
+    await tick()
+    assert.doesNotMatch(h.frame(), /\[5~|\[6~/, "escape sequence tidak boleh terketik")
   } finally {
     h.cleanup()
   }
