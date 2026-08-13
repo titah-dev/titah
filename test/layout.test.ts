@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import {
+  RESERVED_ROWS,
   allLines,
   editorRows,
   historyRows,
@@ -169,9 +170,25 @@ test("editor tumbuh mengikuti isi tapi tidak menelan layar", () => {
 })
 
 test("area riwayat menyusut saat editor membesar, dan tidak pernah nol", () => {
-  assert.equal(historyRows(30, 3), 22)
-  assert.equal(historyRows(30, 12), 13)
+  // Sepuluh baris di antaranya dipesan sebagai ruang tunggu tetap
+  // (`RESERVED_ROWS`), jadi angkanya turun sepuluh dari sebelumnya.
+  assert.equal(historyRows(30, 3), 22 - RESERVED_ROWS)
+  assert.equal(historyRows(30, 12), 13 - RESERVED_ROWS)
   assert.equal(historyRows(8, 20), 1, "layar sangat pendek tetap menyisakan satu baris")
+})
+
+test("ruang tunggu dikurangi DI SINI, bukan hanya dirender", () => {
+  /*
+   * Kalau ia hanya dirender sebagai kotak dan tidak ikut dikurangi di sini,
+   * viewport mengira punya sepuluh baris lebih banyak daripada yang benar-benar
+   * terlihat — dan sepuluh baris teratas terpotong DIAM-DIAM, tanpa penunjuk
+   * gulir yang memberi tahu ada yang hilang.
+   */
+  const rows = 40
+  const editor = 3
+  const header = 9
+  const terlihat = rows - header - 1 - editor - RESERVED_ROWS
+  assert.equal(historyRows(rows, editor, header), terlihat)
 })
 
 // ---------- logo ----------
