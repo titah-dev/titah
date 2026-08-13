@@ -1,240 +1,228 @@
-# Titah vs opencode vs Claude Code — sejauh mana Titah sudah unggul
+# Titah vs opencode vs Claude Code — gap ketiganya, terinci
 
-Ditulis 2026-08-13, terhadap `main` @ `c482e1a`: typecheck bersih, **730/730 test
-lulus**, `src/` 14.737 baris, **21 tool bawaan**.
+Revisi 2, 2026-08-13 malam, terhadap `main` @ `c862ee0`: typecheck bersih,
+**749/749 test lulus**, `src/` 15.656 baris, **21 tool bawaan + tool dari server
+MCP**, **6 sumbu izin**.
+
+> Revisi 1 (siang ini) menulis *"MCP adalah gap terbesar Titah"*. Itu sudah tidak
+> berlaku — MCP mendarat sore ini lewat #17. Petanya berubah cukup banyak
+> sehingga dokumen ini ditulis ulang, bukan ditambal.
 
 Pembanding, keduanya yang benar-benar terpasang di mesin ini:
 **opencode 1.18.4** dan **Claude Code 2.1.228**.
 
 ## Cara mengukurnya
 
-Bukan dari ingatan, dan tiap angka bisa Anda periksa ulang:
-
 - **opencode** — `opencode debug agent build`, yang mencetak peta `tools` dan
-  `permission` agent itu apa adanya. Ini otoritatif, bukan tebakan dari string
-  di dalam biner.
-- **Claude Code** — nama tool dicari di biner `2.1.228` (289 MB), permukaan CLI
-  dari `claude --help`.
-- **Titah** — `allTools()` dan `Config.shape` dievaluasi langsung.
-
-Satu koreksi terhadap dokumen lama: `docs/gap-analysis-opencode.md` menulis
-"9 lawan 15" untuk tool. Itu **tidak akurat** untuk 1.18.4 — `list`, `patch`,
-`websearch`, dan `lsp` ada sebagai string di biner tapi **tidak terdaftar** di
-registry tool agent mana pun yang saya periksa.
+  `permission` apa adanya. Otoritatif, bukan tebakan dari string di biner.
+- **Claude Code** — nama tool dicari di biner `2.1.228`, permukaan CLI dari
+  `claude --help`.
+- **Titah** — `allTools()` dan `Permission.shape` dievaluasi langsung.
 
 ---
 
-## 1. Tool
+## 1. Angka besarnya
 
-| | Jumlah |
-|---|---|
-| **Titah 0.1.0** | **21** |
-| Claude Code 2.1.228 | ~17 + MCP |
-| opencode 1.18.4 | 12 + MCP |
+| | Titah 0.1.0 | opencode 1.18.4 | Claude Code 2.1.228 |
+|---|---|---|---|
+| Tool bawaan | **21** | 12 | ~17 |
+| Tool pihak ketiga | ✅ MCP stdio | ✅ MCP 3 transport | ✅ MCP |
+| Sumbu izin | **6** kelas | 7 + peta per-tool | per-tool berpola |
+| Properti config | 18 | ~32 | settings.json + CLI |
 
-**Titah** — `read` `list` `glob` `grep` `edit` `patch` `write` `move` `remove`
-`bash` `bash_start` `bash_output` `bash_stop` `diagnostics` `skill` `task`
-`plan` `memory` `question` `webfetch` `websearch`
+---
 
-**opencode** — `read` `glob` `grep` `edit` `write` `bash` `skill` `task`
-`todowrite` `webfetch` `question` `invalid`
-
-**Claude Code** — `Read` `Glob` `Grep` `Edit` `Write` `NotebookEdit` `Bash`
-`BashOutput` `KillShell` `WebFetch` `WebSearch` `Task` `Skill` `TodoWrite`
-`AskUserQuestion` `ExitPlanMode` `SlashCommand`
-
-### Per kemampuan
+## 2. Tool, per kemampuan
 
 | Kemampuan | Titah | opencode | Claude Code |
 |---|---|---|---|
-| Baca / cari | `read` `list` `glob` `grep` | `read` `glob` `grep` | `Read` `Glob` `Grep` |
+| Baca berkas | `read` | `read` | `Read` |
+| Daftar direktori | **`list`** | — | — |
+| Cari nama / isi | `glob` `grep` | `glob` `grep` | `Glob` `Grep` |
 | Sunting satu tempat | `edit` | `edit` | `Edit` |
 | Sunting banyak, atomik | **`patch`** | — | `MultiEdit`¹ |
 | Tulis berkas | `write` | `write` | `Write` |
-| Pindah / hapus | **`move` `remove`** | — | — |
+| Pindah berkas | **`move`** | — | — |
+| Hapus berkas | **`remove`** | — | — |
 | Shell | `bash` | `bash` | `Bash` |
-| Proses latar | **`bash_start/output/stop`** | — | `Bash --bg` `BashOutput` `KillShell` |
-| Pemeriksa proyek | **`diagnostics`** | LSP otomatis² | ekstensi IDE² |
-| Web | `webfetch` `websearch` | `webfetch` | `WebFetch` `WebSearch` |
+| Proses latar | **`bash_start` `bash_output` `bash_stop`** | — | `Bash --bg` `BashOutput` `KillShell` |
+| Pemeriksa: perintah user | **`diagnostics`** | — | — |
+| Pemeriksa: LSP otomatis | **✅ setelah tiap suntingan** | ✅ | ekstensi IDE |
+| Formatter otomatis | ❌ | **✅** | ekstensi IDE |
+| Web fetch / search | `webfetch` `websearch` | `webfetch` saja | `WebFetch` `WebSearch` |
 | Sub-agent | `task` | `task` | `Task` |
-| Skill | `skill` | `skill` | `Skill` |
-| Rencana | **`plan`** — tahan pemadatan | `todowrite` — di transkrip | `TodoWrite` — di transkrip |
+| Skill | `skill` (dua ekosistem) | `skill` | `Skill` |
+| Rencana | **`plan`** — di luar transkrip | `todowrite` — di transkrip | `TodoWrite` — di transkrip |
 | Memori lintas sesi | **`memory`** | — | — |
 | Bertanya balik | `question` | `question` | `AskUserQuestion` |
-| Notebook | — | — | `NotebookEdit` |
-| MCP | **—** | ✅ | ✅ |
-| Gambar / PDF | **—** | ✅ | ✅ |
+| Notebook | ❌ | ❌ | **`NotebookEdit`** |
+| Gambar / PDF | ❌ | **✅** | **✅** |
 
-¹ ada di biner, mungkin warisan. ² bukan tool yang dipanggil model.
+¹ ada di biner, mungkin warisan.
 
----
+**Yang hanya dimiliki Titah:** `list`, `patch`, `move`, `remove`, `diagnostics`,
+`plan` yang tahan pemadatan, `memory`.
 
-## 2. Model izin
-
-| | Bentuk |
-|---|---|
-| **Titah** | 5 sumbu: `edit` `write` `bash` `network` `delete`, + allowlist per-segmen |
-| opencode | `*` `read` `question` `doom_loop` `external_directory` `plan_enter` `plan_exit` + peta per-tool |
-| Claude Code | per-tool berpola: `Bash(git *)`, `Edit`, `WebFetch(domain:…)` |
-
-Tiga hal yang hanya dimiliki satu pihak:
-
-- **Titah punya `delete` sebagai sumbu sendiri.** `write: allow` yang berarti
-  "boleh membuat berkas baru" tidak pernah berarti "boleh menghapus berkas
-  saya". Tidak ada padanannya di dua pembanding.
-- **Titah punya `network` sebagai sumbu sendiri.** Bukan soal berkas — soal
-  **kerahasiaan**. Ini satu-satunya kelas tool yang mengirim isi repo ke luar
-  mesin.
-- **opencode punya `doom_loop`** (minta izin saat mendeteksi model berputar)
-  dan **`external_directory`** (izin per-path untuk keluar cwd). Titah memakai
-  `resolveInside` sebagai aturan keras — lebih sederhana, tapi tanpa pintu
-  keluar yang sah untuk kerja lintas-repo.
-
-### Allowlist bash: satu perbedaan yang terukur
-
-Sampai kemarin, allowlist Titah mencocokkan `"<kata-pertama> *"`, sehingga
-`"git *"` juga mengizinkan `git status && rm -rf ~`. Itu diperbaiki di #13:
-perintah dipecah pada operator shell dan **setiap segmen** harus punya entri
-yang mengizinkannya; substitusi dan redirect tidak pernah lolos otomatis.
-
-Claude Code menerima pola berbentuk sama dan juga memeriksa rantai. opencode
-tidak punya allowlist bash setingkat pola sama sekali — ia memakai peta per-tool
-plus `external_directory`.
+**Yang hanya dimiliki pembanding:** `NotebookEdit` (Claude Code), formatter
+otomatis (opencode), gambar/PDF (keduanya).
 
 ---
 
-## 3. Manajemen konteks — di sinilah Titah unggul, dan bukan tipis
+## 3. MCP — sudah ada, belum setara
 
-Ini bagian yang paling sulit ditambal belakangan, dan bagian yang paling banyak
-dikerjakan.
+Ini perubahan terbesar hari ini, dan penting untuk tidak dilebih-lebihkan.
 
 | | Titah | opencode | Claude Code |
 |---|---|---|---|
-| Pemadatan otomatis | ✅ | ✅ | ✅ `--autocompact auto\|100k–1M` |
-| Pemadatan **di tengah giliran** | ✅ `prepareStep` | tidak terdokumentasi | tidak terdokumentasi |
-| Batas prompt peringkas sendiri | ✅ berpotong, per jendela `smallModel` | — | — |
-| Pengukuran **request yang dirakit** | ✅ `requestTokens` | — | — |
-| Rencana yang selamat dari pemadatan | ✅ tabel `plan` | ❌ di transkrip | ❌ di transkrip |
-| Memori lintas sesi | ✅ tabel `memory` | ❌ | ❌ |
-| Urutan permintaan sadar-cache | ✅ stabil→volatil, dipaku test | — | — |
-| Prompt caching | ✅ `cache_control` + urutan | ✅ | ✅ |
+| Transport stdio | ✅ | ✅ | ✅ |
+| Transport HTTP / SSE | **❌** | ✅ | ✅ |
+| OAuth | **❌** | ✅ | ✅ |
+| `tools` | ✅ | ✅ | ✅ |
+| `resources` | **❌** | ✅ | ✅ |
+| `prompts` | **❌** | ✅ | ✅ |
+| Sumbu izin khusus MCP | **✅ `mcp`** | lewat peta per-tool | per-tool |
 
-Tiga di antaranya tidak ada padanannya di kedua pembanding:
+Titah menutup **kasus yang paling sering**: server stdio yang menawarkan tool.
+Itu bentuk hampir semua server MCP yang dipasang orang. Yang belum ada adalah
+server remote (butuh HTTP/SSE + OAuth) dan dua kapabilitas lain.
 
-**`plan` dan `memory` disimpan di luar `model_message`.** Pemangkas hanya menulis
-ulang tabel itu dan peringkas hanya membaca baris di atas batas air — jadi
-keduanya tidak bisa dijangkau pemadatan. Itu **sifat skema**, bukan aturan yang
-harus diingat orang. `TodoWrite` dan `todowrite` hidup di transkrip, dan
-transkrip diringkas.
-
-**Yang diukur adalah yang dikirim.** `requestShape` adalah satu-satunya tempat
-bentuk permintaan ditulis, dipakai oleh yang mengirim **dan** yang mengukur.
-Itu bukan kerapian: versi sebelumnya punya dua salinan, dan rencana masuk ke
-salinan yang mengirim sambil luput dari yang mengukur.
-
-**Akuntansinya sudah lewat empat ronde review adversarial** dengan tiap temuan
-dipaku test — 20 temuan, dan diagnosis yang berulang di tiap ronde sama: temuan
-paling serius selalu berupa batas atau kredit yang memercayai angka yang
-dihitung di tempat lain.
-
-Auto-compaction Claude Code dan opencode jelas **lebih matang secara pemakaian**
-— mereka dipakai ribuan orang tiap hari, Titah belum. Tapi alasannya tidak bisa
-Anda baca; di Titah bisa.
+Satu hal yang **hanya Titah** punya di sini: sumbu izin `mcp` tersendiri. Tool
+MCP adalah kode yang tidak bisa diklasifikasikan host-nya — sebuah server boleh
+menulis berkas, memanggil API berbayar, atau keduanya — jadi memaksanya ke sumbu
+seperti `edit` berarti user menyetujui hal yang berbeda dari yang terjadi.
 
 ---
 
-## 4. Ekstensibilitas — di sinilah Titah kalah, dan tidak tipis
+## 4. Model izin — bentuknya berbeda, bukan cuma jumlahnya
+
+| | Bentuk | Sumbu |
+|---|---|---|
+| **Titah** | per **kelas tindakan** | `edit` `write` `bash` `network` `delete` `mcp` + allowlist per-segmen |
+| opencode | per **tool** + kondisi | `*` `read` `question` `doom_loop` `external_directory` `plan_enter` `plan_exit` |
+| Claude Code | per **tool berpola** | `Bash(git *)`, `Edit`, `WebFetch(domain:…)` |
+
+**Hanya Titah punya `delete`.** Menghapus bukan menulis: `write: allow` yang
+berarti "boleh membuat berkas baru" tidak pernah berarti "boleh menghapus berkas
+saya".
+
+**Hanya Titah punya `network` sebagai kelas.** Claude Code punya `WebFetch(domain:…)`
+yang lebih halus per-domain, tapi tidak ada satu sakelar yang berarti "tidak ada
+apa pun yang keluar dari mesin ini".
+
+**Hanya opencode punya `doom_loop`** (minta izin saat mendeteksi model berputar)
+dan **`external_directory`** (izin per-path untuk keluar cwd). Titah memakai
+`resolveInside` sebagai aturan keras — lebih sederhana, tapi **tanpa pintu keluar
+yang sah** untuk kerja lintas-repo. Itu gap nyata.
+
+**Claude Code paling halus** untuk bash: pola per-perintah dengan pemeriksaan
+rantai. Titah sekarang setara di sana (#13); opencode tidak punya padanannya.
+
+---
+
+## 5. Manajemen konteks — jarak terjauh, dan Titah di depan
 
 | | Titah | opencode | Claude Code |
 |---|---|---|---|
-| MCP | **❌** | ✅ 3 transport + OAuth | ✅ |
+| Pemadatan otomatis | ✅ | ✅ | ✅ `--autocompact` |
+| Pemadatan **di tengah giliran** | **✅** | tidak terdokumentasi | tidak terdokumentasi |
+| Batas prompt peringkas sendiri | **✅** berpotong, per jendela `smallModel` | — | — |
+| Mengukur request yang **dirakit** | **✅** satu definisi untuk kirim & ukur | — | — |
+| Rencana selamat dari pemadatan | **✅** tabel `plan` | ❌ | ❌ |
+| Memori lintas sesi | **✅** tabel `memory` | ❌ | ❌ |
+| Urutan sadar-cache, dipaku test | **✅** | — | — |
+| Prompt caching | ✅ | ✅ | ✅ |
+
+Empat baris di tengah tidak ada padanannya di kedua pembanding.
+
+Yang membuatnya berbeda bukan fiturnya melainkan **sifat strukturalnya**:
+`plan` dan `memory` disimpan di luar `model_message`, dan pemadatan hanya
+menyentuh tabel itu. Ketidakterjangkauannya adalah **sifat skema**, bukan aturan
+yang harus diingat orang.
+
+Catatan jujur: auto-compaction Claude Code dan opencode **lebih matang secara
+pemakaian** — ribuan orang tiap hari. Titah belum. Yang bisa diklaim Titah bukan
+"lebih baik dipakai", melainkan "alasannya bisa diperiksa".
+
+---
+
+## 6. Ekstensibilitas — masih tertinggal
+
+| | Titah | opencode | Claude Code |
+|---|---|---|---|
+| MCP | ✅ stdio | ✅ penuh | ✅ penuh |
 | Plugin | **❌** | ✅ modul npm | ✅ + marketplace |
 | Hooks | **❌** | lewat plugin | ✅ |
-| Skill | ✅ dua ekosistem | miliknya sendiri | miliknya sendiri |
-| Agent dari registry lain | ❌ | ❌ | `claude import` |
+| Skill | ✅ **dua ekosistem** | miliknya sendiri | miliknya sendiri |
+| Impor config agent lain | ❌ | ❌ | ✅ `claude import` |
 
-**MCP adalah gap terbesar Titah, dan sifatnya berbeda dari gap lain.** Ia bukan
-satu kemampuan yang hilang — ia pintu ke semua kemampuan pihak ketiga. Selama
-tidak ada, setiap integrasi baru berarti menulis tool di dalam Titah.
-
-Satu-satunya tempat Titah menang di baris ini: **skill dari dua ekosistem
-sekaligus.** Ia membaca registry Claude Code *dan* opencode tanpa konfigurasi.
-Keduanya hanya membaca miliknya sendiri.
+MCP menutup jalur *tool* pihak ketiga. Yang belum tertutup adalah **penyesuaian
+perilaku**: menjalankan formatter setelah tiap `write`, memblok `edit` pada
+berkas tertentu, mencatat tiap tool call. Di Titah semuanya masih berarti fork.
 
 ---
 
-## 5. Operasional dan jangkauan
+## 7. Operasional dan jangkauan — tertinggal paling jauh
 
 | | Titah | opencode | Claude Code |
 |---|---|---|---|
 | Server headless | `serve` **tanpa auth** | `serve` | — |
 | Antarmuka web | ❌ | ✅ + mDNS + CORS | claude.ai/code |
-| Jalankan di tempat lain | ❌ | ACP (Zed dll) | `--cloud`, `--bg`, gateway |
-| Integrasi GitHub | ❌ | `github`, `pr <n>` | ✅ |
-| Statistik / export | ❌ | `stats`, `export`, `import` | `/cost`, `/usage` |
-| Delegasi ke CLI agent lain | **`@claude` `@opencode`** | ❌ | ❌ |
-| Fan-out lintas agent | **`/consensus`** | ❌ | `ultrareview` (miliknya sendiri) |
+| Tertanam di editor | ❌ | ✅ ACP (Zed dll) | ekstensi VS Code / JetBrains |
+| Jalan di mesin lain | ❌ | ❌ | ✅ `--cloud`, `--bg` |
+| Integrasi GitHub | ❌ | ✅ `github`, `pr <n>` | ✅ |
+| Statistik / export | ❌ | ✅ `stats` `export` `import` | `/cost` `/usage` |
+| Telemetri enterprise | ❌ | OpenTelemetry | `gateway` |
+| Delegasi ke CLI agent lain | **✅ `@claude` `@opencode`** | ❌ | ❌ |
+| Fan-out lintas agent | **✅ `/consensus`** | ❌ | `ultrareview` (miliknya sendiri) |
 
-`titah serve --hostname 0.0.0.0` memberi siapa pun di jaringan itu API yang bisa
-menjalankan `bash`, tanpa token. Ini kekurangan operasional paling serius yang
-tersisa.
-
----
-
-## 6. Jawaban langsung: sejauh mana Titah sudah unggul
-
-**Unggul, dan bisa ditunjuk:**
-
-1. **Jumlah tool** — 21 lawan 17 dan 12.
-2. **Tool berkas berizin sendiri** (`move`, `remove`). Dua pembanding memaksa
-   lewat `bash`: memindahkan satu berkas berarti membuka seluruh shell.
-3. **`patch` atomik** — beberapa suntingan, semua-atau-tidak.
-4. **Sumbu `delete` dan `network`** — tidak ada padanannya.
-5. **State yang selamat dari pemadatan** (`plan`, `memory`) — tidak ada
-   padanannya, dan ini yang paling berarti untuk kerja berjam-jam.
-6. **Yang diukur = yang dikirim**, satu definisi, dipaku test.
-7. **Delegasi ke Claude Code dan opencode sebagai sub-agent** plus
-   `/consensus` — tidak ada padanannya.
-8. **Skill dua ekosistem.**
-
-**Kalah, dan tidak tipis:**
-
-1. **MCP** — pintu ke seluruh ekosistem pihak ketiga.
-2. **Gambar dan PDF** — `read` menolak biner; untuk kerja frontend ini terasa
-   tiap hari.
-3. **Hooks dan plugin** — satu-satunya jalan penyesuaian di Titah adalah fork.
-4. **LSP sungguhan** — `diagnostics` menjalankan perintah, ia tidak tahu simbol.
-5. **Jangkauan operasional** — cloud, web, ACP, GitHub, dan **auth server**.
-6. **Kematangan pemakaian** — ini yang paling jujur. 730 test membuktikan
-   kodenya berperilaku sesuai spesifikasi. Tidak satu pun membuktikan
-   **agent-nya menyelesaikan tugas**, dan tidak ada eval harness yang bisa
-   mengukurnya.
-
-**Rumusan yang paling jujur:**
-
-> Untuk **satu orang mengerjakan satu repo dalam sesi panjang**, Titah sekarang
-> punya inti yang setara — dan pada manajemen konteks, lebih baik dan lebih bisa
-> diperiksa daripada keduanya.
->
-> Untuk **menjangkau apa pun di luar repo itu** — layanan pihak ketiga, gambar,
-> editor lain, mesin lain, atau penyesuaian tanpa mengubah source — ia masih
-> tertinggal jauh, dan jaraknya adalah MCP plus plugin.
-
-Gap Titah adalah **jangkauan**, dan jangkauan bisa ditambal belakangan.
-Kebenaran loop intinya tidak bisa, dan bagian itu sudah dibayar.
+`titah serve --hostname 0.0.0.0` memberi siapa pun di jaringan API yang bisa
+menjalankan `bash`, **tanpa token**. Ini kekurangan yang bisa merugikan user
+secara langsung, bukan sekadar membatasinya — dan satu-satunya di daftar ini
+yang begitu.
 
 ---
 
-## 7. Urutan yang saya rekomendasikan berikutnya
+## 8. Gap Titah, berurut menurut yang paling mengubah apa yang bisa dikerjakan
 
-1. **MCP stdio lokal.** Terbesar, hasil terluas, dan fondasinya sudah ada di
-   `src/core/delegate/` — subprocess dengan protokol dan adapter adalah barang
-   yang sama dengan pesan berbeda.
-2. **Gambar di `read`.** Kecil dibanding MCP, dan menutup satu kelas tugas.
-3. **Auth server.** Satu-satunya kekurangan yang bisa merugikan user secara
-   langsung, bukan sekadar membatasinya.
-4. **Hooks.** Setelah ini, sebagian permintaan penyesuaian bisa dijawab user
-   sendiri.
-5. **Eval harness.** Tanpa ini, setiap perubahan pada system prompt atau
-   deskripsi tool dinilai dengan kesan, bukan angka — dan roster 21 tool membuat
-   deskripsi tool jadi permukaan yang jauh lebih besar daripada sebelumnya.
+1. **Gambar dan PDF.** `read` menolak biner, dan tidak ada jalur mana pun yang
+   mengirim gambar ke model. Sekarang **gap fungsional terbesar** — tidak bisa
+   menempel screenshot UI yang rusak, tidak bisa membaca PDF spesifikasi.
+2. **Auth pada server.** Satu-satunya kekurangan yang bisa merugikan, bukan
+   sekadar membatasi.
+3. **Hooks / plugin.** MCP menutup jalur tool; ini menutup jalur perilaku.
+4. **MCP remote** (HTTP/SSE + OAuth) dan `resources`/`prompts`.
+5. **Formatter otomatis.** LSP sudah masuk; formatter belum, dan opencode
+   punya keduanya.
+6. **`external_directory`.** Batas cwd Titah keras dan tanpa pintu keluar sah.
+7. **Notebook**, `temperature`/`top_p` per agent, `subagent_depth`, retry.
+8. **Eval harness.** 749 test membuktikan kodenya berperilaku sesuai
+   spesifikasi. Tidak satu pun membuktikan **agent-nya menyelesaikan tugas**.
+9. **Kematangan pemakaian.** Tidak bisa dikejar dengan kode.
+
+## 9. Gap pembanding terhadap Titah
+
+**opencode tidak punya:** `list` `patch` `move` `remove` `diagnostics` `websearch`,
+proses latar, memori lintas sesi, rencana yang tahan pemadatan, sumbu `delete`,
+delegasi ke CLI agent lain, skill dua ekosistem.
+
+**Claude Code tidak punya:** `list` `patch` `move` `remove` `diagnostics`,
+memori lintas sesi, rencana yang tahan pemadatan, sumbu `delete`/`network`/`mcp`
+sebagai kelas, delegasi ke agent lain, skill dua ekosistem.
+
+---
+
+## 10. Rumusan satu paragraf
+
+Untuk **satu orang mengerjakan satu repo dalam sesi panjang**, Titah sekarang
+**unggul**: lebih banyak tool, izin yang lebih jujur per kelas tindakan, dan
+manajemen konteks yang tidak ada padanannya — rencana dan memori yang tidak bisa
+dijangkau pemadatan, plus pengukuran yang dijamin sama dengan yang dikirim.
+Dengan MCP mendarat, ia juga sudah bisa memakai ekosistem tool pihak ketiga.
+
+Yang masih memisahkannya bukan lagi kemampuan inti, melainkan **tiga hal yang
+lebih membosankan**: input multimodal, keamanan operasional, dan penyesuaian
+tanpa fork. Ketiganya bisa ditambal dan tidak satu pun butuh membongkar apa yang
+sudah ada.
+
+Yang **tidak** bisa ditambal, dan tidak dimiliki Titah, adalah bukti dari ribuan
+orang yang memakainya tiap hari.
