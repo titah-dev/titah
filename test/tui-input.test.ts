@@ -10,6 +10,7 @@ import { App, sanitizePaste, toKeyPress } from "../dist/tui/app.js"
 import { buildKeymap, resolve } from "../dist/tui/keybinds.js"
 import { createMouseSource } from "../dist/tui/mouse.js"
 import { markLines } from "../dist/tui/logo.js"
+import { fitsWideHeader, headerLines } from "../dist/tui/header.js"
 import { Config } from "../dist/core/schema.js"
 import type { Client } from "../dist/tui/client.js"
 import type { Session } from "../dist/core/message.js"
@@ -1062,13 +1063,16 @@ test("mengklik baris tool membuka rinciannya, dan tidak membatalkan giliran", as
     pushRunningTool(h)
     await tick()
 
-    // Baris riwayat pertama ada tepat di bawah panel atas. Layar uji 100×30
-    // memenuhi syarat lambang, jadi tinggi panel = tinggi lambang + 2 bingkai.
+    // Baris riwayat pertama ada tepat di bawah panel atas.
     //
-    // DIHITUNG, bukan ditulis tetap: mengganti seni lambang menggeser seluruh
-    // riwayat satu baris, dan angka tetap di sini akan gagal tanpa memberi tahu
-    // apa penyebabnya.
-    const barisPertama = markLines().length + 2 + 1
+    // Tingginya DITANYAKAN kepada yang menggambarnya, sama seperti yang
+    // dilakukan `historyRows`. Menuliskannya sebagai angka tetap berarti setiap
+    // perubahan header menggeser seluruh riwayat dan menjatuhkan test ini tanpa
+    // memberi tahu apa penyebabnya.
+    const tinggiHeader = fitsWideHeader(100, markLines())
+      ? headerLines({ columns: 100, logo: markLines(), cwd: process.cwd(), model: "m" }).length
+      : markLines().length + 2
+    const barisPertama = tinggiHeader + 1
     h.clear()
     h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
     await tick()
