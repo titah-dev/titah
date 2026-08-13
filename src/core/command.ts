@@ -50,7 +50,16 @@ export interface ResolvedCommand {
 export const BUILTIN_COMMANDS = ["consensus", "tim", "compact", "agents", "skills", "commands"] as const
 
 /** Ditangani sepenuhnya di TUI (mengubah keadaan klien), tidak dikirim ke server. */
-export const CLIENT_COMMANDS = ["model", "skill", "agent", "session", "new"] as const
+export const CLIENT_COMMANDS = [
+  "model",
+  "skill",
+  "agent",
+  "session",
+  "new",
+  "login",
+  "logout",
+  "account",
+] as const
 
 /**
  * Command yang langsung DIJALANKAN saat dipilih dari menu, bukan disisipkan ke
@@ -66,6 +75,9 @@ export const IMMEDIATE_COMMANDS = new Set([
   "commands",
   "session",
   "new",
+  "login",
+  "logout",
+  "account",
 ])
 
 export type BuiltinCommand = (typeof BUILTIN_COMMANDS)[number]
@@ -101,6 +113,9 @@ export function listCommands(config: Config): { name: string; description: strin
     { name: "agents", description: "List internal and external agents" },
     { name: "skills", description: "List detected skills" },
     { name: "commands", description: "List these commands" },
+    { name: "login", description: "Sign in to your Titah account in the browser" },
+    { name: "logout", description: "Sign out this machine" },
+    { name: "account", description: "Show which account this machine is signed in as" },
   ]
   const custom = Object.entries(config.command).map(([name, command]) => ({
     name,

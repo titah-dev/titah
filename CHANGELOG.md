@@ -117,6 +117,30 @@ agent editors as the thing that sets it apart.
 - Per-agent `steps` limits, and a text answer forced when the limit is reached
   rather than the misleading "the model stopped without giving an answer".
 
+### Account (optional)
+
+- `titah login` signs a machine in through the browser, using the **Device
+  Authorization Grant** (RFC 8628) rather than a loopback redirect — because a
+  coding agent is very often run over SSH or in a container, where a redirect to
+  `127.0.0.1` reaches the loopback interface of the wrong machine.
+- The first run on a new machine asks once: sign in, or continue without an
+  account. The answer is recorded, so it is never asked again — and "without an
+  account" is a real answer, because nothing in the agent needs one.
+- A non-interactive run is never asked and never has a choice recorded for it,
+  and a failed sign-in never stops the session.
+- `titah whoami` and `titah doctor --probe` **verify against the server** rather
+  than trusting the file on disk, which is the only way to notice a token
+  revoked from the dashboard. `titah logout` revokes remotely, then deletes
+  locally whether or not the server could be reached.
+- `/login`, `/logout` and `/account` do the same from inside the TUI; `Esc`
+  cancels a sign-in that is waiting.
+- The token lives in `account.json` at mode 0600, kept separate from `auth.json`:
+  one holds your provider keys, the other your identity, and mixing them would
+  let `titah auth remove` take your login with it.
+- The server is chosen from `$TITAH_ACCOUNT_SERVER`, then `account.server`, then
+  the default — and a token records which server issued it, so changing servers
+  asks you to sign in again instead of silently reusing one that means nothing.
+
 ### Setup & maintenance
 
 - `titah init` detects keys from the environment and probes local endpoints

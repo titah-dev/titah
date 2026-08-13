@@ -2025,3 +2025,166 @@ test("dialog izin di tengah konfirmasi x melucutinya — defect 3 followup-1", a
     h.cleanup()
   }
 })
+
+/**
+ * Layar pembuka punya cabang render sendiri (early return saat belum ada pesan).
+ * Setiap overlay harus ada di KEDUA cabang — sebuah panel yang hanya dipasang di
+ * cabang bawah tidak akan pernah terlihat oleh orang yang baru membuka Titah,
+ * dan itu justru saat `/login` paling mungkin diketik.
+ *
+ * Server diarahkan ke port tertutup: test ini soal panelnya muncul, bukan soal
+ * jaringan, dan tidak boleh ada test yang menyentuh titah.dev sungguhan.
+ */
+function withOfflineAccount<T>(run: () => Promise<T>): Promise<T> {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "titah-tui-acc-"))
+  const previousData = process.env.XDG_DATA_HOME
+  const previousServer = process.env.TITAH_ACCOUNT_SERVER
+  process.env.XDG_DATA_HOME = data
+  process.env.TITAH_ACCOUNT_SERVER = "http://127.0.0.1:1"
+  return run().finally(() => {
+    if (previousData === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = previousData
+    if (previousServer === undefined) delete process.env.TITAH_ACCOUNT_SERVER
+    else process.env.TITAH_ACCOUNT_SERVER = previousServer
+    fs.rmSync(data, { recursive: true, force: true })
+  })
+}
+
+test("/login memperlihatkan panelnya DI LAYAR PEMBUKA", async () => {
+  await withOfflineAccount(async () => {
+    const h = mount()
+    try {
+      await tick()
+      h.stdin.press("/login")
+      await tick()
+      h.stdin.press("\r")
+      await frameEventually(
+        h,
+        /Sign in to Titah|Sign-in failed/,
+        "panel login harus terlihat di layar pembuka, bukan menghilang tanpa jejak",
+      )
+    } finally {
+      h.cleanup()
+    }
+  })
+})
+
+test("/login memperlihatkan panelnya setelah percakapan dimulai", async () => {
+  await withOfflineAccount(async () => {
+    const h = mount()
+    try {
+      await tick()
+      h.push({
+        type: "message.updated",
+        sessionID: session.id,
+        message: {
+          id: "m1",
+          sessionID: session.id,
+          role: "assistant",
+          created: 1,
+          parts: [{ type: "text", text: "halo" }],
+        },
+      } as unknown as Event)
+      await tick()
+      h.stdin.press("/login")
+      await tick()
+      h.stdin.press("\r")
+      await frameEventually(
+        h,
+        /Sign in to Titah|Sign-in failed/,
+        "panel login harus terlihat di cabang render utama juga",
+      )
+    } finally {
+      h.cleanup()
+    }
+  })
+})
+
+test("kegagalan menghubungi server dilaporkan, tidak didiamkan", async () => {
+  await withOfflineAccount(async () => {
+    const h = mount()
+    try {
+      await tick()
+      h.stdin.press("/login")
+      await tick()
+      h.stdin.press("\r")
+      await frameEventually(
+        h,
+        /Cannot reach the account server/,
+        "server yang tidak bisa dihubungi harus dikatakan, bukan hilang diam-diam",
+        6_000,
+      )
+    } finally {
+      h.cleanup()
+    }
+  })
+})
+
+/**
+ * Server yang MENGGANTUNG menunggu persetujuan — bukan port tertutup.
+ *
+ * Bedanya menentukan: dengan port tertutup login sudah gagal sebelum tombol
+ * ditekan, jadi yang teruji cuma "Esc pada panel yang sudah mati". Yang
+ * dijanjikan panel adalah membatalkan login yang MASIH menunggu, dan hanya
+ * server yang terus menjawab `authorization_pending` bisa menghadirkan keadaan
+ * itu.
+ */
+async function withPendingServer<T>(run: (origin: string) => Promise<T>): Promise<T> {
+  const http = await import("node:http")
+  const server = http.createServer((req, res) => {
+    res.writeHead(req.url?.includes("device") === true ? 200 : 400, {
+      "content-type": "application/json",
+    })
+    res.end(
+      req.url?.includes("device") === true
+        ? JSON.stringify({
+            device_code: "dev_uji",
+            user_code: "BCDF-GHJK",
+            verification_uri: "http://uji/cli/activate/",
+            expires_in: 600,
+            interval: 1,
+          })
+        : JSON.stringify({ error: "authorization_pending" }),
+    )
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const port = (server.address() as { port: number }).port
+  try {
+    return await run(`http://127.0.0.1:${port}`)
+  } finally {
+    server.close()
+  }
+}
+
+test("Esc membatalkan login yang menunggu, bukan giliran di baliknya", async () => {
+  await withPendingServer(async (origin) => {
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), "titah-tui-acc-"))
+    const previousData = process.env.XDG_DATA_HOME
+    const previousServer = process.env.TITAH_ACCOUNT_SERVER
+    process.env.XDG_DATA_HOME = data
+    process.env.TITAH_ACCOUNT_SERVER = origin
+    const h = mount()
+    try {
+      await tick()
+      h.stdin.press("/login")
+      await tick()
+      h.stdin.press("\r")
+      await frameEventually(h, /BCDF-GHJK/, "kode harus terlihat sebelum bisa dibatalkan")
+      h.clear()
+      h.stdin.press("\x1b")
+      await frameEventually(
+        h,
+        /sign-in cancelled/,
+        "Esc di depan panel yang berkata 'Esc cancels' harus membatalkan panel itu",
+      )
+      assert.doesNotMatch(h.frame(), /BCDF-GHJK/, "panel harus hilang setelah dibatalkan")
+    } finally {
+      h.cleanup()
+      if (previousData === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = previousData
+      if (previousServer === undefined) delete process.env.TITAH_ACCOUNT_SERVER
+      else process.env.TITAH_ACCOUNT_SERVER = previousServer
+      fs.rmSync(data, { recursive: true, force: true })
+    }
+  })
+})

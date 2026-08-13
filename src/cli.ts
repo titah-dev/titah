@@ -5,6 +5,21 @@ import { parseArgs } from "node:util"
 import { isExplicit, loadConfig, redact, ConfigError } from "./core/config.ts"
 import { checkPermissions, readAuth, removeCredential, setCredential } from "./core/auth.ts"
 import {
+  AccountError,
+  accountServer,
+  checkAccountPermissions,
+  chooseAnonymous,
+  currentAccount,
+  fetchUserInfo,
+  formatUserCode,
+  hasChosen,
+  login,
+  normaliseServer,
+  revokeToken,
+  signOut,
+  type DeviceAuthorization,
+} from "./core/account.ts"
+import {
   listModels,
   resolveCredential,
   smallModelWindowMissing,
@@ -81,6 +96,11 @@ Session:
   sessions list            List stored sessions
   sessions prune           Delete old sessions + orphaned blobs & snapshots
 
+Account:
+  login                    Sign in to your Titah account through the browser
+  logout                   Sign out and revoke this machine's token
+  whoami                   Show who this machine is signed in as
+
 Configuration:
   init [-y]                First-time setup (auto-detect + wizard)
   config path              Show config, auth, and data locations
@@ -103,11 +123,14 @@ Options:
       --hostname <h>       Server hostname (serve), 127.0.0.1 by default
       --older-than <age>   Age cutoff for prune, e.g. 30d / 12h
       --all                sessions list: every project, not just this folder
+      --server <url>       (login) Account server, overriding config and $TITAH_ACCOUNT_SERVER
+      --no-browser         (login) Print the URL instead of opening a browser
       --auto               (run) Auto-approve permissions not denied by config
   -y, --yes                (init) Use the first detected provider, no questions
       --probe              (doctor) Also test network reachability per provider
 
 In-session commands:
+  /login  /logout  /account     Sign in, sign out, or show the current account
   /consensus <question>    Fan out to every external agent and compare
   /model  /agent           Switch model or agent (TUI only)
   /session  /new           Resume a previous session, or start a new one (TUI only)
@@ -148,6 +171,8 @@ async function main(argv: string[]): Promise<void> {
       auto: { type: "boolean" },
       agent: { type: "string", short: "a" },
       yes: { type: "boolean", short: "y" },
+      server: { type: "string" },
+      "no-browser": { type: "boolean" },
     },
   })
 
@@ -189,6 +214,15 @@ async function main(argv: string[]): Promise<void> {
         ...(typeof values.agent === "string" ? { agent: values.agent } : {}),
         ...(typeof values.session === "string" ? { session: values.session } : {}),
       })
+    case "login":
+      return cmdLogin({
+        ...(typeof values.server === "string" ? { server: values.server } : {}),
+        browser: values["no-browser"] !== true,
+      })
+    case "logout":
+      return cmdLogout()
+    case "whoami":
+      return cmdWhoami()
     case "init":
       return cmdInit(values.yes === true)
     case "undo":
@@ -420,6 +454,36 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   if (perms) out(`  ! ${perms.file} has mode ${perms.mode}, should be 600`)
   const stored = Object.keys(readAuth())
   out(`  auth.json: ${stored.length === 0 ? "empty" : stored.join(", ")}`)
+  out()
+
+  out("Account")
+  const accountPerms = checkAccountPermissions()
+  if (accountPerms) out(`  ! ${accountPerms.file} has mode ${accountPerms.mode}, should be 600`)
+  const account = currentAccount()
+  if (!account) {
+    out(
+      hasChosen()
+        ? "  not signed in (chosen) — `titah login` to sign in"
+        : "  not signed in — you will be asked once when you next open the TUI",
+    )
+    out(`  server: ${accountServer(loaded.config)}`)
+  } else {
+    out(`  signed in as ${account.user.email}`)
+    out(`  server: ${account.server}`)
+    out(`  device: ${account.deviceName}`)
+    if (withProbe) {
+      // Hanya dengan --probe: doctor tanpa jaringan harus tetap selesai cepat,
+      // dan ini satu-satunya baris di sini yang butuh server hidup.
+      try {
+        const user = await fetchUserInfo(account)
+        out(`  verified: yes, as ${user.email}`)
+      } catch (error) {
+        out(`  verified: NO — ${error instanceof Error ? error.message : String(error)}`)
+      }
+    } else {
+      out("  verified: not checked (pass --probe)")
+    }
+  }
   out()
 
   out("Providers")
@@ -720,11 +784,193 @@ async function cmdRun(
  * → baru bertanya. Setiap pertanyaan yang bisa dijawab sendiri oleh Titah adalah
  * pertanyaan yang tidak perlu ditanyakan.
  */
+/**
+ * Menyatakan server yang dituju hanya ketika bukan yang biasa.
+ *
+ * Mencetak URL server di setiap login adalah kebisingan; TIDAK mencetaknya saat
+ * server memang berbeda adalah cara paling mudah membuat orang login ke tempat
+ * yang salah tanpa pernah tahu.
+ */
+function serverNote(server: string): string {
+  return `Server: ${server}`
+}
+
+function printLoginPrompt(authorization: DeviceAuthorization, opened: boolean): void {
+  const code = formatUserCode(authorization.userCode)
+  out()
+  out(`  Your code:  ${code}`)
+  out()
+  if (opened) {
+    out("  A browser window should have opened. Confirm the code there.")
+    out(`  If it did not: ${authorization.verificationUri}`)
+  } else {
+    out("  Open this URL in any browser, on any machine:")
+    out(`    ${authorization.verificationUriComplete ?? authorization.verificationUri}`)
+  }
+  out()
+  out("  Waiting for approval… (Ctrl+C to cancel)")
+}
+
+async function cmdLogin(options: { server?: string; browser: boolean }): Promise<void> {
+  const { config } = loadConfig()
+  let server: string
+  try {
+    server = options.server ? normaliseServer(options.server) : accountServer(config)
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error))
+  }
+
+  const existing = currentAccount()
+  if (existing && existing.server === server) {
+    out(`Already signed in as ${existing.user.email}.`)
+    out("Run `titah logout` first to sign in as somebody else.")
+    return
+  }
+
+  out(`Signing in to Titah.`)
+  out(serverNote(server))
+
+  try {
+    const account = await login(
+      server,
+      {
+        onPrompt: printLoginPrompt,
+        onSlowDown: () => process.stderr.write("titah: the server asked us to poll more slowly.\n"),
+      },
+      { openBrowser: options.browser },
+    )
+    out()
+    out(`Signed in as ${account.user.name ? `${account.user.name} <${account.user.email}>` : account.user.email}.`)
+    out(`This machine is listed as "${account.deviceName}" — revoke it any time from the dashboard.`)
+  } catch (error) {
+    if (error instanceof AccountError) fail(error.message)
+    throw error
+  }
+}
+
+async function cmdLogout(): Promise<void> {
+  const account = currentAccount()
+  if (!account) {
+    // Membedakan "tidak login" dari "gagal keluar" — keduanya berakhir dengan
+    // tidak login, tapi hanya satu yang perlu ditindaklanjuti.
+    out("Not signed in.")
+    return
+  }
+
+  const revoked = await revokeToken(account)
+  signOut()
+
+  out(`Signed out ${account.user.email}.`)
+  if (!revoked) {
+    out(
+      `The server at ${account.server} could not be reached, so the token is gone locally but may ` +
+        "still be listed on your dashboard. Revoke it there.",
+    )
+  }
+}
+
+async function cmdWhoami(): Promise<void> {
+  const account = currentAccount()
+  if (!account) {
+    out("Not signed in. Run `titah login`, or keep using Titah without an account.")
+    process.exitCode = 1
+    return
+  }
+
+  out(`Email:   ${account.user.email}`)
+  if (account.user.name) out(`Name:    ${account.user.name}`)
+  out(`Server:  ${account.server}`)
+  out(`Device:  ${account.deviceName}`)
+  out(`Since:   ${new Date(account.signedInAt).toISOString()}`)
+
+  // Berkas lokal hanya mengatakan apa yang PERNAH benar. Yang menentukan sesi
+  // masih sah adalah server, dan token yang dicabut lewat dashboard hanya
+  // ketahuan dengan bertanya.
+  try {
+    const user = await fetchUserInfo(account)
+    out(`Status:  verified as ${user.email}`)
+  } catch (error) {
+    if (error instanceof AccountError) {
+      out(`Status:  ${error.message}`)
+      if (error.code === "revoked") process.exitCode = 1
+      return
+    }
+    throw error
+  }
+}
+
+/**
+ * Pertanyaan pembuka di mesin yang belum pernah memakai Titah.
+ *
+ * Dua pilihan, dan "lanjut tanpa akun" adalah pilihan yang sah — bukan jalan
+ * memutar. Titah bekerja penuh tanpa akun: yang dibuka oleh login adalah
+ * dashboard web, bukan kemampuan agent-nya. Memaksa login untuk sesuatu yang
+ * tidak membutuhkannya adalah cara tercepat membuat orang menutup terminal.
+ */
+async function askAccountChoice(): Promise<void> {
+  if (hasChosen()) return
+  if (!process.stdin.isTTY) {
+    // Non-interaktif: jangan bertanya, dan jangan pula merekam pilihan yang
+    // tidak pernah dibuat user. Skrip lanjut tanpa akun; manusia tetap ditanya
+    // saat membuka Titah sendiri.
+    return
+  }
+
+  const { config } = loadConfig()
+  out(`Welcome to Titah ${VERSION}.`)
+  out()
+  out("  1. Sign in to your Titah account")
+  out("  2. Continue without an account")
+  out()
+  out("  Titah works fully either way — an account only adds the web dashboard.")
+  out()
+
+  const readline = await import("node:readline/promises")
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  let answer: string
+  try {
+    answer = (await rl.question("Choose [1-2] › ")).trim()
+  } finally {
+    rl.close()
+  }
+
+  if (answer !== "1") {
+    chooseAnonymous()
+    out()
+    out("Continuing without an account. Run `titah login` whenever you change your mind.")
+    out()
+    return
+  }
+
+  const server = accountServer(config)
+  out()
+  out(serverNote(server))
+  try {
+    const account = await login(server, { onPrompt: printLoginPrompt })
+    out()
+    out(`Signed in as ${account.user.email}.`)
+    out()
+  } catch (error) {
+    // Login yang gagal tidak boleh menghentikan sesi. User datang untuk memakai
+    // agent-nya, bukan untuk login — jadi catat pilihannya sebagai "tanpa akun"
+    // dan lanjutkan, dengan alasan kegagalannya disebutkan.
+    chooseAnonymous()
+    process.stderr.write(
+      `titah: sign-in failed — ${error instanceof AccountError ? error.message : String(error)}\n` +
+        "titah: continuing without an account. Run `titah login` to try again.\n\n",
+    )
+  }
+}
+
 async function cmdInit(auto: boolean): Promise<void> {
   const existing = globalConfigFile()
   if (fs.existsSync(existing)) {
     fail(`Config already exists at ${existing}. Edit it directly, or delete it to start over.`)
   }
+
+  // Tidak bertanya dua kali: kalau `titah` sudah menanyakannya barusan,
+  // hasChosen() sudah true dan ini tidak melakukan apa-apa.
+  if (!auto) await askAccountChoice()
 
   out("Setting up Titah.")
   out()
@@ -841,6 +1087,12 @@ async function cmdTui(options: {
   if (!process.stdin.isTTY) {
     fail('The TUI needs an interactive terminal. For scripts use `titah run "<prompt>"`.')
   }
+
+  // Mesin yang belum pernah memakai Titah ditanya SEKALI: login, atau lanjut
+  // tanpa akun. Sebelum setup provider, karena ini pertanyaan tentang siapa
+  // kamu, bukan tentang model mana yang dipakai — dan yang kedua tidak menarik
+  // kalau yang pertama belum dijawab.
+  await askAccountChoice()
 
   const { config } = loadConfig()
   if (!isConfigured(config) && options.model === undefined) {

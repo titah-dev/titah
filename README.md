@@ -100,11 +100,82 @@ An unset `${env:...}` does **not** fail config loading — the key is dropped an
 recorded, and only complained about if the model you actually use needs it. A
 config may name five providers while you use only one.
 
+## Account (optional)
+
+Titah does not need an account. The agent loop, the tools, delegation, consensus
+and sub-agents never ask who you are; your provider credentials are yours and
+your sessions are on your own disk. An account adds the web dashboard, and
+nothing else.
+
+That is why the first run on a new machine offers two answers, and treats the
+second as a real one:
+
+```
+Welcome to Titah 0.1.0.
+
+  1. Sign in to your Titah account
+  2. Continue without an account
+```
+
+Whichever you pick is **recorded**, and you are never asked again — a question
+that keeps asking is a question that stops being read. A non-interactive run (a
+script, a Dockerfile, CI) is never asked and never has a choice recorded on its
+behalf, and a *failed* sign-in does not stop the session: Titah says why and
+carries on without an account.
+
+```bash
+titah login              # prints a code; confirm it in any browser
+titah whoami             # asks the server whether the session is still valid
+titah logout             # revokes the token, then deletes it locally
+```
+
+`/login`, `/logout` and `/account` do the same from inside the TUI, and `Esc`
+cancels a sign-in that is waiting.
+
+### Why a code, not a redirect
+
+Titah uses the **Device Authorization Grant** (RFC 8628) rather than the loopback
+redirect that browser-first tools use. A coding agent is very often run over SSH,
+in a container, or on a machine with no browser — and there a redirect to
+`127.0.0.1` lands on the loopback interface of the *wrong machine*, dead-ending
+with no useful error. A code typed into any browser behaves identically
+everywhere: one code path, no port to forward, no callback URL. The cost is that
+you type eight characters.
+
+### Pointing at your own server
+
+titah-web is ordinary Django and plenty of people will run their own. The server
+is taken from `TITAH_ACCOUNT_SERVER`, then `account.server` in the config, then
+the default — which is `http://localhost:8080`, because there is no public
+instance yet and the one titah-web you are likely to have is the one on your own
+machine:
+
+```jsonc
+{ "account": { "server": "https://titah.internal" } }
+```
+
+The environment wins over the config so one shell can be pointed elsewhere
+without editing a file other people share. The token records which server issued
+it, so changing servers asks you to sign in again rather than silently reusing a
+token that means nothing there.
+
+The token lives in `~/.local/share/titah/account.json` at mode 0600 —
+deliberately **not** in `auth.json`. That file holds your provider keys; this one
+holds your identity, and mixing them would let `titah auth remove anthropic` take
+your login with it. Neither is ever written into `titah.json`.
+
+`titah doctor` reports the account, and `--probe` additionally verifies it
+against the server — which is the only way to notice a token you revoked from the
+dashboard.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `titah init [-y]` | First-time setup (auto-detect + wizard) |
+| `titah login` | Sign in to your Titah account through the browser |
+| `titah logout` | Sign out and revoke this machine's token |
+| `titah whoami` | Who this machine is signed in as, verified against the server |
 | `titah` | Open the interactive TUI (spawns a local server) |
 | `titah attach <url>` | Open the TUI against a running server |
 | `titah run "<prompt>"` | Run one turn and stream the answer |

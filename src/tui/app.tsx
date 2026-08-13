@@ -24,6 +24,15 @@ import {
   Working,
 } from "./components.tsx"
 import { SubagentPanel, SUBAGENT_PANEL_ROWS } from "./subagent-panel.tsx"
+import { LoginPanel, loginLines, type LoginProgress } from "./login.tsx"
+import {
+  AccountError,
+  accountServer,
+  currentAccount,
+  login as runLogin,
+  revokeToken,
+  signOut,
+} from "../core/account.ts"
 import {
   agentPickerItems,
   applySuggestion,
@@ -159,6 +168,15 @@ export function App({
   const [scroll, setScroll] = useState(0)
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [model, setModel] = useState(initialModel)
+  /**
+   * Login yang sedang berjalan.
+   *
+   * Punya state sendiri, bukan sekadar `notice`, karena kode verifikasinya
+   * harus tetap terbaca selama menit-menit user pindah ke browser — sebuah
+   * baris yang lewat sekali akan tergulir hilang tepat saat dibutuhkan.
+   */
+  const [loginProgress, setLoginProgress] = useState<LoginProgress | undefined>(undefined)
+  const loginAbort = useRef<AbortController | undefined>(undefined)
 
   // Histori prompt. `historyIndex` DRAFT berarti user sedang mengetik teks baru;
   // `stash` menyimpannya supaya panah bawah bisa mengembalikannya utuh.
@@ -316,6 +334,88 @@ export function App({
     setNotice(text)
     setTimeout(() => setNotice(undefined), 4000)
   }, [])
+
+  /**
+   * `/login` — alur perangkat yang sama persis dengan `titah login`.
+   *
+   * Panelnya dibiarkan berdiri beberapa detik setelah selesai, baik berhasil
+   * maupun gagal: hasil yang langsung menghilang membuat user tidak pernah tahu
+   * apakah yang barusan ia lakukan berhasil.
+   */
+  const startLogin = useCallback(() => {
+    if (loginProgress && loginProgress.phase !== "done" && loginProgress.phase !== "failed") {
+      return flash("a sign-in is already in progress")
+    }
+
+    const existing = currentAccount()
+    const server = accountServer(config)
+    if (existing && existing.server === server) {
+      return flash(`already signed in as ${existing.user.email} — /logout first`)
+    }
+
+    const controller = new AbortController()
+    loginAbort.current = controller
+    setLoginProgress({ phase: "starting", server })
+
+    void runLogin(
+      server,
+      {
+        onPrompt: (authorization, browserOpened) =>
+          setLoginProgress({ phase: "waiting", server, authorization, browserOpened }),
+        onSlowDown: () =>
+          setLoginProgress((current) => (current ? { ...current, slowedDown: true } : current)),
+      },
+      { signal: controller.signal },
+    )
+      .then((account) => {
+        setLoginProgress({ phase: "done", server, email: account.user.email })
+        setTimeout(() => setLoginProgress(undefined), 6000)
+      })
+      .catch((error: unknown) => {
+        setLoginProgress({
+          phase: "failed",
+          server,
+          error: error instanceof AccountError ? error.message : String(error),
+        })
+        setTimeout(() => setLoginProgress(undefined), 10_000)
+      })
+      .finally(() => {
+        loginAbort.current = undefined
+      })
+  }, [config, flash, loginProgress])
+
+  const cancelLogin = useCallback((): boolean => {
+    if (!loginAbort.current) return false
+    loginAbort.current.abort()
+    loginAbort.current = undefined
+    setLoginProgress(undefined)
+    flash("sign-in cancelled")
+    return true
+  }, [flash])
+
+  const doLogout = useCallback(() => {
+    const account = currentAccount()
+    if (!account) return flash("not signed in")
+    // Token lokal dihapus lepas dari hasil pencabutan di server: sign out yang
+    // gagal karena jaringan mati tapi meninggalkan token di disk berbohong.
+    void revokeToken(account).then((revoked) => {
+      flash(
+        revoked
+          ? `signed out ${account.user.email}`
+          : `signed out ${account.user.email} locally — could not reach ${account.server}`,
+      )
+    })
+    signOut()
+  }, [flash])
+
+  const showAccount = useCallback(() => {
+    const account = currentAccount()
+    flash(
+      account
+        ? `signed in as ${account.user.email} · ${account.server}`
+        : `not signed in · /login uses ${accountServer(config)}`,
+    )
+  }, [config, flash])
 
   /**
    * Satu-satunya jalan mengirim prompt ke server.
@@ -509,6 +609,9 @@ export function App({
         if (name === "agent") return openAgentPicker()
         if (name === "session") return openSessionPicker()
         if (name === "new") return startNewSession()
+        if (name === "login") return startLogin()
+        if (name === "logout") return doLogout()
+        if (name === "account") return showAccount()
         if (IMMEDIATE_COMMANDS.has(name)) return send(`/${name}`)
         // Butuh argumen: sisipkan supaya user bisa mengetiknya.
         setDraft(item.value)
@@ -525,6 +628,7 @@ export function App({
       agentRing,
       client,
       cursor,
+      doLogout,
       draft,
       flash,
       openAgentPicker,
@@ -532,6 +636,8 @@ export function App({
       openSessionPicker,
       openSkillPicker,
       send,
+      showAccount,
+      startLogin,
       startNewSession,
       switchSession,
     ],
@@ -583,7 +689,7 @@ export function App({
 
     // Perintah yang mengubah keadaan KLIEN ditangani di sini, tidak dikirim ke
     // server — server tidak tahu model mana yang sedang kamu pilih di layar.
-    const local = /^\/(model|skill|agent|session|new)\b\s*(.*)$/.exec(text)
+    const local = /^\/(model|skill|agent|session|new|login|logout|account)\b\s*(.*)$/.exec(text)
     if (local) {
       // Ditangani di klien, tapi tetap sebuah prompt yang user ketik — ia harus
       // bisa dipanggil kembali lewat panah atas seperti yang lain.
@@ -594,13 +700,16 @@ export function App({
       if (local[1] === "agent") return openAgentPicker()
       if (local[1] === "session") return openSessionPicker()
       if (local[1] === "new") return startNewSession()
+      if (local[1] === "login") return startLogin()
+      if (local[1] === "logout") return doLogout()
+      if (local[1] === "account") return showAccount()
       return openSkillPicker(local[2] ?? "")
     }
 
     setDraft("")
     setCursor(0)
     send(text)
-  }, [draft, openAgentPicker, openModelPicker, openSessionPicker, openSkillPicker, remember, send, startNewSession, state.status])
+  }, [doLogout, draft, openAgentPicker, openModelPicker, openSessionPicker, openSkillPicker, remember, send, showAccount, startLogin, startNewSession, state.status])
 
   useEffect(() => {
     // Popup yang dibuka perintah (/model, /skill) tidak boleh ditimpa detektor.
@@ -916,6 +1025,10 @@ export function App({
     }
 
     if (resolve(keymap, press, false, ["session_interrupt"]) === "session_interrupt") {
+      // Login yang menunggu persetujuan dibatalkan lebih dulu. Ia satu-satunya
+      // hal di layar yang sedang menunggu, dan Esc di depan panel yang berkata
+      // "Esc cancels" harus membatalkan panel itu — bukan giliran di baliknya.
+      if (cancelLogin()) return
       if (state.status === "working") {
         // Jaring pengaman: kalau server bilang tidak ada yang berjalan padahal
         // layar bilang bekerja, layarlah yang melenceng. Tanpa jalan keluar ini
@@ -1088,6 +1201,11 @@ export function App({
     state.status === "working" ? (
       <Working tick={tick} elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))} />
     ) : null
+  // Didefinisikan SEKALI dan dipasang di kedua cabang render, seperti popupBox.
+  // Layar pembuka punya `return` sendiri, dan sebuah overlay yang hanya dipasang
+  // di cabang bawah tidak akan pernah terlihat oleh orang yang baru membuka
+  // Titah — justru saat `/login` paling mungkin diketik.
+  const loginBox = loginProgress ? <LoginPanel progress={loginProgress} /> : null
 
   const lines = allLines(state.messages, expandTools, textWidth)
   const editorHeight = editorRows(draft, size.rows)
@@ -1106,11 +1224,22 @@ export function App({
   const subagentPanelHeight = subagentPanelOpen
     ? Math.min(SUBAGENT_PANEL_ROWS, Math.max(1, state.subagents.length)) + 3
     : 0
+  // Diukur dari `loginLines` yang SAMA dengan yang dirender, bukan dari angka
+  // yang ditulis tangan di sini — itulah cara reservasi dan render menyimpang
+  // diam-diam, sebagaimana sudah pernah terjadi pada panel sub-agent di atas.
+  // Judul + dua baris bingkai.
+  const loginHeight = loginProgress ? loginLines(loginProgress).length + 3 : 0
   const withMark = shouldShowMark(size.columns, size.rows)
   const headerHeight = withMark ? markLines().length + 2 : 4
   const available = historyRows(
     size.rows,
-    editorHeight + permissionHeight + questionHeight + popupHeight + workingHeight + subagentPanelHeight,
+    editorHeight +
+      permissionHeight +
+      questionHeight +
+      popupHeight +
+      workingHeight +
+      subagentPanelHeight +
+      loginHeight,
     headerHeight,
   )
   const window = viewport(lines, available, scroll)
@@ -1142,6 +1271,7 @@ export function App({
           {...(activeAgent ? { agent: activeAgent } : {})}
           editor={
             <>
+              {loginBox}
               {subagentPanelBox}
               {popupBox}
               {editorBox}
@@ -1196,6 +1326,7 @@ export function App({
       {state.notice ? <Text dimColor>· {state.notice}</Text> : null}
       {state.question ? <QuestionDialog request={state.question} /> : null}
       {state.permission ? <PermissionDialog request={state.permission} /> : null}
+      {loginBox}
 
       {subagentPanelBox}
       {popupBox}

@@ -28,6 +28,12 @@ export const globalConfigFile = (): string => path.join(configDir(), "titah.json
 /** Kredensial hidup terpisah dari config (Q19) dan selalu bermode 0600. */
 export const authFile = (): string => path.join(dataDir(), "auth.json")
 
+/**
+ * Sesi akun titah-web. Terpisah dari auth.json karena isinya berbeda jenis:
+ * auth.json memegang kunci provider milikmu, account.json memegang identitasmu.
+ */
+export const accountFile = (): string => path.join(dataDir(), "account.json")
+
 export const sessionDbFile = (): string => path.join(dataDir(), "titah.db")
 
 /** Blob besar tidak masuk DB (Q11) — lihat DESIGN.md §2. */

@@ -331,6 +331,25 @@ export const Diagnostics = z
   .describe("Project checker for the `diagnostics` tool")
 
 /**
+ * Akun Titah (login SSO ke titah-web).
+ *
+ * Hanya alamat servernya yang boleh ada di sini. Tokennya TIDAK — ia tinggal di
+ * account.json bermode 0600, dengan alasan yang sama seperti kunci provider:
+ * config adalah file yang orang tempel ke issue GitHub.
+ */
+export const Account = z
+  .object({
+    server: z
+      .string()
+      .optional()
+      .describe(
+        "Base URL of the titah-web instance used for `titah login`. " +
+          "Overridden by $TITAH_ACCOUNT_SERVER.",
+      ),
+  })
+  .describe("Titah account (SSO) settings. The token itself lives in account.json, never here.")
+
+/**
  * Server MCP lewat stdio.
  *
  * Hanya stdio, dan hanya `tools`. Itu yang menutup gap-nya: server MCP yang
@@ -407,6 +426,7 @@ export const Config = z.object({
     rules: {},
   }),
   search: Search.default({ backend: "ddg" }),
+  account: Account.optional(),
   diagnostics: Diagnostics.optional(),
   mcp: z.record(z.string(), McpServerConfig).default({}),
   lsp: z.record(z.string(), LspServerConfig).default({}),
@@ -432,6 +452,7 @@ export type Agent = z.infer<typeof Agent>
 export type Command = z.infer<typeof Command>
 export type Compaction = z.infer<typeof Compaction>
 export type Search = z.infer<typeof Search>
+export type Account = z.infer<typeof Account>
 export type Diagnostics = z.infer<typeof Diagnostics>
 export type McpServerConfig = z.infer<typeof McpServerConfig>
 export type LspServerConfig = z.infer<typeof LspServerConfig>
