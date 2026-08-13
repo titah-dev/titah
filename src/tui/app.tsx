@@ -1119,6 +1119,32 @@ export function App({
    */
   const liveWindow = viewport(liveLines, available, 0)
 
+  /*
+   * Menambatkan prompt di dasar layar selama isinya BELUM memenuhi layar.
+   *
+   * `<Static>` mencetak ke scrollback lalu bingkai dinamis menyusul tepat di
+   * bawahnya. Begitu isi melebihi tinggi terminal, terminal menggulir dan
+   * prompt duduk di dasar dengan sendirinya — tapi di awal sesi, ketika baru
+   * ada beberapa baris, prompt ikut naik dan menempel di bawah baris terakhir
+   * di tengah layar. Itu yang terasa "ikut naik".
+   *
+   * Tingginya bisa dihitung justru karena kasusnya hanya berlaku SEBELUM
+   * terminal menggulir: selama total baris masih kurang dari tinggi layar, apa
+   * yang tercetak sama persis dengan apa yang terlihat. Setelah itu selisihnya
+   * nol dan penyangga ini hilang dengan sendirinya.
+   */
+  const printedRows = headerHeight + settledLines.length
+  const dynamicRows =
+    liveWindow.lines.length +
+    editorHeight +
+    permissionHeight +
+    questionHeight +
+    popupHeight +
+    workingHeight +
+    subagentPanelHeight +
+    1 // footer
+  const bottomPad = Math.max(0, size.rows - printedRows - dynamicRows)
+
   // Peta baris layar → baris riwayat, disegarkan tiap render.
   //
   // Hanya render yang tahu baris mana sedang terlihat dan di baris layar
@@ -1211,6 +1237,7 @@ export function App({
       {/* Bingkai DINAMIS, dan sengaja sekecil mungkin: hanya inilah yang
           digambar ulang tiap detak spinner. */}
       <Box flexDirection="column">
+      {bottomPad > 0 ? <Box height={bottomPad} flexShrink={0} /> : null}
 
       {liveWindow.lines.map((line) => (
         <HistoryLine key={line.key} line={line} />

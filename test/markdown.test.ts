@@ -117,9 +117,14 @@ const message = (role: Message["role"], text: string): Message => ({
 test("jawaban asisten dirender sebagai markdown", () => {
   const lines = messageLines(message("assistant", "## Hasil\n- **penting**"), false)
 
-  assert.equal(lines[0]?.text, "Hasil")
-  assert.equal(lines[0]?.spans?.[0]?.bold, true)
-  assert.equal(lines[1]?.text, "• penting")
+  // Talang kiri ikut di sini: bulatan pada baris pertama bagian, dua spasi
+  // pada sisanya. Ia potongan span TERSENDIRI supaya tidak mewarisi tebalnya
+  // judul — bulatan yang ikut menebal terbaca sebagai bagian dari judulnya.
+  assert.equal(lines[0]?.text, "⏺ Hasil")
+  assert.equal(lines[0]?.spans?.[0]?.text, "⏺ ")
+  assert.notEqual(lines[0]?.spans?.[0]?.bold, true)
+  assert.equal(lines[0]?.spans?.[1]?.bold, true)
+  assert.equal(lines[1]?.text, "  • penting")
 })
 
 test("prompt user TIDAK dirender sebagai markdown", () => {
@@ -128,7 +133,7 @@ test("prompt user TIDAK dirender sebagai markdown", () => {
   const lines = messageLines(message("user", "apa arti **ini**?"), false)
   const isi = lines.find((line) => line.kind === "user")
 
-  assert.equal(isi?.text, "│ apa arti **ini**?")
+  assert.equal(isi?.text, "  │ apa arti **ini**?")
   assert.equal(isi?.spans, undefined)
 })
 

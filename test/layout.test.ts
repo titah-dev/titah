@@ -28,12 +28,14 @@ test("prompt user jadi blok bertepi, teks multi-baris tetap utuh", () => {
     false,
   ).filter((line) => line.kind !== "blank")
 
-  assert.equal(lines[0]?.text, "┌─ you ")
+  // Talang kiri dua kolom, dengan bulatan di baris pertama tiap bagian: huruf
+  // tidak menempel tepi terminal, dan batas tiap bagian terlihat tanpa dibaca.
+  assert.equal(lines[0]?.text, "⏺ ┌─ you ")
   assert.equal(lines[0]?.kind, "user-head")
-  assert.equal(lines[1]?.text, "│ baris satu")
-  assert.equal(lines[2]?.text, "│ baris dua")
+  assert.equal(lines[1]?.text, "  │ baris satu")
+  assert.equal(lines[2]?.text, "  │ baris dua")
   assert.equal(lines[1]?.kind, "user")
-  assert.equal(lines.at(-1)?.text, "└─")
+  assert.equal(lines.at(-1)?.text, "  └─")
 })
 
 test("blok prompt diberi label sesuai jenisnya", () => {
