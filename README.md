@@ -146,9 +146,9 @@ you type eight characters.
 
 titah-web is ordinary Django and plenty of people will run their own. The server
 is taken from `TITAH_ACCOUNT_SERVER`, then `account.server` in the config, then
-the default — which is `http://localhost:8080`, because there is no public
-instance yet and the one titah-web you are likely to have is the one on your own
-machine:
+the default — which is `http://10.10.100.54:8080`, because there is no public
+instance yet and that is where the titah-web everyone here shares happens to
+live:
 
 ```jsonc
 { "account": { "server": "https://titah.internal" } }
