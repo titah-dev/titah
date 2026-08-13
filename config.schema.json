@@ -85,6 +85,11 @@
                 }
               }
             }
+          },
+          "cacheControl": {
+            "default": false,
+            "description": "Send cache_control in the request body. Only for OpenAI-compatible gateways that forward it to Anthropic. Ask your gateway operator before turning this on.",
+            "type": "boolean"
           }
         }
       }

@@ -44,6 +44,28 @@ export const Provider = z.object({
     .describe("AI SDK package to use. openai-compatible is the default."),
   options: ProviderOptions.optional(),
   models: z.record(z.string(), ProviderModel).default({}),
+  /**
+   * Kirim `cache_control` di badan permintaan, untuk gateway OpenAI-compatible
+   * yang meneruskannya ke Anthropic.
+   *
+   * DINYATAKAN, tidak ditebak — aturan yang sama dengan `contextWindow`.
+   * Titah tidak punya cara mengetahui apa yang ada di balik sebuah baseURL:
+   * gateway yang meneruskan ke Anthropic dan endpoint vLLM yang meng-cache
+   * sendiri terlihat persis sama dari sini. Menebak salah ke arah "kirim" bisa
+   * ditolak sebagian server; menebak salah ke arah sebaliknya diam-diam
+   * membayar penuh untuk awalan yang sebenarnya bisa di-cache.
+   *
+   * Tidak diperlukan untuk `@ai-sdk/anthropic` (sudah lewat jalur resminya),
+   * maupun untuk endpoint yang meng-cache awalan secara otomatis — di sana
+   * urutan yang stabil sudah cukup, dan itu selalu dilakukan Titah.
+   */
+  cacheControl: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Send cache_control in the request body. Only for OpenAI-compatible gateways that " +
+        "forward it to Anthropic. Ask your gateway operator before turning this on.",
+    ),
 })
 
 /**
