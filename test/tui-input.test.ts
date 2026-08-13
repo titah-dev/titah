@@ -1149,9 +1149,15 @@ test("Esc membebaskan layar yang nyangkut bekerja padahal server menganggur", as
   }
 })
 
-test("ctrl+x m mematikan pelacakan mouse supaya teks bisa diblok dan disalin", async () => {
-  // Keduanya tidak bisa menyala bersamaan: begitu terminal melaporkan klik ke
-  // aplikasi, ia berhenti memakai klik itu untuk menyorot teks.
+test("ctrl+x m MENYALAKAN pelacakan mouse — bawaannya sekarang mati", async () => {
+  /*
+   * Bawaannya dibalik, dan itu syarat agar menggulir bekerja sama sekali.
+   *
+   * Begitu aplikasi menyalakan mouse tracking, terminal mengirim roda ke
+   * aplikasi alih-alih menggulir scrollback-nya sendiri. Sejak riwayat pindah
+   * ke scrollback terminal, menyalakannya hanya merampas satu-satunya cara
+   * menggulir yang tersisa — jadi user harus memilihnya sendiri.
+   */
   const h = mount()
   try {
     await tick()
@@ -1164,16 +1170,16 @@ test("ctrl+x m mematikan pelacakan mouse supaya teks bisa diblok dan disalin", a
     h.stdin.press("m")
     await tick()
 
-    assert.deepEqual(h.captureLog, [false], "terminal diberi tahu untuk berhenti melacak")
-    assert.match(h.frame(), /mouse off/)
+    // Bawaannya MATI, jadi tekanan pertama menyalakannya — kebalikan dari dulu.
+    assert.deepEqual(h.captureLog, [true], "terminal diberi tahu untuk mulai melacak")
+    assert.match(h.frame(), /mouse captured/)
+    assert.match(h.frame(), /scrolling is OFF/, "akibatnya harus disebut, bukan disembunyikan")
 
-    // Klik tidak lagi membuka blok tool selama pelacakan mati — tapi itu memang
-    // konsekuensinya, dan footer menyebutkannya terus-menerus.
     h.stdin.press("\u0018")
     await tick(1)
     h.stdin.press("m")
     await tick()
-    assert.deepEqual(h.captureLog, [false, true], "bisa dinyalakan lagi")
+    assert.deepEqual(h.captureLog, [true, false], "bisa dilepas lagi")
   } finally {
     h.cleanup()
   }
@@ -1261,7 +1267,7 @@ test("layar pembuka menampilkan pesan flash, mis. status mode mouse", async () =
     h.stdin.press("m")
     await tick()
 
-    assert.match(h.frame(), /mouse off/, "toggle berjalan; statusnya harus terlihat juga")
+    assert.match(h.frame(), /mouse captured/, "toggle berjalan; statusnya harus terlihat juga")
   } finally {
     h.cleanup()
   }

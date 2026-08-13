@@ -500,6 +500,27 @@ ended with a blank line *and* the user block added one of its own — the
 transcript read as holed in one place and cramped in another. The complaint was
 never too little space; it was space that was not the same.
 
+Titah runs in the terminal's **normal buffer** — no alternate screen. That is a
+choice between two models that are each coherent, and mixing them is what broke
+scrolling for a day:
+
+| | opencode | Claude Code (and now Titah) |
+|---|---|---|
+| Buffer | alternate screen | normal |
+| Owns the screen | yes | no |
+| Scrolling | its own viewport | the terminal's |
+| After exit | screen restored | transcript stays |
+
+The alternate screen has **no scrollback**, so an app living there must scroll
+itself. Titah briefly printed to `<Static>` — a scrollback that, inside the
+alternate screen, does not exist — and the content went off the top permanently.
+
+Mouse capture is therefore **off by default**. A terminal that is reporting
+clicks to the application stops using the wheel for its own scrollback, and
+since the transcript now lives in that scrollback, capturing the mouse takes
+away the only way to scroll. `ctrl+x m` still turns it on, and says what it
+costs.
+
 Finished messages are printed **once** into the terminal's own scrollback (Ink's
 `<Static>`); only the live region — the message currently streaming, the tool
 running inside it, dialogs, the input, and the footer — is redrawn.
