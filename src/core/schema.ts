@@ -379,6 +379,26 @@ export const LspServerConfig = z.object({
     .array(z.string())
     .describe('File extensions it handles, e.g. [".ts", ".tsx"]'),
   enabled: z.boolean().default(true),
+  /**
+   * Memformat berkas otomatis setiap kali disunting, lewat
+   * `textDocument/formatting`.
+   *
+   * Menyala secara bawaan, tapi hanya berlaku kalau server BILANG ia bisa
+   * memformat — kapabilitasnya dibaca dari jawaban `initialize`, bukan
+   * diasumsikan. Matikan kalau proyeknya punya pemformat sendiri dan dua
+   * pemformat yang berbeda pendapat lebih buruk daripada tidak ada sama sekali.
+   */
+  format: z.boolean().default(true),
+  /**
+   * Dua angka yang WAJIB dikirim protokolnya bersama permintaan format.
+   *
+   * Kebanyakan language server mengabaikannya dan memakai konfigurasi proyek
+   * (`.editorconfig`, prettier, gofmt), jadi ini bukan pilihan gaya — ia nilai
+   * yang harus ada di dalam amplop. Yang benar-benar memakainya adalah server
+   * tanpa konfigurasi proyek.
+   */
+  tabSize: z.number().int().positive().default(2),
+  insertSpaces: z.boolean().default(true),
 })
 
 export const Config = z.object({

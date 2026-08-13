@@ -18,6 +18,7 @@ import { diagnosticsTool } from "./diagnostics.ts"
 import { memoryTool } from "./memory.ts"
 import { questionTool } from "./question.ts"
 import { exitPlanTool } from "./exit-plan.ts"
+import { githubTool } from "./github.ts"
 
 /**
  * Tool baca berjalan tanpa izin. Tool yang mengubah sesuatu (`mutates: true`)
@@ -67,6 +68,7 @@ export function allTools(): TitahTool[] {
     memoryTool,
     questionTool,
     exitPlanTool,
+    githubTool,
   ]
   return cached
 }
@@ -98,5 +100,6 @@ export {
   memoryTool,
   questionTool,
   exitPlanTool,
+  githubTool,
 }
 export * from "./types.ts"

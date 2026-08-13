@@ -15,7 +15,7 @@ import {
 } from "./provider.ts"
 import { buildCachedRequest, shouldCache } from "./cag.ts"
 import { loadMcpTools } from "./mcp.ts"
-import { diagnoseFile, renderDiagnostics } from "./lsp.ts"
+import { diagnoseFile, formatFile, renderDiagnostics } from "./lsp.ts"
 import { clearLoopWindow, noteCall } from "./loop.ts"
 import { relative, resolveInside } from "./tool/types.ts"
 import { askUser, NoOneToAsk } from "./question.ts"
@@ -1458,13 +1458,32 @@ async function appendDiagnostics(
 
   try {
     const file = resolveInside(cwd, value)
+
+    /*
+     * Format DULU, periksa belakangan.
+     *
+     * Urutannya bukan selera. Memformat sesudah memeriksa berarti diagnostics
+     * yang dilaporkan menunjuk ke nomor baris berkas SEBELUM dirapikan — dan
+     * setiap baris di laporan itu meleset dari berkas yang sekarang ada di disk.
+     */
+    const formatter = await formatFile(config, cwd, file).catch(() => undefined)
+
     const found = await diagnoseFile(config, cwd, file)
+    /*
+     * Perapian DILAPORKAN, tidak diam-diam.
+     *
+     * Setelah diformat, isi di disk tidak lagi sama persis dengan yang ditulis
+     * model. `edit` mencocokkan string secara persis, jadi suntingan berikutnya
+     * terhadap baris yang barusan dirapikan akan gagal — dan tanpa baris ini,
+     * kegagalan itu tidak punya sebab yang terlihat.
+     */
+    const note = formatter ? `\n\n--- formatted by ${formatter} ---` : ""
+
     // `undefined` berarti TIDAK TAHU — tidak ada server, atau ia belum sempat
     // menjawab. Dibedakan dari array kosong, yang berarti sudah diperiksa dan
-    // bersih. Menyamakannya membuat "belum diperiksa" terbaca "tidak ada
-    // masalah".
-    if (found === undefined) return output
-    return `${output}${renderDiagnostics(relative(cwd, file), found)}`
+    // bersih.
+    if (found === undefined) return `${output}${note}`
+    return `${output}${note}${renderDiagnostics(relative(cwd, file), found)}`
   } catch {
     return output
   }

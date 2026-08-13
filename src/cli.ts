@@ -6,6 +6,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { isExplicit, loadConfig, redact, ConfigError } from "./core/config.ts"
+import type { Json } from "./core/config.ts"
+import {
+  BundleError,
+  exportBundle,
+  mergeConfig,
+  parseBundle,
+  planImport,
+} from "./core/portable.ts"
 import { checkPermissions, readAuth, removeCredential, setCredential } from "./core/auth.ts"
 import {
   AccountError,
@@ -108,6 +116,8 @@ Configuration:
   init [-y]                First-time setup (auto-detect + wizard)
   config path              Show config, auth, and data locations
   config show              Show the merged config (credentials redacted)
+  export [-o <file>]       Write a portable config bundle (no credentials) to stdout or a file
+  import <file> [-y]       Show what a bundle would change; -y applies it
   auth list                Providers and where their credentials come from
   auth set <provider>      Store an API key in auth.json (mode 0600), read from stdin
   auth remove <provider>   Remove a provider's credentials
@@ -175,6 +185,7 @@ async function main(argv: string[]): Promise<void> {
       agent: { type: "string", short: "a" },
       yes: { type: "boolean", short: "y" },
       server: { type: "string" },
+      out: { type: "string", short: "o" },
       "no-browser": { type: "boolean" },
     },
   })
@@ -195,6 +206,10 @@ async function main(argv: string[]): Promise<void> {
   switch (command) {
     case "config":
       return cmdConfig(rest)
+    case "export":
+      return cmdExport(typeof values.out === "string" ? values.out : undefined)
+    case "import":
+      return cmdImport(rest[0], values.yes === true)
     case "auth":
       return cmdAuth(rest)
     case "models":
@@ -277,6 +292,108 @@ function cmdConfig(args: string[]): void {
   }
 
   fail(`Unknown config subcommand: "${sub}". Options: path, show.`)
+}
+
+/**
+ * Mengekspor config yang bisa dipasang di mesin lain.
+ *
+ * Yang keluar adalah yang user TULIS, bukan config yang sudah dilengkapi nilai
+ * bawaan — alasannya ada di portable.ts, dan ia menentukan: mengekspor bawaan
+ * berarti membekukannya, dan mesin yang mengimpor tidak akan pernah ikut ketika
+ * Titah mengubahnya nanti.
+ */
+function cmdExport(outFile: string | undefined): void {
+  const loaded = loadConfig()
+  const bundle = exportBundle(loaded.raw, VERSION, new Date())
+  const text = `${JSON.stringify(bundle, null, 2)}\n`
+
+  if (outFile === undefined) {
+    // Ke stdout supaya bisa disalurkan: `titah export | ssh lain "titah import -"`.
+    process.stdout.write(text)
+  } else {
+    fs.writeFileSync(outFile, text)
+    process.stderr.write(`titah: wrote ${outFile}\n`)
+  }
+
+  if (loaded.sources.length === 0) {
+    process.stderr.write("titah: no config file was found; the bundle carries defaults only.\n")
+  }
+
+  /*
+   * Rahasia yang dibuang DISEBUTKAN, bukan didiamkan.
+   *
+   * Orang yang memasang bundel ini di mesin lain harus tahu persis apa yang
+   * masih harus ia isi sendiri. Menemukannya sebagai kegagalan pada giliran
+   * pertama jauh lebih mahal daripada membacanya di sini.
+   */
+  if (bundle.secretsDropped.length > 0) {
+    process.stderr.write(
+      `titah: ${bundle.secretsDropped.length} secret(s) left out — set them on the other machine:\n`,
+    )
+    for (const path of bundle.secretsDropped) process.stderr.write(`  ${path}\n`)
+    process.stderr.write("  (use `titah auth set <provider>`, or \"${env:VAR}\" in the config)\n")
+  }
+}
+
+/**
+ * Memasang bundel ke config global, setelah memperlihatkan apa yang berubah.
+ *
+ * Bundelnya MENANG per kunci daun tapi tidak menghapus apa pun yang tidak ia
+ * sebut — impor yang mengganti seluruh berkas akan membuang kredensial lokal
+ * yang justru sengaja tidak ikut diekspor.
+ */
+function cmdImport(source: string | undefined, yes: boolean): void {
+  if (source === undefined) {
+    fail("Usage: titah import <bundle.json> [-y]. Produce one with `titah export`.")
+  }
+  if (!fs.existsSync(source)) fail(`No such file: ${source}`)
+
+  let bundle
+  try {
+    bundle = parseBundle(fs.readFileSync(source, "utf8"))
+  } catch (error) {
+    fail(error instanceof BundleError ? error.message : String(error))
+  }
+
+  const target = globalConfigFile()
+  const current: Json = fs.existsSync(target)
+    ? (JSON.parse(fs.readFileSync(target, "utf8")) as Json)
+    : {}
+
+  const changes = planImport(current, bundle.config)
+  out(`Bundle from titah ${bundle.titah}, exported ${bundle.exportedAt}.`)
+
+  if (changes.length === 0) {
+    out("Nothing to change — your config already matches it.")
+    return
+  }
+
+  out(`\n${changes.length} key(s) would change in ${target}:\n`)
+  for (const change of changes) {
+    const before = change.before === undefined ? "(unset)" : JSON.stringify(change.before)
+    out(`  ${change.path}\n    ${before}  →  ${JSON.stringify(change.after)}`)
+  }
+
+  if (bundle.secretsDropped.length > 0) {
+    out(`\nThe bundle carries no credentials. Still to set here:`)
+    for (const path of bundle.secretsDropped) out(`  ${path}`)
+  }
+
+  if (!yes) {
+    /*
+     * Tanpa `-y` tidak ada yang ditulis, dan itu berlaku juga di terminal.
+     *
+     * Menanyakan y/n secara interaktif berarti perilakunya berbeda antara
+     * terminal dan pipa — dan yang kedua justru tempat impor paling sering
+     * dijalankan (skrip provisioning, Dockerfile). Satu jalur, satu perilaku.
+     */
+    out("\nNothing written. Re-run with -y to apply.")
+    return
+  }
+
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, `${JSON.stringify(mergeConfig(current, bundle.config), null, 2)}\n`)
+  out(`\nWrote ${target}.`)
 }
 
 async function readStdin(): Promise<string> {
