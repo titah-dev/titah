@@ -128,7 +128,20 @@ export function App({
   // satu lewat klik. Dipisah supaya menutup "semua" tidak ikut menutup blok yang
   // sengaja dibuka user, dan sebaliknya.
   // Pelacakan mouse bisa dimatikan supaya terminal boleh menyorot teks lagi.
-  const [mouseCapture, setMouseCapture] = useState(true)
+  /*
+   * Penangkapan mouse BAWAANNYA MATI, dan itu syarat agar menggulir bekerja.
+   *
+   * Begitu aplikasi menyalakan mouse tracking, terminal mengirim roda ke
+   * aplikasi alih-alih menggulir scrollback-nya sendiri. Dulu itu setimpal:
+   * Titah memakainya untuk klik-pada-baris-tool dan menggulir sendiri. Sekarang
+   * keduanya tidak ada lagi — riwayat ada di scrollback terminal — jadi
+   * menyalakannya hanya merampas satu-satunya cara menggulir yang tersisa.
+   *
+   * Sakelarnya dibiarkan ada, dan petunjuknya menyebutkan akibatnya, supaya
+   * user yang memang menginginkan seleksi teks berbasis aplikasi tetap bisa —
+   * tapi ia harus memilihnya sendiri.
+   */
+  const [mouseCapture, setMouseCapture] = useState(false)
   const [expandAll, setExpandAll] = useState(false)
   const [openTools, setOpenTools] = useState<ReadonlySet<string>>(() => new Set())
   const expandTools: Expansion = expandAll ? true : openTools
@@ -831,8 +844,8 @@ export function App({
           mouse?.setCapture?.(next)
           return flash(
             next
-              ? "mouse on — click tool lines, wheel scrolls"
-              : "mouse off — drag to select and copy, ctrl+x m to switch back",
+              ? "mouse captured — terminal scrolling is OFF while this is on"
+              : "mouse released — wheel scrolls the terminal, drag selects text",
           )
         }
         case "tool_details":
