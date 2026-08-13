@@ -14,6 +14,7 @@ import {
   parseBundle,
   planImport,
 } from "./core/portable.ts"
+import { loadPlugins } from "./core/plugin.ts"
 import { checkPermissions, readAuth, removeCredential, setCredential } from "./core/auth.ts"
 import {
   AccountError,
@@ -118,6 +119,7 @@ Configuration:
   config show              Show the merged config (credentials redacted)
   export [-o <file>]       Write a portable config bundle (no credentials) to stdout or a file
   import <file> [-y]       Show what a bundle would change; -y applies it
+  plugin list              Load the configured plugins and report what each provides
   auth list                Providers and where their credentials come from
   auth set <provider>      Store an API key in auth.json (mode 0600), read from stdin
   auth remove <provider>   Remove a provider's credentials
@@ -210,6 +212,9 @@ async function main(argv: string[]): Promise<void> {
       return cmdExport(typeof values.out === "string" ? values.out : undefined)
     case "import":
       return cmdImport(rest[0], values.yes === true)
+    case "plugin":
+    case "plugins":
+      return cmdPlugin(rest)
     case "auth":
       return cmdAuth(rest)
     case "models":
@@ -394,6 +399,51 @@ function cmdImport(source: string | undefined, yes: boolean): void {
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, `${JSON.stringify(mergeConfig(current, bundle.config), null, 2)}\n`)
   out(`\nWrote ${target}.`)
+}
+
+/**
+ * Memperlihatkan plugin yang benar-benar termuat, dan yang gagal.
+ *
+ * Memuatnya SUNGGUHAN, bukan sekadar membaca config. Plugin yang tertulis di
+ * config tapi tidak bisa di-`import` terlihat sama saja dengan yang bekerja
+ * kalau yang dicetak hanya daftar dari berkas — dan justru selisih itu yang
+ * dicari orang ketika kaitnya tidak berjalan.
+ */
+async function cmdPlugin(args: string[]): Promise<void> {
+  const sub = args[0] ?? "list"
+  if (sub !== "list") fail(`Unknown plugin subcommand: "${sub}". Options: list.`)
+
+  const loaded = loadConfig()
+  const specs = Object.keys(loaded.config.plugin)
+  if (specs.length === 0) {
+    out("No plugins configured.")
+    out("")
+    out("A plugin is an npm module or a local file that customises behaviour —")
+    out("hooks that run before and after every tool call. Declare one like this:")
+    out('  {"plugin": {"@acme/titah-audit": {"options": {"file": "audit.log"}}}}')
+    out("")
+    out("Plugins run in this process with no sandbox, so naming one is the same")
+    out("trust decision as npm install. Nothing is ever discovered automatically.")
+    return
+  }
+
+  const { plugins, failures } = await loadPlugins(loaded.config, process.cwd())
+
+  for (const plugin of plugins) {
+    const hooks = (["tool.before", "tool.after"] as const).filter((key) => plugin.hooks[key])
+    out(`✓ ${plugin.spec}`)
+    out(`    name    ${plugin.name}`)
+    out(`    source  ${plugin.source.kind}`)
+    out(`    hooks   ${hooks.length > 0 ? hooks.join(", ") : "(none — it does nothing)"}`)
+  }
+
+  for (const failure of failures) {
+    out(`✗ ${failure.spec}`)
+    for (const line of failure.reason.split("\n")) out(`    ${line}`)
+  }
+
+  const disabled = specs.length - plugins.length - failures.length
+  if (disabled > 0) out(`\n${disabled} disabled with "enabled": false.`)
 }
 
 async function readStdin(): Promise<string> {

@@ -16,6 +16,7 @@ import {
 import { buildCachedRequest, shouldCache } from "./cag.ts"
 import { loadMcpTools } from "./mcp.ts"
 import { diagnoseFile, formatFile, renderDiagnostics } from "./lsp.ts"
+import { loadPlugins, runAfter, runBefore, type LoadedPlugin } from "./plugin.ts"
 import { clearLoopWindow, noteCall } from "./loop.ts"
 import { relative, resolveInside } from "./tool/types.ts"
 import { askUser, NoOneToAsk } from "./question.ts"
@@ -525,6 +526,22 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     /*
+     * Plugin, dengan aturan kegagalan yang SAMA seperti MCP: yang rusak
+     * kehilangan kaitnya, sesinya tetap jalan, dan user diberi tahu sekali.
+     *
+     * Sesi yang menolak dimulai karena satu plugin pencatat-audit rusak
+     * menghukum orang atas hal yang tidak ia minta saat itu.
+     */
+    const loaded = await loadPlugins(config, session.directory)
+    for (const failure of loaded.failures) {
+      bus.publish({
+        type: "session.notice",
+        sessionID: streamSessionID,
+        message: `Plugin "${failure.spec}" did not load: ${failure.reason.split("\n")[0]}`,
+      })
+    }
+
+    /*
      * Penawaran pindah mode memakai kanal yang SAMA dengan `question` — hanya
      * `intent`-nya berbeda, dan itu yang dibaca TUI untuk tahu bahwa jawabannya
      * adalah perintah untuk dirinya sendiri, bukan teks untuk model.
@@ -577,6 +594,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       messages,
       tools: buildTools({
         mcpTools: mcp.tools,
+        plugins: loaded.plugins,
         contextWindow,
         sessionID: session.id,
         cwd: session.directory,
@@ -1405,6 +1423,8 @@ interface BuildToolsOptions {
   contextWindow?: number
   /** Tool dari server MCP untuk giliran ini. */
   mcpTools?: TitahTool[]
+  /** Plugin yang sudah dimuat untuk giliran ini. Kosong berarti tidak ada. */
+  plugins?: LoadedPlugin[]
 }
 
 /**
@@ -1497,7 +1517,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
     set[definition.name] = tool({
       description: definition.description,
       inputSchema: definition.inputSchema,
-      async execute(input: unknown, options2: { toolCallId: string }) {
+      async execute(original: unknown, options2: { toolCallId: string }) {
         const callID = options2.toolCallId
         const started = Date.now()
         const ctx = {
@@ -1508,10 +1528,41 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           config: options.config,
           ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
         }
-        upsert(callID, definition.name, { status: "running", input, started })
+        upsert(callID, definition.name, { status: "running", input: original, started })
 
         try {
-          // 1. Izin dulu. Tool yang mengubah sesuatu tidak pernah jalan tanpa ini.
+          /*
+           * 0. Plugin melihat panggilan ini SEBELUM izin ditanyakan.
+           *
+           * Urutannya menentukan arti dialog izin. Kalau plugin berjalan
+           * sesudah, ia bisa mengubah masukan setelah user menyetujui yang
+           * lama — dan yang disetujui bukan lagi yang dijalankan. Di sini,
+           * apa pun yang plugin ubah ikut terlihat di dialog.
+           */
+          const plugins = options.plugins ?? []
+          let input = original
+          if (plugins.length > 0) {
+            const verdict = await runBefore(plugins, {
+              tool: definition.name,
+              input,
+              sessionID,
+              cwd,
+            })
+            if (verdict.deny !== undefined) {
+              upsert(callID, definition.name, {
+                status: "denied",
+                input,
+                title: definition.name,
+                reason: verdict.deny,
+                started,
+                ended: Date.now(),
+              })
+              return `REFUSED by plugin: ${verdict.deny} The "${definition.name}" tool was not run.`
+            }
+            input = verdict.input
+          }
+
+          // 1. Izin. Tool yang mengubah sesuatu tidak pernah jalan tanpa ini.
           if (definition.permission) {
             const need = definition.permission(input, ctx)
             // Dicatat SEBELUM tool jalan: kalau dicatat sesudah, panggilan yang
@@ -1576,12 +1627,42 @@ function buildTools(options: BuildToolsOptions): ToolSet {
            * dilihat model jadi: hasil suntingannya, lalu error yang baru saja
            * ia buat — tanpa perlu ingat memanggil apa pun.
            */
+          /*
+           * Plugin membentuk keluaran SEBELUM pemeriksa bawaan berjalan.
+           *
+           * Dengan urutan ini, plugin yang menulis ulang berkas — pemformat
+           * milik proyek, penambal lisensi — sudah selesai ketika diagnostics
+           * dijalankan, jadi yang dilaporkan adalah keadaan berkas yang
+           * sebenarnya, bukan keadaan sesaat sebelum plugin menyentuhnya.
+           */
+          let output = result.output
+          if (plugins.length > 0) {
+            const shaped = await runAfter(plugins, {
+              tool: definition.name,
+              input,
+              sessionID,
+              cwd,
+              output,
+              title: result.title,
+            })
+            output = shaped.output
+            for (const failure of shaped.failures) {
+              // Dilaporkan, tidak menjatuhkan: kait ini hanya membentuk
+              // keluaran yang sudah terjadi.
+              bus.publish({
+                type: "session.notice",
+                sessionID: options.streamSessionID,
+                message: `plugin ${failure.spec}: ${failure.reason}`,
+              })
+            }
+          }
+
           const withDiagnostics = await appendDiagnostics(
             options.config,
             cwd,
             definition.name,
             input,
-            result.output,
+            output,
           )
           // Output besar ke filesystem; model hanya menerima potongannya (Q11).
           const stored = storeOutput(callID, withDiagnostics)
@@ -1600,8 +1681,11 @@ function buildTools(options: BuildToolsOptions): ToolSet {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           upsert(callID, definition.name, {
+            // Yang ASLI, bukan yang sudah diubah plugin: `input` hidup di dalam
+            // `try` dan tidak terjangkau dari sini, dan yang dicatat untuk
+            // kegagalan sebaiknya memang apa yang model kirim.
+            input: original,
             status: "error",
-            input,
             error: message,
             started,
             ended: Date.now(),

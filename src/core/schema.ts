@@ -401,6 +401,19 @@ export const LspServerConfig = z.object({
   insertSpaces: z.boolean().default(true),
 })
 
+/**
+ * Satu plugin, dikenali dari apa yang user tulis sebagai kuncinya.
+ *
+ * Tiga bentuk kunci: nama paket npm (`@acme/titah-prettier`), path berkas
+ * (`./plugin/audit.ts`), atau `market:<id>` yang tempatnya sudah disediakan
+ * tapi belum bisa diresolusi. Lihat `parsePluginSpec`.
+ */
+export const PluginConfig = z.object({
+  /** Diteruskan apa adanya ke factory plugin; bentuknya milik plugin itu. */
+  options: z.record(z.string(), z.unknown()).default({}),
+  enabled: z.boolean().default(true),
+})
+
 export const Config = z.object({
   $schema: z.string().optional(),
   model: z
@@ -450,6 +463,12 @@ export const Config = z.object({
   diagnostics: Diagnostics.optional(),
   mcp: z.record(z.string(), McpServerConfig).default({}),
   lsp: z.record(z.string(), LspServerConfig).default({}),
+  /*
+   * Plugin disebut SATU PER SATU, tidak pernah ditemukan otomatis dari
+   * node_modules. Plugin berjalan di dalam proses ini tanpa sandbox, dan
+   * "terpasang" tidak pernah berarti "dipercaya".
+   */
+  plugin: z.record(z.string(), PluginConfig).default({}),
   compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())

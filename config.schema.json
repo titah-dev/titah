@@ -653,6 +653,30 @@
         ]
       }
     },
+    "plugin": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "options": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        }
+      }
+    },
     "compaction": {
       "default": {
         "auto": true,
