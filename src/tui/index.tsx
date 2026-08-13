@@ -38,32 +38,18 @@ function enterFullScreen(): () => void {
     if (process.stdout.isTTY) process.stdout.write(sequence)
   }
 
-  /*
-   * TIDAK memakai alternate screen, dan itu perbaikan atas kesalahan saya
-   * sendiri.
-   *
-   * Ada dua model tata letak yang masing-masing konsisten:
-   *
-   *   opencode  — alternate screen, aplikasi memiliki layar, dan ia HARUS
-   *               menggulir sendiri karena buffer itu tidak punya scrollback.
-   *   Claude Code — buffer normal, riwayat dicetak ke scrollback terminal, dan
-   *               yang menggulir adalah terminal.
-   *
-   * Titah sempat menjalankan setengah dari masing-masing: `<Static>` mencetak ke
-   * scrollback yang, di dalam alternate screen, TIDAK ADA. Isinya hilang ke atas
-   * secara permanen dan tidak ada apa pun yang bisa menggulirnya kembali.
-   *
-   * Sekarang seluruhnya model kedua. Layar tidak dibersihkan dan buffer tidak
-   * ditukar, jadi riwayat percakapan menetap di terminal setelah Titah keluar —
-   * itu bukan efek samping, itu gunanya.
-   */
   let restored = false
   const restore = () => {
     if (restored) return
     restored = true
     write(MOUSE_OFF)
     write("\u001b[?25h") // tampilkan kursor
+    write("\u001b[?1049l") // kembali ke layar utama
   }
+
+  write("\u001b[?1049h")
+  write("\u001b[2J\u001b[H")
+  write(MOUSE_ON)
 
   process.once("exit", restore)
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {

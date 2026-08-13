@@ -130,13 +130,16 @@ export function promptLabel(text: string): string {
 export function userBlock(text: string, keyBase: string): Line[] {
   const label = promptLabel(text)
   /*
-   * TANPA baris kosong pendahulu.
+   * TANPA baris kosong pendahulu, dan ia sempat kembali sekali lewat revert.
    *
    * Setiap pesan sudah ditutup satu baris kosong oleh `messageLines`, jadi baris
    * pendahulu di sini membuat jaraknya DUA sebelum prompt user dan satu di
-   * tempat lain. Ketidakteraturan itulah yang membuat percakapan terbaca
-   * berlubang di satu tempat dan rapat di tempat lain — bukan kekurangan jarak,
-   * melainkan jarak yang tidak sama.
+   * tempat lain — percakapan terbaca berlubang di satu tempat dan rapat di
+   * tempat lain.
+   *
+   * Ia juga MENCURI bulatannya: `withGutter` menaruh `⏺` pada baris pertama
+   * blok, dan kalau baris pertama itu kosong, bulatannya jatuh ke sana lalu
+   * dilewati — judul bloknya kehilangan penanda tanpa ada yang tahu kenapa.
    */
   const lines: Line[] = [
     { kind: "user-head", text: `┌─ ${label} `, key: `${keyBase}:head` },
