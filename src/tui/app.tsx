@@ -1182,8 +1182,11 @@ export function App({
         jumpHint={jumpKey}
       />
 
-      {/* Ruang tunggu tetap: sepuluh baris, selalu, apa pun panjang
-          percakapannya. Lihat `RESERVED_ROWS`. */}
+      {/* Ruang tunggu tetap: dua baris, selalu, apa pun panjang percakapannya
+          dan di mana pun posisi gulirnya. `flexShrink={0}` yang menjaganya —
+          tanpa itu, isi yang memanjang akan memerasnya habis, dan ruangnya
+          justru hilang tepat saat layar penuh, yaitu saat digulir. Lihat
+          `RESERVED_ROWS`. */}
       <Box height={RESERVED_ROWS} flexShrink={0} />
 
       {state.error ? <Text color="red">⚠ {state.error}</Text> : null}

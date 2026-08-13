@@ -285,24 +285,31 @@ export function viewport(lines: Line[], rows: number, scroll: number): Viewport 
   }
 }
 
-/** Tinggi area riwayat setelah dikurangi panel atas, editor, dan footer. */
 /**
  * Ruang tetap di atas prompt, dalam baris.
  *
- * Sebelumnya sisa layar diserap riwayat, jadi jarak antara baris terakhir dan
- * prompt berubah-ubah mengikuti panjang percakapan — kadang nol, kadang dua
- * puluh. Blok ini membuatnya SATU angka yang sama setiap saat.
+ * Sebelumnya jarak antara baris terakhir dan prompt adalah SISA — ia berubah
+ * mengikuti panjang percakapan, kadang nol kadang dua puluh. Dua baris ini
+ * selalu ada, dan ukurannya tidak bergantung pada apa pun: tidak pada panjang
+ * isi, tidak pada posisi gulir.
  *
  * Ia juga ruang tunggu: pesan yang baru tiba muncul di situ tanpa mendorong apa
  * pun, karena tempatnya sudah disediakan sejak awal.
+ *
+ * Yang membuatnya tetap saat digulir ada di dua tempat, dan keduanya harus ada:
+ * angka ini dikurangi di `historyRows` (jadi riwayat tidak pernah mengira punya
+ * dua baris lebih banyak daripada yang terlihat), dan `viewport` selalu
+ * mengembalikan tepat setinggi itu ketika isinya melebihi layar — maka menggulir
+ * menukar baris, bukan menambah atau mengurangi jumlahnya.
  */
-export const RESERVED_ROWS = 10
+export const RESERVED_ROWS = 2
 
+/** Tinggi area riwayat setelah dikurangi panel atas, ruang tunggu, editor, dan footer. */
 export function historyRows(totalRows: number, editorRows: number, headerRows = 4): number {
   const FOOTER = 1
   // `RESERVED_ROWS` ikut dikurangi DI SINI, bukan hanya dirender. Kalau hanya
-  // dirender, viewport mengira punya sepuluh baris lebih banyak daripada yang
-  // benar-benar terlihat, dan sepuluh baris teratas terpotong diam-diam.
+  // dirender, viewport mengira punya dua baris lebih banyak daripada yang
+  // benar-benar terlihat, dan dua baris teratas terpotong diam-diam.
   return Math.max(1, totalRows - headerRows - FOOTER - editorRows - RESERVED_ROWS)
 }
 

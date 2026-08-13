@@ -9,6 +9,7 @@ import {
   promptLabel,
   viewport,
 } from "../src/tui/layout.ts"
+import type { Line } from "../src/tui/layout.ts"
 import { logoLines, logoWidth, markLines, shouldShowLogo } from "../src/tui/logo.ts"
 import type { Message } from "../src/core/message.ts"
 
@@ -170,25 +171,56 @@ test("editor tumbuh mengikuti isi tapi tidak menelan layar", () => {
 })
 
 test("area riwayat menyusut saat editor membesar, dan tidak pernah nol", () => {
-  // Sepuluh baris di antaranya dipesan sebagai ruang tunggu tetap
-  // (`RESERVED_ROWS`), jadi angkanya turun sepuluh dari sebelumnya.
+  // Beberapa baris di antaranya dipesan sebagai ruang tunggu tetap
+  // (`RESERVED_ROWS`), jadi angkanya turun sebanyak itu dari sebelumnya.
   assert.equal(historyRows(30, 3), 22 - RESERVED_ROWS)
   assert.equal(historyRows(30, 12), 13 - RESERVED_ROWS)
   assert.equal(historyRows(8, 20), 1, "layar sangat pendek tetap menyisakan satu baris")
 })
 
+test("ruang tunggu dua baris, bukan lebih dan bukan kurang", () => {
+  // Angkanya dipaku supaya perubahan yang tidak disengaja terlihat sebagai test
+  // merah, bukan sebagai jarak yang diam-diam melebar di layar orang.
+  assert.equal(RESERVED_ROWS, 2)
+})
+
 test("ruang tunggu dikurangi DI SINI, bukan hanya dirender", () => {
   /*
    * Kalau ia hanya dirender sebagai kotak dan tidak ikut dikurangi di sini,
-   * viewport mengira punya sepuluh baris lebih banyak daripada yang benar-benar
-   * terlihat — dan sepuluh baris teratas terpotong DIAM-DIAM, tanpa penunjuk
-   * gulir yang memberi tahu ada yang hilang.
+   * viewport mengira punya dua baris lebih banyak daripada yang benar-benar
+   * terlihat — dan dua baris teratas terpotong DIAM-DIAM, tanpa penunjuk gulir
+   * yang memberi tahu ada yang hilang.
    */
   const rows = 40
   const editor = 3
   const header = 9
   const terlihat = rows - header - 1 - editor - RESERVED_ROWS
   assert.equal(historyRows(rows, editor, header), terlihat)
+})
+
+test("menggulir tidak mengubah tinggi riwayat, jadi ruang tunggu tetap dua baris", () => {
+  /*
+   * Ruang tunggu hanya tetap kalau yang di atasnya juga tetap. Menggulir harus
+   * MENUKAR baris, bukan menambah atau mengurangi jumlahnya — begitu satu posisi
+   * gulir mengembalikan baris lebih sedikit, sisanya jatuh ke ruang tunggu dan
+   * dua baris itu tumbuh tanpa ada yang memintanya.
+   */
+  const rows = 30
+  const editor = 3
+  const tinggi = historyRows(rows, editor)
+  const lines: Line[] = Array.from({ length: tinggi + 25 }, (_, index) => ({
+    key: `k${index}`,
+    text: `baris ${index}`,
+    kind: "assistant" as const,
+  }))
+
+  for (let scroll = 0; scroll <= 25; scroll += 1) {
+    assert.equal(
+      viewport(lines, tinggi, scroll).lines.length,
+      tinggi,
+      `posisi gulir ${scroll} mengembalikan tinggi yang berbeda`,
+    )
+  }
 })
 
 // ---------- logo ----------
