@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { Box, Static, Text } from "ink"
+import { Box, Text } from "ink"
 import type { Session } from "../core/message.ts"
 import type { QuestionRequest } from "../core/question.ts"
 import type { PermissionRequest } from "../core/permission.ts"
@@ -113,91 +113,6 @@ export function InfoPanel({
   )
 }
 
-/**
- * Satu baris riwayat. Dipisah dari `History` supaya `<Static>` bisa merendernya
- * satu per satu — `<Static>` memanggil fungsi per item, bukan per daftar.
- */
-export function HistoryLine({ line }: { line: Line }) {
-  const style = COLOR[line.kind]
-
-  // Baris markdown dirender per potongan supaya tebal, miring, dan kode punya
-  // gaya sendiri di dalam satu baris.
-  if (line.spans && line.spans.length > 0) {
-    return (
-      <Text>
-        {line.spans.map((span, index) => (
-          <Text
-            key={index}
-            {...(span.color ? { color: span.color } : {})}
-            bold={span.bold === true}
-            italic={span.italic === true}
-            underline={span.underline === true}
-            dimColor={span.dim === true}
-          >
-            {span.text}
-          </Text>
-        ))}
-      </Text>
-    )
-  }
-
-  return (
-    <Text {...(style?.color ? { color: style.color } : {})} dimColor={style?.dim === true}>
-      {line.text}
-    </Text>
-  )
-}
-
-/**
- * Riwayat yang SUDAH SELESAI, dicetak sekali ke scrollback terminal.
- *
- * Ini inti perbaikan kedipan. `<Static>` milik Ink menulis tiap item satu kali
- * lalu tidak pernah menggambarnya lagi; yang digambar ulang tiap frame hanya
- * bagian di bawahnya. Sebelumnya seluruh layar adalah satu bingkai dinamis
- * setinggi `size.rows`, jadi setiap detak spinner — sepuluh kali per detik —
- * menghapus lalu menulis ulang SELURUH layar. Itu yang terlihat sebagai kedip.
- *
- * Efek sampingnya justru yang diminta: isi mengalir ke scrollback terminal, jadi
- * menggulir memakai gulir terminal sendiri, dan prompt selalu duduk tepat di
- * bawah baris terakhir alih-alih mengambang di atas ruang kosong.
- *
- * `resetKey` memaksa cetak ulang seluruhnya. Itu dibutuhkan saat detail tool
- * dibuka atau ditutup, karena `<Static>` tidak akan pernah memperbarui yang
- * sudah tercetak — dan tanpa ini, membuka detail tidak mengubah apa pun di
- * layar.
- */
-export function Scrollback({
-  lines,
-  resetKey,
-  header,
-}: {
-  lines: Line[]
-  resetKey: string
-  /** Dicetak sekali di puncak, sebelum baris riwayat mana pun. */
-  header?: ReactNode
-}) {
-  // Header ikut masuk sebagai item pertama supaya urutannya dijamin `<Static>`
-  // sendiri. Merendernya terpisah di luar berarti bergantung pada urutan
-  // penulisan dua Static yang berbeda, dan itu tidak dijamin apa pun.
-  const items: { key: string; line?: Line }[] = [
-    ...(header ? [{ key: "__header__" }] : []),
-    ...lines.map((line) => ({ key: line.key, line })),
-  ]
-  return (
-    <Static key={resetKey} items={items}>
-      {(item) =>
-        item.line ? (
-          <HistoryLine key={item.key} line={item.line} />
-        ) : (
-          <Box key={item.key} flexDirection="column">
-            {header}
-          </Box>
-        )
-      }
-    </Static>
-  )
-}
-
 export function History({
   lines,
   hiddenAbove,
@@ -213,10 +128,44 @@ export function History({
   return (
     <Box flexDirection="column" flexGrow={1} overflow="hidden">
       {hiddenAbove > 0 ? <Text dimColor>{`  ↑ ${hiddenAbove} lines above`}</Text> : null}
-      {lines.map((line) => (
-        <HistoryLine key={line.key} line={line} />
-      ))}
+      {lines.map((line) => {
+        const style = COLOR[line.kind]
+
+        // Baris markdown dirender per potongan supaya tebal, miring, dan kode
+        // punya gaya sendiri di dalam satu baris.
+        if (line.spans && line.spans.length > 0) {
+          return (
+            <Text key={line.key}>
+              {line.spans.map((span, index) => (
+                <Text
+                  key={index}
+                  {...(span.color ? { color: span.color } : {})}
+                  bold={span.bold === true}
+                  italic={span.italic === true}
+                  underline={span.underline === true}
+                  dimColor={span.dim === true}
+                >
+                  {span.text}
+                </Text>
+              ))}
+            </Text>
+          )
+        }
+
+        return (
+          <Text
+            key={line.key}
+            {...(style.color ? { color: style.color } : {})}
+            bold={style.bold === true}
+            dimColor={style.dim === true}
+          >
+            {line.text === "" ? " " : line.text}
+          </Text>
+        )
+      })}
       {hiddenBelow > 0 ? (
+        // Tombolnya ikut disebut: penunjuk yang cuma bilang "ada di bawah" tanpa
+        // memberi tahu cara ke sana membuat orang menekan panah bawah berkali-kali.
         <Text dimColor>{`  ↓ ${hiddenBelow} lines below · ${jumpHint} to jump`}</Text>
       ) : null}
     </Box>
