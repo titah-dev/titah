@@ -419,12 +419,21 @@ Memory is recalled **eagerly** — the whole store, every request — rather tha
 retrieved. With a 32-fact cap that is cheaper than a retrieval step that can
 pick wrong, and when retrieval picks wrong the missing fact leaves no trace.
 
-**Plan mode reads, and only reads.** `read`, `list`, `glob`, `grep`, the skills,
-sub-agents, and the web tools all work, and so do read-only shell commands —
-`git log`, `git diff`, `wc`, `rg`, `ls` — declared as an explicit **allowlist**,
-not a blocklist. A blocklist has to anticipate every way to cause damage; an
-allowlist only has to be right about what it names. Everything else is *denied*,
-not asked: Plan mode does not offer a way out through the permission dialog.
+**Plan mode explores; the file tools are what it cannot use.** `edit`, `write`,
+`patch`, `move`, `remove`, and MCP tools are refused. Everything for reading
+works, and so does **the shell** — `npm test`, `git log`, `find`, whatever the
+project actually uses.
+
+The shell was briefly restricted to an allowlist of read-only commands. That is
+right on security and wrong on usefulness: a shell allowlist has to anticipate
+every tool worth running, which is a list that never finishes, and Plan mode
+could not run the project's own checks.
+
+So the honest statement is narrower than "nothing changes": what Titah
+*enforces* is that the file tools refuse. A shell can still write files, and the
+prompt tells the model not to — redirection, `sed -i`, and `git checkout` over
+someone's work are all named. That is trust, not enforcement, and the mode
+description says so rather than promising a guarantee it no longer keeps.
 
 It offers one through `exit_plan`. When the user asks for a change while in Plan
 mode, the model calls it with the plan it would carry out, and the user gets a

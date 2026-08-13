@@ -188,6 +188,27 @@ sudah ia putuskan.
 Kekhawatiran yang melahirkan aturan asli tetap dijawab, hanya bentuknya jadi
 eksplisit: `"network(*)": "deny"` adalah tembok yang tidak bisa dibuka.
 
+## Revisi kedua: daftar putih shell dicabut dari mode Plan
+
+Mode Plan sempat memakai daftar putih perintah baca — `git log`, `wc`, `rg`, dan
+selusin lainnya. Atas permintaan user, itu diganti `bash: "allow"`.
+
+Alasannya bukan bahwa daftar putihnya salah, melainkan bahwa **daftar putih
+untuk shell adalah daftar yang tidak akan pernah selesai.** `npm run typecheck`,
+`find`, `jq` — setiap alat yang tidak terpikir saat menulisnya ikut tertolak,
+dan mode Plan jadi tidak bisa menganalisa dengan alat yang benar-benar dipakai
+orang. Yang berguna dan yang merusak tidak bisa dipisahkan oleh nama perintah:
+`git log` aman, `git checkout` tidak, keduanya `git`.
+
+Ongkosnya nyata dan dicatat alih-alih disamarkan: **mode Plan tidak lagi
+menjamin nol perubahan.** Yang ditegakkan Titah sekarang hanya bahwa TOOL berkas
+menolak. Shell bisa menulis berkas, dan yang menahannya adalah prompt — yang
+menyebut redirection, `sed -i`, dan `git checkout` satu per satu.
+
+Deskripsi mode diubah dari "nothing is changed" jadi "no file edits", dan itu
+bukan kosmetik: mode yang menjanjikan jaminan yang tidak ia tegakkan lebih buruk
+daripada mode yang menyatakan batasnya.
+
 ## Hasil
 
 | | Sebelum | Sesudah |
