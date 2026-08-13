@@ -56,6 +56,7 @@ import {
 } from "./layout.ts"
 import type { MouseSource } from "./mouse.ts"
 import { shouldShowLogo, shouldShowMark, markLines } from "./logo.ts"
+import { fitsWideHeader, headerLines } from "./header.ts"
 import type { Session } from "../core/message.ts"
 
 const LEADER_TIMEOUT = 2000
@@ -105,6 +106,17 @@ export function toKeyPress(input: string, key: Key): KeyPress {
 export function sanitizePaste(input: string): string {
   const CONTROL = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]", "g")
   return input.replace(/\r\n?/g, "\n").replace(CONTROL, "")
+}
+
+/**
+ * Nama untuk sapaan header: nama asli kalau ada, kalau tidak bagian lokal email.
+ *
+ * Alamat email utuh memakan setengah kolom dan menyapa orang dengan domainnya.
+ */
+function displayName(account: { user: { name?: string; email: string } } | undefined) {
+  if (!account) return undefined
+  const name = account.user.name?.trim()
+  return name && name.length > 0 ? name : account.user.email.split("@")[0]
 }
 
 export interface AppProps {
@@ -177,6 +189,16 @@ export function App({
    */
   const [loginProgress, setLoginProgress] = useState<LoginProgress | undefined>(undefined)
   const loginAbort = useRef<AbortController | undefined>(undefined)
+
+  /*
+   * Nama yang disapa header. Disimpan sebagai state, bukan dibaca ulang tiap
+   * render: `currentAccount()` membuka file di disk, dan layar ini digambar
+   * ulang puluhan kali per giliran. Cukup disegarkan saat login dan logout —
+   * hanya dua peristiwa itu yang bisa mengubahnya.
+   */
+  const [accountName, setAccountName] = useState<string | undefined>(
+    () => displayName(currentAccount()),
+  )
 
   // Histori prompt. `historyIndex` DRAFT berarti user sedang mengetik teks baru;
   // `stash` menyimpannya supaya panah bawah bisa mengembalikannya utuh.
@@ -368,6 +390,7 @@ export function App({
       { signal: controller.signal },
     )
       .then((account) => {
+        setAccountName(displayName(account))
         setLoginProgress({ phase: "done", server, email: account.user.email })
         setTimeout(() => setLoginProgress(undefined), 6000)
       })
@@ -406,6 +429,7 @@ export function App({
       )
     })
     signOut()
+    setAccountName(undefined)
   }, [flash])
 
   const showAccount = useCallback(() => {
@@ -1230,7 +1254,18 @@ export function App({
   // Judul + dua baris bingkai.
   const loginHeight = loginProgress ? loginLines(loginProgress).length + 3 : 0
   const withMark = shouldShowMark(size.columns, size.rows)
-  const headerHeight = withMark ? markLines().length + 2 : 4
+  /*
+   * Tingginya DITANYAKAN kepada yang menggambarnya, bukan dihitung ulang di
+   * sini. Header tiga kolom punya baris pembatas yang tidak ada di header lama,
+   * dan angka yang dihitung terpisah lalu dipercaya tetap cocok adalah cara
+   * baris teratas riwayat terpotong diam-diam.
+   */
+  const headerHeight =
+    withMark && fitsWideHeader(size.columns, markLines())
+      ? headerLines({ columns: size.columns, logo: markLines(), cwd, model }).length
+      : withMark
+        ? markLines().length + 2
+        : 4
   const available = historyRows(
     size.rows,
     editorHeight +
@@ -1303,6 +1338,7 @@ export function App({
         {...(state.session ? { session: state.session } : {})}
         columns={size.columns}
         showMark={withMark}
+        {...(accountName ? { account: accountName } : {})}
       />
 
       <History

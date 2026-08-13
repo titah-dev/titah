@@ -6,6 +6,7 @@ import type { PermissionRequest } from "../core/permission.ts"
 import { logoLines, markLines } from "./logo.ts"
 import { isBlank } from "./layout.ts"
 import type { Line, LineKind } from "./layout.ts"
+import { fitsWideHeader, headerLines } from "./header.ts"
 import type { Suggestion } from "./complete.ts"
 
 const COLOR: Record<LineKind, { color?: string; dim?: boolean; bold?: boolean }> = {
@@ -55,6 +56,7 @@ export function InfoPanel({
   session,
   columns,
   showMark = false,
+  account,
 }: {
   cwd: string
   model: string
@@ -62,8 +64,45 @@ export function InfoPanel({
   session?: Session
   columns: number
   showMark?: boolean
+  /** Nama dari akun yang sedang login; kosong berarti belum login. */
+  account?: string
 }) {
   const mark = markLines()
+
+  /*
+   * Header lebar digambar sebagai baris teks utuh oleh `headerLines`, bukan
+   * disusun dari kotak Ink bersarang — lihat komentar di header.ts. Tingginya
+   * jadi satu angka yang bisa ditanyakan, dan itulah yang dipakai `historyRows`.
+   */
+  if (showMark && fitsWideHeader(columns, mark)) {
+    return (
+      <Box flexDirection="column" flexShrink={0}>
+        {headerLines({
+          columns,
+          logo: mark,
+          cwd,
+          model,
+          ...(agent ? { agent } : {}),
+          ...(session?.title ? { session: session.title } : {}),
+          ...(account ? { account } : {}),
+        }).map((line, index) => (
+          <Text key={index}>
+            {line.spans.map((span, column) => (
+              <Text
+                key={column}
+                {...(span.color ? { color: span.color } : {})}
+                bold={span.bold === true}
+                dimColor={span.dim === true}
+              >
+                {span.text}
+              </Text>
+            ))}
+          </Text>
+        ))}
+      </Box>
+    )
+  }
+
   const room = Math.max(12, columns - (showMark ? mark[0]?.length ?? 0 : 0) - 20)
 
   // TANPA flexGrow: kotak yang memenuhi tinggi tidak bisa ditengahkan oleh
