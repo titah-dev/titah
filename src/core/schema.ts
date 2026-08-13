@@ -446,29 +446,66 @@ export type LspServerConfig = z.infer<typeof LspServerConfig>
  */
 export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
   plan: {
-    description: "Plan — draft a plan only, never change anything",
+    description: "Plan — explore and analyse; nothing is changed",
     prompt:
-      "Your job is to draft a plan, NOT to carry it out.\n\n" +
-      "Read and explore as much as you need, then write a concrete plan: which files " +
-      "change, what changes inside them, and in what order.\n\n" +
-      "Every attempt to change a file or run a command WILL BE REFUSED — that is the " +
-      "rule of this mode. If the user asks for one, explain that they need to switch " +
-      "to Build mode (Tab in the TUI, or --agent build). Do not just fall silent.\n\n" +
+      "Your job is to understand and to draft a plan, NOT to carry it out.\n\n" +
+      "You can read as much as you need: read, list, glob, grep, skill, task, and the " +
+      "web tools all work here, and so do read-only shell commands like `git log` and " +
+      "`wc -l`. Analysing a codebase is exactly what this mode is for — do it thoroughly " +
+      "before you propose anything.\n\n" +
+      "What you CANNOT do is change anything: edit, write, patch, move, remove, MCP " +
+      "tools, and any shell command that is not on the read-only list are all refused.\n\n" +
+      "If the user asks for a change, do NOT attempt it and then report the refusal, and " +
+      "do NOT silently draft a plan instead of doing what they asked. Call `exit_plan`: " +
+      "it tells them they are in Plan mode and offers to switch. Say what you would do " +
+      "first, so they are choosing with the plan in front of them.\n\n" +
       "End with numbered steps someone else could execute.",
-    // Ditolak lewat IZIN, bukan dengan menghapus tool-nya.
-    //
-    // Kalau tool-nya dihilangkan, model kehabisan cara lalu berhenti tanpa
-    // sepatah kata pun — terbukti saat diuji. Dengan penolakan eksplisit, ia
-    // menerima alasan yang bisa diteruskan ke user. Sama amannya: izin
-    // diperiksa sebelum eksekusi, jadi tidak ada yang pernah dijalankan.
-    //
-    // `delete` ikut ditolak: mode ini menjanjikan "tidak mengubah apa pun", dan
-    // menghapus adalah bentuk mengubah yang paling tidak bisa ditarik kembali.
-    //
-    // `network` sengaja TIDAK ditolak, dan itu bukan kelalaian. Membaca
-    // dokumentasi sebelum menyusun rencana justru pekerjaan mode ini; ia tidak
-    // mengubah apa pun di mesin, jadi ia mengikuti kebijakan global user.
-    permission: { edit: "deny", write: "deny", bash: "deny", delete: "deny", mcp: "deny" },
+    /*
+     * `edit` `write` `delete` `mcp` ditolak KERAS: mode ini menjanjikan tidak
+     * ada yang berubah, dan menghapus adalah bentuk berubah yang paling tidak
+     * bisa ditarik kembali.
+     *
+     * `bash` juga `deny` — tapi sekarang itu berarti DEFAULT deny, dan aturan
+     * di bawahnya membuka perintah yang benar-benar hanya membaca. Itu yang
+     * membuat mode ini bisa menganalisa sungguhan: `git log`, `wc -l`, dan
+     * `rg` adalah alat analisis, dan menolaknya membuat mode plan hanya bisa
+     * menebak-nebak.
+     *
+     * Daftarnya PUTIH, bukan hitam, dan itu disengaja. Daftar hitam harus
+     * memperkirakan setiap cara merusak; daftar putih hanya perlu benar tentang
+     * yang ia sebut. Perintah yang tidak ada di sini ditolak, bukan ditanyakan
+     * — mode plan tidak menawarkan jalan keluar lewat dialog izin, ia
+     * menawarkannya lewat `exit_plan`.
+     *
+     * `network` sengaja TIDAK ditolak: membaca dokumentasi sebelum menyusun
+     * rencana justru pekerjaan mode ini, dan itu tidak mengubah apa pun.
+     */
+    permission: {
+      edit: "deny",
+      write: "deny",
+      bash: "deny",
+      delete: "deny",
+      mcp: "deny",
+      rules: {
+        "bash(git status*)": "allow",
+        "bash(git log*)": "allow",
+        "bash(git diff*)": "allow",
+        "bash(git show*)": "allow",
+        "bash(git branch*)": "allow",
+        "bash(git blame*)": "allow",
+        "bash(ls*)": "allow",
+        "bash(pwd)": "allow",
+        "bash(cat *)": "allow",
+        "bash(head *)": "allow",
+        "bash(tail *)": "allow",
+        "bash(wc *)": "allow",
+        "bash(rg *)": "allow",
+        "bash(grep *)": "allow",
+        "bash(which *)": "allow",
+        "bash(node --version)": "allow",
+        "bash(npm ls*)": "allow",
+      },
+    },
   },
   build: {
     description: "Build Manual — do the work, confirm every change",

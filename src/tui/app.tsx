@@ -516,6 +516,28 @@ export function App({
     ],
   )
 
+  /**
+   * Menjawab pertanyaan model — dan, kalau intent-nya `switch-agent`, benar-benar
+   * berpindah mode.
+   *
+   * Perpindahannya dilakukan DI SINI, di klien, karena ring agent adalah state
+   * klien: server tidak tahu mode mana yang sedang dipilih di layar. Model
+   * hanya diberi tahu hasilnya lewat nilai balik tool-nya.
+   */
+  const answerQuestion = useCallback(
+    (question: { id: string; intent?: string }, answer: string) => {
+      if (question.intent === "switch-agent" && answer !== "") {
+        const index = agentRing.indexOf(answer)
+        if (index !== -1) {
+          setAgentIndex(index)
+          flash(`agent: ${answer}`)
+        }
+      }
+      void client.answerQuestion(session.id, question.id, answer)
+    },
+    [agentRing, client, flash, session.id],
+  )
+
   const submit = useCallback(() => {
     const text = draft.trim()
 
@@ -532,7 +554,7 @@ export function App({
       const question = state.question
       setDraft("")
       setCursor(0)
-      void client.answerQuestion(session.id, question.id, text)
+      answerQuestion(question, text)
       return
     }
 
@@ -750,7 +772,7 @@ export function App({
       // Esc = tidak menjawab. Model menerimanya sebagai izin melanjutkan dengan
       // asumsi terbaiknya, BUKAN sebagai penolakan.
       if (resolve(keymap, press, false, ["session_interrupt"]) === "session_interrupt") {
-        void client.answerQuestion(session.id, question.id, "")
+        answerQuestion(question, "")
         return
       }
 
@@ -759,7 +781,7 @@ export function App({
       if (question.options.length > 0 && draft === "" && /^[1-9]$/.test(input)) {
         const chosen = question.options[Number(input) - 1]
         if (chosen !== undefined) {
-          void client.answerQuestion(session.id, question.id, chosen)
+          answerQuestion(question, chosen)
           return
         }
       }

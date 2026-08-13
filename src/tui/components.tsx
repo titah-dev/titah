@@ -212,7 +212,9 @@ export function QuestionDialog({ request }: { request: QuestionRequest }) {
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexShrink={0}>
       <Text color="cyan" bold>
         {request.agent ? `${request.agent} · ` : ""}
-        Question
+        {/* Penawaran pindah mode diberi judul sendiri: user harus tahu bahwa
+            menekan angka di sini MENGUBAH mode, bukan sekadar menjawab. */}
+        {request.intent === "switch-agent" ? "Plan mode — switch to make changes?" : "Question"}
       </Text>
       {request.question
         .split("\n")
@@ -226,8 +228,9 @@ export function QuestionDialog({ request }: { request: QuestionRequest }) {
         </Text>
       ))}
       <Text dimColor>
-        {request.options.length > 0 ? "press a number, or " : ""}
-        type an answer and press enter · esc to skip
+        {request.intent === "switch-agent"
+          ? "press a number to switch · esc to stay in Plan"
+          : `${request.options.length > 0 ? "press a number, or " : ""}type an answer and press enter · esc to skip`}
       </Text>
     </Box>
   )
