@@ -25,12 +25,12 @@ import type { Config } from "./schema.ts"
 /**
  * Dipakai kalau tidak ada konfigurasi maupun env var yang menyebut server lain.
  *
- * Sementara ini menunjuk ke titah-web yang berjalan di mesin sendiri, karena
- * belum ada instance publik. Begitu titah.dev hidup, SATU baris ini yang
- * berubah — `account.server` dan $TITAH_ACCOUNT_SERVER sudah menutupi semua
- * orang yang menjalankan instance mereka sendiri.
+ * Sementara ini menunjuk ke titah-web di jaringan lokal, karena belum ada
+ * instance publik. Begitu titah.dev hidup, SATU baris ini yang berubah —
+ * `account.server` dan $TITAH_ACCOUNT_SERVER sudah menutupi semua orang yang
+ * menjalankan instance mereka sendiri.
  */
-export const DEFAULT_SERVER = "http://localhost:8080"
+export const DEFAULT_SERVER = "http://10.10.100.54:8080"
 
 const CLIENT_ID = "titah-cli"
 const FILE_MODE = 0o600
