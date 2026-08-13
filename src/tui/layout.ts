@@ -142,7 +142,14 @@ export function userBlock(text: string, keyBase: string): Line[] {
   return lines
 }
 
-export function messageLines(message: Message, expanded: Expansion): Line[] {
+/**
+ * Lebar tempat jawaban dirender.
+ *
+ * Nol berarti "tidak tahu", dan itu SENGAJA berarti tanpa pembungkusan — test
+ * dan pemanggil non-TUI tidak punya terminal, dan membungkus ke lebar yang
+ * dikarang akan membuat hasilnya bergantung pada angka yang tidak ada artinya.
+ */
+export function messageLines(message: Message, expanded: Expansion, width = 0): Line[] {
   const lines: Line[] = []
 
   for (const [index, part] of message.parts.entries()) {
@@ -154,7 +161,7 @@ export function messageLines(message: Message, expanded: Expansion): Line[] {
         continue
       }
 
-      for (const [row, rendered] of renderMarkdown(part.text).entries()) {
+      for (const [row, rendered] of renderMarkdown(part.text, width).entries()) {
         lines.push({
           kind: "assistant",
           text: rendered.text,
@@ -175,8 +182,8 @@ export function messageLines(message: Message, expanded: Expansion): Line[] {
   return lines
 }
 
-export function allLines(messages: Message[], expanded: Expansion): Line[] {
-  return messages.flatMap((message) => messageLines(message, expanded))
+export function allLines(messages: Message[], expanded: Expansion, width = 0): Line[] {
+  return messages.flatMap((message) => messageLines(message, expanded, width))
 }
 
 export interface Viewport {

@@ -66,9 +66,10 @@ test("daftar berpoin dan bernomor diberi penanda", () => {
   assert.equal(lines[2]?.text, "1. tiga")
 })
 
-test("daftar bersarang mempertahankan indentasinya", () => {
-  const [line] = renderMarkdown("  - bersarang")
-  assert.equal(line?.text, "  • bersarang")
+test("daftar bersarang memakai tanda berbeda, supaya kedalamannya terbaca", () => {
+  // Indentasi dua spasi mudah hilang di mata; tandanya yang membedakan.
+  assert.equal(renderMarkdown("- atas")[0]?.text, "• atas")
+  assert.equal(renderMarkdown("  - bersarang")[0]?.text, "  ◦ bersarang")
 })
 
 test("kutipan diberi garis tepi dan diredupkan", () => {
@@ -80,16 +81,16 @@ test("kutipan diberi garis tepi dan diredupkan", () => {
 test("blok kode tidak diurai sebagai markdown", () => {
   const lines = renderMarkdown("```ts\nconst a = b ** 2\n```")
 
-  assert.match(lines[0]?.text ?? "", /^┌ ts$/)
-  assert.equal(lines[1]?.text, "  const a = b ** 2", "bintang di dalam kode tetap utuh")
+  assert.match(lines[0]?.text ?? "", /^╭─ ts$/)
+  assert.equal(lines[1]?.text, "│ const a = b ** 2", "bintang di dalam kode tetap utuh")
   assert.equal(lines[1]?.spans[0]?.bold, undefined)
-  assert.equal(lines[2]?.text, "└")
+  assert.equal(lines[2]?.text, "╰─")
 })
 
 test("blok kode yang tidak ditutup tetap ditampilkan seluruhnya", () => {
   const lines = renderMarkdown("```\nsatu\ndua")
   assert.equal(lines.length, 4, "pembuka + dua baris + penutup darurat")
-  assert.equal(lines[3]?.text, "└")
+  assert.equal(lines[3]?.text, "╰─")
 })
 
 test("garis horizontal jadi pemisah", () => {
@@ -129,4 +130,87 @@ test("prompt user TIDAK dirender sebagai markdown", () => {
 
   assert.equal(isi?.text, "│ apa arti **ini**?")
   assert.equal(isi?.spans, undefined)
+})
+
+// ---------- pembungkusan: inti perbaikan render ----------
+
+test("baris panjang DIBUNGKUS ke lebar yang diberikan", () => {
+  /*
+   * Ini cacat yang paling terlihat sebelum perbaikan: baris tidak pernah
+   * dibungkus di sini, Ink membungkusnya sendiri jadi beberapa baris LAYAR,
+   * dan `viewport` masih menghitungnya satu. Selisih itu membuat isi meluber
+   * lalu terpotong, dan gulirnya meleset sebanyak baris yang terbungkus.
+   */
+  const lines = renderMarkdown("satu dua tiga empat lima enam tujuh", 12)
+  assert.ok(lines.length > 1, "harus jadi beberapa baris")
+  for (const line of lines) {
+    assert.ok(line.text.length <= 12, `"${line.text}" (${line.text.length}) melewati 12`)
+  }
+})
+
+test("tanpa lebar, tidak ada pembungkusan sama sekali", () => {
+  // Nol berarti "tidak tahu", dan membungkus ke lebar yang dikarang membuat
+  // hasilnya bergantung pada angka yang tidak ada artinya.
+  const lines = renderMarkdown("satu dua tiga empat lima enam tujuh delapan")
+  assert.equal(lines.length, 1)
+})
+
+test("sambungan butir daftar sejajar dengan TEKSNYA, bukan dengan bulatnya", () => {
+  const lines = renderMarkdown("- kalimat yang cukup panjang untuk terbungkus", 20)
+  assert.ok(lines.length > 1)
+  assert.match(lines[0]?.text ?? "", /^• /)
+  // Indent gantung: dua spasi, selebar "• ".
+  assert.match(lines[1]?.text ?? "", /^ {2}\S/)
+})
+
+test("kata tunggal yang lebih panjang dari layar dipotong keras, bukan hilang", () => {
+  // Path panjang dan URL adalah kasus normal, bukan kasus tepi.
+  const long = "a".repeat(50)
+  const lines = renderMarkdown(long, 20)
+  assert.ok(lines.length >= 3)
+  assert.equal(lines.map((line) => line.text).join(""), long, "tidak ada karakter yang hilang")
+})
+
+test("kode dipotong keras, TIDAK dibungkus di batas kata", () => {
+  // Membungkus kode pada spasi mengubah indentasinya, dan indentasi adalah
+  // bagian dari arti kode.
+  const lines = renderMarkdown("```\n" + "x".repeat(60) + "\n```", 20)
+  const body = lines[1]?.text ?? ""
+  assert.ok(body.startsWith("│ "), "punya gutter")
+  assert.ok(body.length <= 20)
+  assert.ok(body.endsWith("…"), "dipotong dan terlihat terpotong")
+})
+
+// ---------- tabel ----------
+
+test("tabel markdown jadi kolom yang rata", () => {
+  const lines = renderMarkdown(
+    ["| Nama | Nilai |", "|---|---|", "| a | 1 |", "| panjang sekali | 2 |"].join("\n"),
+    80,
+  )
+  // Kepala, pemisah, dua baris isi.
+  assert.equal(lines.length, 4)
+  assert.match(lines[0]?.text ?? "", /Nama/)
+  assert.match(lines[1]?.text ?? "", /^├─/)
+  // Kolom pertama dipadatkan ke lebar yang sama, jadi pipa kedua sejajar.
+  const pipeOf = (text: string) => text.indexOf("│", 2)
+  assert.equal(pipeOf(lines[2]?.text ?? ""), pipeOf(lines[3]?.text ?? ""))
+})
+
+test("kepala tabel ditebalkan, isinya tetap diurai sebagai markdown", () => {
+  const lines = renderMarkdown(["| a | b |", "|---|---|", "| `kode` | x |"].join("\n"), 80)
+  assert.equal(lines[0]?.spans[1]?.bold, true)
+  assert.ok(
+    lines[2]?.spans.some((span) => span.color === "yellow"),
+    "backtick di dalam sel tetap jadi kode",
+  )
+})
+
+test("judul tingkat 1, 2, dan 3 dibedakan", () => {
+  // Judul yang semuanya sama menghapus satu-satunya hal yang disampaikan
+  // judul: struktur.
+  assert.equal(renderMarkdown("# satu")[0]?.text, "SATU")
+  assert.equal(renderMarkdown("## dua")[0]?.text, "dua")
+  assert.equal(renderMarkdown("## dua")[0]?.spans[0]?.color, "green")
+  assert.equal(renderMarkdown("### tiga")[0]?.spans[0]?.color, "cyan")
 })

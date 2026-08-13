@@ -469,6 +469,20 @@ checked and clean.
 once, the tool refuses and **writes nothing**. Refusing is far better than
 silently writing in the wrong place.
 
+## Rendering
+
+Answers are rendered to **lines, wrapped at render time** — not handed to the
+terminal to wrap. That matters more than it sounds: the history is scrolled by
+slicing a list of lines, so a logical line that the terminal silently wraps into
+three screen rows makes the slice under-count, the content overflow its box, and
+the scroll position drift by one row per wrapped paragraph.
+
+Wrapping is span-aware, so bold, inline code, and links survive it, and list
+items get a hanging indent — a continuation lines up under the text, not under
+the bullet. Code blocks are the exception: they are **cut, not wrapped**, since
+wrapping code at spaces changes its indentation, and indentation is part of what
+code means. Markdown tables are laid out as aligned columns.
+
 ## Permissions & undo
 
 Every tool that changes something goes through the permission engine. Checks, in
