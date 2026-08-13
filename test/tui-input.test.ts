@@ -1911,3 +1911,40 @@ test("PageUp tidak menyelinap masuk ke prompt", async () => {
     h.cleanup()
   }
 })
+
+test("isi mulai dari ATAS, prompt menetap di dasar", async () => {
+  /*
+   * Susunan yang diminta, dan yang versi pertama penyangga justru membalikkan:
+   * ia diletakkan di ATAS baris hidup, sehingga jawaban terdorong ke dasar dan
+   * bagian atas layar kosong.
+   *
+   * Yang benar: isi mengalir dari atas seperti terminal biasa, penyangga
+   * mengisi sisa ruang, dan yang ditambatkan di dasar hanya prompt.
+   */
+  const h = mount()
+  try {
+    await tick()
+    h.push({
+      type: "message.updated",
+      sessionID: "s",
+      message: { id: "m1", role: "user", parts: [{ type: "text", text: "halo" }] },
+    } as never)
+    h.push({ type: "session.idle", sessionID: "s" })
+    await tick()
+
+    const rows = h.frame().split("\n")
+    const isi = rows.findIndex((row) => row.includes("halo"))
+    const prompt = rows.findIndex((row, index) => index > isi && row.includes("›"))
+    assert.ok(isi >= 0, "isi harus terlihat")
+    assert.ok(prompt > isi, "prompt harus DI BAWAH isi")
+
+    // Ada ruang di antaranya, dan ruang itu kosong — bukan isi yang terdorong.
+    const antara = rows.slice(isi + 1, prompt).filter((row) => row.trim() !== "")
+    assert.ok(
+      antara.length <= 2,
+      `di antara isi dan prompt hanya boleh ruang kosong, dapat: ${JSON.stringify(antara)}`,
+    )
+  } finally {
+    h.cleanup()
+  }
+})

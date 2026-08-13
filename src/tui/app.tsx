@@ -1250,11 +1250,24 @@ export function App({
       {/* Bingkai DINAMIS, dan sengaja sekecil mungkin: hanya inilah yang
           digambar ulang tiap detak spinner. */}
       <Box flexDirection="column">
-      {bottomPad > 0 ? <Box height={bottomPad} flexShrink={0} /> : null}
-
       {liveWindow.lines.map((line) => (
         <HistoryLine key={line.key} line={line} />
       ))}
+
+      {/*
+        Penyangga berada SESUDAH isi dan SEBELUM prompt, dan urutan itu adalah
+        seluruh maksudnya.
+
+        Versi pertama menaruhnya di ATAS baris hidup, yang justru mendorong
+        jawaban ke bawah: isi menempel pada prompt di dasar layar sementara
+        bagian atas kosong. Yang diminta kebalikannya — isi mengalir dari ATAS
+        seperti terminal biasa, dan yang ditambatkan di dasar hanya prompt.
+
+        Jadi penyangga ini mengisi sisa ruang di antara keduanya, dan ia hanya
+        ada selama isi belum memenuhi layar. Setelah itu tingginya nol dan
+        terminal yang menempatkan segalanya.
+      */}
+      {bottomPad > 0 ? <Box height={bottomPad} flexShrink={0} /> : null}
 
       {state.error ? <Text color="red">⚠ {state.error}</Text> : null}
       {/* Redup dan tanpa warna peringatan: ini informasi, bukan kegagalan, dan
