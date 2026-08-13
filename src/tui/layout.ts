@@ -215,6 +215,20 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
   const lines: Line[] = []
 
   for (const [index, part] of message.parts.entries()) {
+    /*
+     * Satu baris kosong sebelum tiap bagian — tiap bulatan `⏺` adalah satu
+     * "point", dan sebelumnya bagian-bagian itu ditempel tanpa jeda: keluaran
+     * sebuah tool langsung disusul judul tool berikutnya, jadi batas antar
+     * langkah harus dibaca dari glyph-nya, bukan terlihat sekilas.
+     *
+     * Hanya kalau belum ada yang kosong di sana. Jawaban markdown sering sudah
+     * berakhir dengan baris kosongnya sendiri, dan dua baris kosong berturut-
+     * turut adalah jarak yang tidak diminta siapa pun.
+     */
+    if (lines.length > 0 && !isBlank(lines.at(-1))) {
+      lines.push({ kind: "blank", text: "", key: `${message.id}:${index}:sep` })
+    }
+
     if (part.type === "text") {
       // Prompt user ditampilkan apa adanya: yang diketik user bukan markdown,
       // dan merendernya akan menyembunyikan karakter yang sengaja ia tulis.

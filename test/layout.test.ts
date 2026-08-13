@@ -149,6 +149,64 @@ test("pemisah di belakang pesan TERAKHIR dibuang", () => {
   )
 })
 
+test("tiap bagian dipisahkan satu baris kosong, tidak lebih", () => {
+  /*
+   * Tiap bulatan `⏺` adalah satu "point". Sebelumnya bagian-bagian ditempel
+   * tanpa jeda: keluaran sebuah tool langsung disusul judul tool berikutnya,
+   * jadi batas antar langkah harus dibaca dari glyph-nya alih-alih terlihat.
+   */
+  const lines = messageLines(
+    message("m", {
+      parts: [
+        { type: "text", text: "Mencoba dulu." },
+        {
+          type: "tool",
+          callID: "c1",
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: {},
+            title: "bash npm test",
+            output: "ok",
+            truncated: false,
+            started: 1,
+            ended: 2,
+          },
+        },
+        {
+          type: "tool",
+          callID: "c2",
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: {},
+            title: "bash npm run build",
+            output: "ok",
+            truncated: false,
+            started: 3,
+            ended: 4,
+          },
+        },
+      ],
+    }),
+    false,
+  )
+
+  const kepala = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line.text.startsWith("⏺"))
+  assert.equal(kepala.length, 3, "tiga bagian, tiga bulatan")
+
+  for (const { index } of kepala.slice(1)) {
+    assert.equal(isBlank(lines[index - 1]), true, `bagian di baris ${index} tidak diberi jeda`)
+    assert.equal(
+      isBlank(lines[index - 2]),
+      false,
+      `bagian di baris ${index} diberi DUA baris kosong, bukan satu`,
+    )
+  }
+})
+
 test("baris kosong dari markdown di ekor riwayat juga dibuang", () => {
   /*
    * Ini yang sebenarnya menumpuk di layar. Baris kosong hasil markdown TIDAK
