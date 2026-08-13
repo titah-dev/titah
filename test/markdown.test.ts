@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { parseInline, renderMarkdown } from "../src/tui/markdown.ts"
+import { parseInline, renderMarkdown, widthOf } from "../src/tui/markdown.ts"
 import { messageLines } from "../src/tui/layout.ts"
 import type { Message } from "../src/core/message.ts"
 
@@ -117,9 +117,14 @@ const message = (role: Message["role"], text: string): Message => ({
 test("jawaban asisten dirender sebagai markdown", () => {
   const lines = messageLines(message("assistant", "## Hasil\n- **penting**"), false)
 
-  assert.equal(lines[0]?.text, "Hasil")
-  assert.equal(lines[0]?.spans?.[0]?.bold, true)
-  assert.equal(lines[1]?.text, "• penting")
+  // Talang kiri ikut di sini: bulatan pada baris pertama bagian, dua spasi
+  // pada sisanya. Ia potongan span TERSENDIRI supaya tidak mewarisi tebalnya
+  // judul — bulatan yang ikut menebal terbaca sebagai bagian dari judulnya.
+  assert.equal(lines[0]?.text, "⏺ Hasil")
+  assert.equal(lines[0]?.spans?.[0]?.text, "⏺ ")
+  assert.notEqual(lines[0]?.spans?.[0]?.bold, true)
+  assert.equal(lines[0]?.spans?.[1]?.bold, true)
+  assert.equal(lines[1]?.text, "  • penting")
 })
 
 test("prompt user TIDAK dirender sebagai markdown", () => {
@@ -128,7 +133,7 @@ test("prompt user TIDAK dirender sebagai markdown", () => {
   const lines = messageLines(message("user", "apa arti **ini**?"), false)
   const isi = lines.find((line) => line.kind === "user")
 
-  assert.equal(isi?.text, "│ apa arti **ini**?")
+  assert.equal(isi?.text, "  │ apa arti **ini**?")
   assert.equal(isi?.spans, undefined)
 })
 
@@ -204,6 +209,54 @@ test("kepala tabel ditebalkan, isinya tetap diurai sebagai markdown", () => {
     lines[2]?.spans.some((span) => span.color === "yellow"),
     "backtick di dalam sel tetap jadi kode",
   )
+})
+
+test("kolom tetap rata walau selnya memakai backtick atau bintang", () => {
+  /*
+   * Ini yang membuat tabel tampil miring: lebar dihitung dari teks MENTAH, sel
+   * dilapisi sampai selebar itu, lalu `parseInline` membuang backtick dan
+   * bintangnya. Tiap penanda yang hilang menciutkan sel itu saja — jadi baris
+   * yang memakai `kode` selalu lebih pendek daripada tetangganya.
+   */
+  const lines = renderMarkdown(
+    [
+      "| Fitur | Nilai |",
+      "|---|---|",
+      "| biasa saja | satu |",
+      "| `temperature` per agent | **dua** |",
+    ].join("\n"),
+    80,
+  )
+
+  const lebar = lines.map((line) => widthOf(line.text))
+  assert.equal(new Set(lebar).size, 1, `baris tidak sama lebar: ${lebar.join(", ")}`)
+  assert.ok(
+    !lines.some((line) => line.text.includes("`") || line.text.includes("**")),
+    "penanda markup sudah dilucuti",
+  )
+})
+
+test("emoji dihitung dua kolom, jadi tabel penuh ✅/❌ ikut rata", () => {
+  /*
+   * `widthOf` dulu hanya `text.length`. Satu emoji dihitung satu kolom padahal
+   * terminal menggambarnya dua, jadi tiap sel melebihi kolomnya persis sebanyak
+   * emoji di dalamnya — dan tabel perbandingan, yang isinya hampir seluruhnya
+   * `✅` dan `❌`, adalah yang paling parah terlihat.
+   */
+  assert.equal(widthOf("❌"), 2)
+  assert.equal(widthOf("✅"), 2)
+  assert.equal(widthOf("⚠️"), 2, "pemilih varian tidak menambah kolom sendiri")
+  assert.equal(widthOf("✓"), 1, "centang biasa tetap satu kolom")
+  assert.equal(widthOf("abc"), 3)
+  assert.equal(widthOf("日本"), 4)
+
+  const lines = renderMarkdown(
+    ["| Fitur | A | B |", "|---|---|---|", "| satu | ❌ | ya |", "| dua | ya | ✅ |"].join("\n"),
+    80,
+  )
+
+  const lebar = lines.map((line) => widthOf(line.text))
+  assert.equal(new Set(lebar).size, 1, `baris tidak sama lebar: ${lebar.join(", ")}`)
 })
 
 test("judul tingkat 1, 2, dan 3 dibedakan", () => {

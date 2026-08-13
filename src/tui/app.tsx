@@ -45,7 +45,15 @@ import {
 } from "./complete.ts"
 import { IMMEDIATE_COMMANDS, listCommands } from "../core/command.ts"
 import type { Config } from "../core/schema.ts"
-import { allLines, editorRows, historyRows, viewport, type Expansion, type Line } from "./layout.ts"
+import {
+  allLines,
+  editorRows,
+  historyRows,
+  RESERVED_ROWS,
+  viewport,
+  type Expansion,
+  type Line,
+} from "./layout.ts"
 import type { MouseSource } from "./mouse.ts"
 import { shouldShowLogo, shouldShowMark, markLines } from "./logo.ts"
 import type { Session } from "../core/message.ts"
@@ -274,7 +282,20 @@ export function App({
   useEffect(() => {
     if (state.status !== "working") return
     setStartedAt(Date.now())
-    const timer = setInterval(() => setTick((value) => value + 1), 90)
+    /*
+     * SATU detak per detik, bukan sebelas.
+     *
+     * Di alternate screen seluruh layar adalah satu bingkai, jadi tiap detak
+     * menulis ulang semuanya — dan itulah kedipan yang dikeluhkan. Frekuensinya
+     * yang menjadikannya terlihat, bukan penulisan ulangnya sendiri: sebelas
+     * kali per detik terbaca sebagai getaran, sekali per detik terbaca sebagai
+     * detik yang berjalan.
+     *
+     * Spinner-nya jadi berputar selambat itu juga, dan itu memang konsekuensinya
+     * — animasi yang halus di sini dibayar dengan layar yang bergetar, dan
+     * pertukaran itu jelas arahnya.
+     */
+    const timer = setInterval(() => setTick((value) => value + 1), 1000)
     return () => clearInterval(timer)
   }, [state.status])
 
@@ -1223,6 +1244,7 @@ export function App({
   )
   const window = viewport(lines, available, scroll)
 
+
   // Peta baris layar → baris riwayat, disegarkan tiap render.
   //
   // Hanya render yang tahu baris mana sedang terlihat dan di baris layar
@@ -1289,6 +1311,13 @@ export function App({
         hiddenBelow={window.hiddenBelow}
         jumpHint={jumpKey}
       />
+
+      {/* Ruang tunggu tetap: dua baris, selalu, apa pun panjang percakapannya
+          dan di mana pun posisi gulirnya. `flexShrink={0}` yang menjaganya —
+          tanpa itu, isi yang memanjang akan memerasnya habis, dan ruangnya
+          justru hilang tepat saat layar penuh, yaitu saat digulir. Lihat
+          `RESERVED_ROWS`. */}
+      <Box height={RESERVED_ROWS} flexShrink={0} />
 
       {state.error ? <Text color="red">⚠ {state.error}</Text> : null}
       {/* Redup dan tanpa warna peringatan: ini informasi, bukan kegagalan, dan
