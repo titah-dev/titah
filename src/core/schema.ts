@@ -135,6 +135,7 @@ export const Agent = z
         bash: z.enum(["ask", "allow", "deny"]).optional(),
         network: z.enum(["ask", "allow", "deny"]).optional(),
         delete: z.enum(["ask", "allow", "deny"]).optional(),
+        mcp: z.enum(["ask", "allow", "deny"]).optional(),
         allowlist: z.array(z.string()).optional(),
       })
       .optional()
@@ -210,6 +211,16 @@ export const Permission = z
      * baru" tidak pernah dimaksudkan sebagai "boleh menghapus berkas saya".
      */
     delete: z.enum(["ask", "allow", "deny"]).default("ask"),
+    /*
+     * Sumbu untuk tool yang datang dari server MCP.
+     *
+     * Sumbu SENDIRI karena tool MCP adalah kode yang tidak ditulis Titah dan
+     * tidak bisa diklasifikasikan Titah: sebuah server boleh menulis berkas,
+     * memanggil API berbayar, atau keduanya. Tidak satu pun dari sumbu di atas
+     * jujur menggambarkan itu, dan memaksanya ke salah satu berarti user
+     * memberi izin untuk hal yang berbeda dari yang sebenarnya terjadi.
+     */
+    mcp: z.enum(["ask", "allow", "deny"]).default("ask"),
     allowlist: z
       .array(z.string())
       .default([])
@@ -279,6 +290,38 @@ export const Diagnostics = z
   })
   .describe("Project checker for the `diagnostics` tool")
 
+/**
+ * Server MCP lewat stdio.
+ *
+ * Hanya stdio, dan hanya `tools`. Itu yang menutup gap-nya: server MCP yang
+ * dipasang orang hampir selalu stdio, dan yang dicari darinya hampir selalu
+ * tool. Menyatakan batasnya lebih baik daripada membangun setengah dari
+ * segalanya — yang setengah jadi terlihat sama dengan yang jadi, sampai dipakai.
+ */
+export const McpServerConfig = z.object({
+  command: z.string().describe("Executable that speaks MCP over stdio"),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).optional(),
+  enabled: z.boolean().default(true),
+})
+
+/**
+ * Language server per bahasa, untuk diagnostics OTOMATIS setelah menyunting.
+ *
+ * Dinyatakan, tidak ditebak — aturan yang sama dengan `contextWindow` dan
+ * `diagnostics.command`. Menebak `typescript-language-server` pada proyek yang
+ * memakai `deno lsp` gagal dengan cara yang jauh lebih membingungkan daripada
+ * tidak ada language server sama sekali.
+ */
+export const LspServerConfig = z.object({
+  command: z.string().describe('Language server binary, e.g. "typescript-language-server"'),
+  args: z.array(z.string()).default([]),
+  extensions: z
+    .array(z.string())
+    .describe('File extensions it handles, e.g. [".ts", ".tsx"]'),
+  enabled: z.boolean().default(true),
+})
+
 export const Config = z.object({
   $schema: z.string().optional(),
   model: z
@@ -317,10 +360,13 @@ export const Config = z.object({
     bash: "ask",
     network: "ask",
     delete: "ask",
+    mcp: "ask",
     allowlist: [],
   }),
   search: Search.default({ backend: "ddg" }),
   diagnostics: Diagnostics.optional(),
+  mcp: z.record(z.string(), McpServerConfig).default({}),
+  lsp: z.record(z.string(), LspServerConfig).default({}),
   compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())
@@ -344,6 +390,8 @@ export type Command = z.infer<typeof Command>
 export type Compaction = z.infer<typeof Compaction>
 export type Search = z.infer<typeof Search>
 export type Diagnostics = z.infer<typeof Diagnostics>
+export type McpServerConfig = z.infer<typeof McpServerConfig>
+export type LspServerConfig = z.infer<typeof LspServerConfig>
 
 /**
  * Tiga mode bawaan, mengikuti pola opencode (`plan` / `build`) tapi memisahkan
@@ -377,7 +425,7 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
     // `network` sengaja TIDAK ditolak, dan itu bukan kelalaian. Membaca
     // dokumentasi sebelum menyusun rencana justru pekerjaan mode ini; ia tidak
     // mengubah apa pun di mesin, jadi ia mengikuti kebijakan global user.
-    permission: { edit: "deny", write: "deny", bash: "deny", delete: "deny" },
+    permission: { edit: "deny", write: "deny", bash: "deny", delete: "deny", mcp: "deny" },
   },
   build: {
     description: "Build Manual — do the work, confirm every change",
@@ -386,7 +434,7 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "Read files before changing them. Keep changes as small and targeted as possible. " +
       "Each change is confirmed by the user one at a time — that is deliberate, so do " +
       "not batch many changes into one large step.",
-    permission: { edit: "ask", write: "ask", bash: "ask", network: "ask", delete: "ask" },
+    permission: { edit: "ask", write: "ask", bash: "ask", network: "ask", delete: "ask", mcp: "ask" },
   },
   "build-auto": {
     description: "Build Auto — work autonomously, no confirmations",
@@ -404,6 +452,7 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       bash: "allow",
       network: "allow",
       delete: "allow",
+      mcp: "allow",
     },
   },
 }

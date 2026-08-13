@@ -458,6 +458,31 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   }
   out()
 
+  const mcpIds = Object.keys(loaded.config.mcp)
+  const lspIds = Object.keys(loaded.config.lsp)
+  if (mcpIds.length > 0 || lspIds.length > 0) {
+    out("MCP & language servers")
+    for (const [id, entry] of Object.entries(loaded.config.mcp)) {
+      const found = which(entry.command)
+      out(
+        `  mcp ${id.padEnd(14)} ${entry.enabled === false ? "disabled" : (found ?? `! ${entry.command} not in PATH`)}`,
+      )
+    }
+    for (const [id, entry] of Object.entries(loaded.config.lsp)) {
+      const found = which(entry.command)
+      out(
+        `  lsp ${id.padEnd(14)} ${entry.enabled === false ? "disabled" : (found ?? `! ${entry.command} not in PATH`)}` +
+          `  ${entry.extensions.join(" ")}`,
+      )
+    }
+    // Jabat tangannya TIDAK dilakukan di sini. `doctor` harus cepat dan tidak
+    // punya efek samping; menyalakan setiap server MCP untuk memeriksanya
+    // berarti doctor menjalankan kode pihak ketiga, dan itu bukan yang user
+    // minta ketika ia mengetik "doctor".
+    out("  (not started here — doctor never runs third-party code)")
+    out()
+  }
+
   // Q24: agent yang tidak terpasang tetap ditampilkan, tidak disembunyikan.
   out("External agents")
   for (const [id, agent] of Object.entries(loaded.config.externalAgent)) {

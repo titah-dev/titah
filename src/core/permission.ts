@@ -12,7 +12,7 @@ import type { Agent, Config } from "./schema.ts"
  * otomasi adalah `--auto` atau allowlist eksplisit, bukan perilaku implisit.
  */
 
-export type PermissionKind = "edit" | "write" | "bash" | "network" | "delete"
+export type PermissionKind = "edit" | "write" | "bash" | "network" | "delete" | "mcp"
 
 export type PermissionDecision = "once" | "always" | "reject"
 
@@ -188,6 +188,7 @@ export interface EffectivePermission {
   bash: "ask" | "allow" | "deny"
   network: "ask" | "allow" | "deny"
   delete: "ask" | "allow" | "deny"
+  mcp: "ask" | "allow" | "deny"
   allowlist: string[]
   /** Nama agent yang menentukan kebijakan ini, untuk pesan yang bisa dilacak. */
   source?: string
@@ -212,6 +213,7 @@ export function effectivePermission(
     bash: override?.bash ?? base.bash,
     network: override?.network ?? base.network,
     delete: override?.delete ?? base.delete,
+    mcp: override?.mcp ?? base.mcp,
     allowlist: [...base.allowlist, ...(override?.allowlist ?? [])],
     ...(override && agentID ? { source: agentID } : {}),
   }

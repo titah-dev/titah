@@ -14,6 +14,9 @@ import {
   providerNpmFor,
 } from "./provider.ts"
 import { buildCachedRequest, shouldCache } from "./cag.ts"
+import { loadMcpTools } from "./mcp.ts"
+import { diagnoseFile, renderDiagnostics } from "./lsp.ts"
+import { relative, resolveInside } from "./tool/types.ts"
 import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
 import { autoCompact } from "./auto-compact.ts"
@@ -494,6 +497,26 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * pun dari itu, dan menebaknya berarti pertanyaan sub-agent disiarkan ke
      * stream yang tidak didengarkan siapa pun lalu menggantung.
      */
+    /*
+     * Tool MCP dimuat SEBELUM giliran, bukan saat dibutuhkan.
+     *
+     * Model harus melihat daftar tool lengkap sejak permintaan pertama — tool
+     * yang muncul di tengah giliran tidak akan pernah dipanggil, karena model
+     * sudah memutuskan rencananya dari daftar yang ia lihat di awal.
+     *
+     * Server yang gagal TIDAK menjatuhkan giliran: ia kehilangan tool-nya, dan
+     * user diberi tahu sekali lewat notice. Server MCP dipasang user dan bisa
+     * rusak karena hal yang tidak berhubungan dengan Titah sama sekali.
+     */
+    const mcp = await loadMcpTools(config, session.directory)
+    for (const failure of mcp.failures) {
+      bus.publish({
+        type: "session.notice",
+        sessionID: streamSessionID,
+        message: `MCP server "${failure.id}" is unavailable: ${failure.reason.split("\n")[0]}`,
+      })
+    }
+
     setQuestionAsker(async (ask) => {
       try {
         return await askUser({
@@ -520,6 +543,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       system,
       messages,
       tools: buildTools({
+        mcpTools: mcp.tools,
         contextWindow,
         sessionID: session.id,
         cwd: session.directory,
@@ -1346,6 +1370,8 @@ interface BuildToolsOptions {
    * supaya `plan` bisa membatasi dirinya relatif jendela (issue #5).
    */
   contextWindow?: number
+  /** Tool dari server MCP untuk giliran ini. */
+  mcpTools?: TitahTool[]
 }
 
 /**
@@ -1359,8 +1385,10 @@ interface BuildToolsOptions {
 function activeTools(options: {
   isChild: boolean
   toolFilter?: Record<string, boolean>
+  /** Tool dari server MCP, sudah dibungkus. Kosong kalau tidak ada yang dikonfigurasi. */
+  extra?: TitahTool[]
 }): TitahTool[] {
-  return allTools().filter((definition) => {
+  return [...allTools(), ...(options.extra ?? [])].filter((definition) => {
     if (definition.name === "task" && options.isChild) return false
     if (options.toolFilter?.[definition.name] === false) return false
     return true
@@ -1372,11 +1400,48 @@ export function buildToolNames(options: { isChild: boolean }): string[] {
   return activeTools(options).map((definition) => definition.name)
 }
 
+/** Tool yang menulis berkas, dan field mana yang memuat path-nya. */
+const WRITES_FILE: Record<string, string> = { edit: "path", write: "path", patch: "path", move: "to" }
+
+/**
+ * Menempelkan diagnostics ke hasil tool, kalau ada language server yang
+ * menangani berkasnya.
+ *
+ * Tidak pernah melempar dan tidak pernah menunda lebih dari batasnya: language
+ * server adalah proses milik orang lain, dan giliran yang gagal karena
+ * pemeriksanya rusak lebih buruk daripada giliran tanpa pemeriksa.
+ */
+async function appendDiagnostics(
+  config: Config,
+  cwd: string,
+  toolName: string,
+  input: unknown,
+  output: string,
+): Promise<string> {
+  const field = WRITES_FILE[toolName]
+  if (field === undefined) return output
+  const value = (input as Record<string, unknown> | null)?.[field]
+  if (typeof value !== "string") return output
+
+  try {
+    const file = resolveInside(cwd, value)
+    const found = await diagnoseFile(config, cwd, file)
+    // `undefined` berarti TIDAK TAHU — tidak ada server, atau ia belum sempat
+    // menjawab. Dibedakan dari array kosong, yang berarti sudah diperiksa dan
+    // bersih. Menyamakannya membuat "belum diperiksa" terbaca "tidak ada
+    // masalah".
+    if (found === undefined) return output
+    return `${output}${renderDiagnostics(relative(cwd, file), found)}`
+  } catch {
+    return output
+  }
+}
+
 function buildTools(options: BuildToolsOptions): ToolSet {
   const { sessionID, cwd, signal, upsert } = options
   const set: ToolSet = {}
 
-  for (const definition of activeTools(options)) {
+  for (const definition of activeTools({ ...options, ...(options.mcpTools ? { extra: options.mcpTools } : {}) })) {
     set[definition.name] = tool({
       description: definition.description,
       inputSchema: definition.inputSchema,
@@ -1443,8 +1508,26 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           }
 
           const result = await definition.execute(input, ctx)
+
+          /*
+           * Diagnostics OTOMATIS, ditempelkan ke hasil tool yang baru saja
+           * menyunting berkas.
+           *
+           * Di SINI, bukan di dalam masing-masing tool, karena aturannya sama
+           * untuk semuanya dan menyalinnya ke `edit`, `patch`, dan `write`
+           * berarti tool keempat yang menulis berkas akan melupakannya. Yang
+           * dilihat model jadi: hasil suntingannya, lalu error yang baru saja
+           * ia buat — tanpa perlu ingat memanggil apa pun.
+           */
+          const withDiagnostics = await appendDiagnostics(
+            options.config,
+            cwd,
+            definition.name,
+            input,
+            result.output,
+          )
           // Output besar ke filesystem; model hanya menerima potongannya (Q11).
-          const stored = storeOutput(callID, result.output)
+          const stored = storeOutput(callID, withDiagnostics)
           upsert(callID, definition.name, {
             status: "completed",
             input,
