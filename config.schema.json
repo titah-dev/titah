@@ -539,6 +539,16 @@
       },
       "description": "Web search backend for the `websearch` tool"
     },
+    "account": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "description": "Base URL of the titah-web instance used for `titah login`. Overridden by $TITAH_ACCOUNT_SERVER.",
+          "type": "string"
+        }
+      },
+      "description": "Titah account (SSO) settings. The token itself lives in account.json, never here."
+    },
     "diagnostics": {
       "type": "object",
       "properties": {
