@@ -251,7 +251,20 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
 }
 
 export function allLines(messages: Message[], expanded: Expansion, width = 0): Line[] {
-  return messages.flatMap((message) => messageLines(message, expanded, width))
+  const lines = messages.flatMap((message) => messageLines(message, expanded, width))
+
+  /*
+   * Setiap pesan membawa satu baris kosong di belakangnya sebagai PEMISAH antar
+   * pesan. Pesan terakhir tidak punya yang dipisahkan, jadi baris itu menumpuk
+   * di atas ruang tunggu dan jaraknya jadi tiga, bukan dua.
+   *
+   * Dibuang di sini, bukan di `messageLines`: yang tahu sebuah pesan adalah yang
+   * terakhir hanyalah daftar, dan `messageLines` juga dipakai sendirian.
+   */
+  let end = lines.length
+  while (end > 0 && (lines[end - 1]?.text ?? "") === "" && !lines[end - 1]?.spans) end -= 1
+
+  return end === lines.length ? lines : lines.slice(0, end)
 }
 
 export interface Viewport {
@@ -268,21 +281,46 @@ export interface Viewport {
  * merupakan perilaku yang diharapkan saat percakapan sedang berjalan.
  */
 export function viewport(lines: Line[], rows: number, scroll: number): Viewport {
-  const height = Math.max(1, rows)
-  if (lines.length <= height) {
+  const outer = Math.max(1, rows)
+  if (lines.length <= outer) {
     return { lines, hiddenAbove: 0, hiddenBelow: 0 }
   }
 
-  const maxScroll = lines.length - height
-  const clamped = Math.min(Math.max(0, scroll), maxScroll)
-  const end = lines.length - clamped
-  const start = end - height
+  /*
+   * Penunjuk "↑ N lines above" dan "↓ N lines below" tinggal di dalam kotak yang
+   * sama dengan riwayatnya, jadi mereka MEMAKAN baris. Sebelumnya jumlah baris
+   * yang dikembalikan di sini tidak menghitung mereka: kotaknya menerima satu
+   * atau dua baris lebih banyak daripada tingginya, dan Ink memotong kelebihan
+   * itu di bawah — diam-diam, justru pada baris paling baru, yang paling ingin
+   * dibaca orang.
+   *
+   * Jadi tingginya dihitung ulang sampai jumlah penunjuk berhenti berubah.
+   * Menambah penunjuk menyempitkan jendela, jendela yang menyempit bisa
+   * memunculkan penunjuk kedua, dan di situ ia berhenti — dua penunjuk adalah
+   * batasnya, maka tiga putaran selalu cukup.
+   */
+  let indicators = 0
+  let result: Viewport = { lines: [], hiddenAbove: 0, hiddenBelow: 0 }
 
-  return {
-    lines: lines.slice(start, end),
-    hiddenAbove: start,
-    hiddenBelow: lines.length - end,
+  for (let pass = 0; pass < 3; pass += 1) {
+    const height = Math.max(1, outer - indicators)
+    const maxScroll = lines.length - height
+    const clamped = Math.min(Math.max(0, scroll), maxScroll)
+    const end = lines.length - clamped
+    const start = end - height
+
+    result = {
+      lines: lines.slice(start, end),
+      hiddenAbove: start,
+      hiddenBelow: lines.length - end,
+    }
+
+    const needed = (result.hiddenAbove > 0 ? 1 : 0) + (result.hiddenBelow > 0 ? 1 : 0)
+    if (needed === indicators) return result
+    indicators = needed
   }
+
+  return result
 }
 
 /**

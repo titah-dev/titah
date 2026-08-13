@@ -123,6 +123,31 @@ test("kunci baris unik supaya React tidak bingung", () => {
   assert.equal(new Set(keys).size, keys.length)
 })
 
+test("pemisah di belakang pesan TERAKHIR dibuang", () => {
+  /*
+   * Baris kosong di belakang tiap pesan adalah pemisah antar pesan. Pesan
+   * terakhir tidak punya yang dipisahkan, dan karena isi dijangkarkan ke bawah,
+   * baris itu duduk tepat di atas ruang tunggu — jaraknya jadi tiga, bukan dua
+   * yang diminta.
+   */
+  const satu = allLines([message("a", { parts: [{ type: "text", text: "halo" }] })], false)
+  assert.match(satu.at(-1)?.text ?? "", /halo$/, "tidak berakhir dengan baris kosong")
+
+  const dua = allLines(
+    [
+      message("a", { parts: [{ type: "text", text: "halo" }] }),
+      message("b", { parts: [{ type: "text", text: "hai" }] }),
+    ],
+    false,
+  )
+  assert.match(dua.at(-1)?.text ?? "", /hai$/)
+  assert.equal(
+    dua.some((line) => line.text === ""),
+    true,
+    "pemisah DI ANTARA pesan tetap ada",
+  )
+})
+
 // ---------- viewport ----------
 
 const lines = (n: number) =>
@@ -136,23 +161,28 @@ test("riwayat yang muat ditampilkan utuh tanpa penunjuk gulir", () => {
 })
 
 test("scroll 0 menempel di baris TERBARU, bukan yang paling awal", () => {
+  // Sepuluh baris kotak, satu dipakai penunjuk "↑ … lines above", sisa sembilan
+  // untuk isi. Yang penting: baris terbaru tetap yang paling bawah.
   const window = viewport(lines(100), 10, 0)
-  assert.equal(window.lines[0]?.text, "b90")
+  assert.equal(window.lines.length, 9)
+  assert.equal(window.lines[0]?.text, "b91")
   assert.equal(window.lines.at(-1)?.text, "b99")
-  assert.equal(window.hiddenAbove, 90)
+  assert.equal(window.hiddenAbove, 91)
   assert.equal(window.hiddenBelow, 0)
 })
 
 test("menggulir ke atas menggeser jendela dan melaporkan sisa di bawah", () => {
+  // Di tengah percakapan kedua penunjuk muncul, jadi delapan baris untuk isi.
   const window = viewport(lines(100), 10, 20)
-  assert.equal(window.lines[0]?.text, "b70")
-  assert.equal(window.hiddenAbove, 70)
+  assert.equal(window.lines.length, 8)
+  assert.equal(window.lines[0]?.text, "b72")
+  assert.equal(window.hiddenAbove, 72)
   assert.equal(window.hiddenBelow, 20)
 })
 
 test("gulir berlebihan dijepit di batas, tidak menghasilkan jendela kosong", () => {
   const window = viewport(lines(20), 5, 9999)
-  assert.equal(window.lines.length, 5)
+  assert.equal(window.lines.length, 4, "satu baris untuk penunjuk bawah")
   assert.equal(window.lines[0]?.text, "b0", "berhenti di baris pertama")
   assert.equal(window.hiddenAbove, 0)
 })
@@ -202,8 +232,12 @@ test("menggulir tidak mengubah tinggi riwayat, jadi ruang tunggu tetap dua baris
   /*
    * Ruang tunggu hanya tetap kalau yang di atasnya juga tetap. Menggulir harus
    * MENUKAR baris, bukan menambah atau mengurangi jumlahnya — begitu satu posisi
-   * gulir mengembalikan baris lebih sedikit, sisanya jatuh ke ruang tunggu dan
-   * dua baris itu tumbuh tanpa ada yang memintanya.
+   * gulir mengisi kotak lebih sedikit, sisanya jatuh ke ruang tunggu dan dua
+   * baris itu tumbuh tanpa ada yang memintanya.
+   *
+   * Yang dihitung adalah TOTAL baris terpakai: baris isi ditambah penunjuk
+   * gulir, karena penunjuk tinggal di dalam kotak yang sama dan sama-sama
+   * memakan tempat.
    */
   const rows = 30
   const editor = 3
@@ -215,12 +249,38 @@ test("menggulir tidak mengubah tinggi riwayat, jadi ruang tunggu tetap dua baris
   }))
 
   for (let scroll = 0; scroll <= 25; scroll += 1) {
+    const window = viewport(lines, tinggi, scroll)
+    const penunjuk = (window.hiddenAbove > 0 ? 1 : 0) + (window.hiddenBelow > 0 ? 1 : 0)
     assert.equal(
-      viewport(lines, tinggi, scroll).lines.length,
+      window.lines.length + penunjuk,
       tinggi,
-      `posisi gulir ${scroll} mengembalikan tinggi yang berbeda`,
+      `posisi gulir ${scroll} mengisi kotak dengan tinggi yang berbeda`,
     )
   }
+})
+
+test("penunjuk gulir tidak memotong baris terbaru diam-diam", () => {
+  /*
+   * Penunjuk tinggal di dalam kotak riwayat, jadi ia memakan baris. Sebelum ini
+   * `viewport` tidak menghitungnya: kotak setinggi sepuluh menerima sebelas
+   * baris, dan Ink membuang yang kesebelas di bawah — yaitu baris PALING BARU,
+   * yang justru paling ingin dibaca orang, tanpa satu pun tanda.
+   */
+  const lines: Line[] = Array.from({ length: 40 }, (_, index) => ({
+    key: `k${index}`,
+    text: `baris ${index}`,
+    kind: "assistant" as const,
+  }))
+
+  const menempel = viewport(lines, 10, 0)
+  assert.equal(menempel.hiddenAbove > 0, true, "ada yang tersembunyi di atas")
+  assert.equal(menempel.hiddenBelow, 0, "scroll 0 menempel di baris terbaru")
+  assert.equal(menempel.lines.length, 9, "satu baris disisakan untuk penunjuk atas")
+  assert.equal(menempel.lines.at(-1)?.text, "baris 39", "baris terbaru tetap terlihat")
+
+  const tengah = viewport(lines, 10, 15)
+  assert.equal(tengah.lines.length, 8, "dua penunjuk, dua baris")
+  assert.equal(tengah.hiddenAbove + tengah.lines.length + tengah.hiddenBelow, lines.length)
 })
 
 // ---------- logo ----------

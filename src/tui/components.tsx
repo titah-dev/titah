@@ -126,7 +126,21 @@ export function History({
   jumpHint?: string
 }) {
   return (
-    <Box flexDirection="column" flexGrow={1} overflow="hidden">
+    /*
+     * `justifyContent="flex-end"` yang membuat jaraknya berhenti berubah.
+     *
+     * Kotak ini tingginya tetap — antara header dan ruang tunggu. Kalau isinya
+     * ditumpuk dari ATAS, sisa kotak jatuh di BAWAH, tepat di antara pesan
+     * terakhir dan prompt: percakapan pendek memberi jarak selebar layar,
+     * percakapan panjang memberi nol. Ditumpuk dari bawah, sisanya pindah ke
+     * atas, dan jarak ke prompt selalu `RESERVED_ROWS`.
+     *
+     * Harganya: di awal sesi, pesan pertama duduk di bawah dengan ruang kosong
+     * di antara header dan dirinya. Itu tidak bisa dihindari selama prompt
+     * terpaku di bawah — jaraknya harus muncul di salah satu ujung, dan ujung
+     * atas adalah satu-satunya yang tidak memisahkan pesan dari prompt.
+     */
+    <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" overflow="hidden">
       {hiddenAbove > 0 ? <Text dimColor>{`  ↑ ${hiddenAbove} lines above`}</Text> : null}
       {lines.map((line) => {
         const style = COLOR[line.kind]
