@@ -53,13 +53,43 @@ test("spesifisitas dihitung dari karakter yang BUKAN wildcard", () => {
 
 // ---------- aturan 1: deny adalah tembok ----------
 
-test("deny setingkat kelas menang atas aturan allow yang lebih spesifik", () => {
-  // Tanpa aturan ini, kalimat "tidak ada apa pun yang keluar dari mesin ini"
-  // berhenti jadi jaminan begitu ada satu pola allow di suatu tempat.
+test("deny setingkat KELAS adalah default deny — aturan allow mempersempitnya", () => {
+  /*
+   * DIBALIK dari versi pertama, dan sengaja.
+   *
+   * Versi pertama memperlakukan kelas-deny sebagai tembok juga, dengan alasan
+   * "tidak ada apa pun yang keluar dari mesin ini harus tetap jadi jaminan".
+   * Alasan itu benar tapi obatnya salah, karena ia merusak dua hal:
+   *
+   *   - "tolak semuanya KECUALI ini" — pola daftar-putih yang dipakai setiap
+   *     firewall — jadi tidak bisa diungkapkan sama sekali.
+   *   - setiap aturan allow di bawah kelas yang deny jadi MATI TANPA SUARA,
+   *     persis kelas kegagalan #12.
+   *
+   * Temboknya tetap ada, dan sekarang bentuknya eksplisit — lihat test di bawah.
+   */
   const result = verdict("network", "deny", { "network(https://docs.*)": "allow" }, [
     "https://docs.python.org/x",
   ])
+  assert.equal(result.policy, "allow")
+})
+
+test("tembok mutlak dinyatakan lewat aturan, dan tidak bisa dibuka apa pun", () => {
+  const result = verdict(
+    "network",
+    "ask",
+    { "network(*)": "deny", "network(https://docs.*)": "allow" },
+    ["https://docs.python.org/x"],
+  )
   assert.equal(result.policy, "deny")
+})
+
+test("kelas deny tanpa satu pun aturan yang mengizinkan tetap menolak", () => {
+  const result = verdict("network", "deny", { "network(https://docs.*)": "allow" }, [
+    "https://evil.example/x",
+  ])
+  assert.equal(result.policy, "deny")
+  assert.match(result.reason, /no rule allows it/)
 })
 
 test("deny setingkat ARGUMEN menang atas allow setingkat kelas", () => {

@@ -37,6 +37,14 @@ export interface QuestionRequest {
   created: number
   /** Agent yang bertanya, supaya dialog bisa membedakan sub-agent mana. */
   agent?: string
+  /**
+   * Apa yang harus DILAKUKAN klien dengan jawabannya.
+   *
+   * Kosong berarti jawabannya sekadar teks untuk model. `"switch-agent"`
+   * berarti jawabannya adalah nama mode, dan klien harus benar-benar berpindah
+   * ke sana — lihat `exit_plan`.
+   */
+  intent?: "switch-agent"
 }
 
 interface Pending {
@@ -62,6 +70,7 @@ export interface AskUserOptions {
   agent?: string
   /** Sesi yang stream-nya benar-benar didengarkan klien — lihat permission.ts. */
   streamSessionID?: string
+  intent?: "switch-agent"
 }
 
 export class NoOneToAsk extends Error {}
@@ -86,6 +95,7 @@ export function askUser(options: AskUserOptions): Promise<string | undefined> {
     options: options.options,
     created: Date.now(),
     ...(options.agent ? { agent: options.agent } : {}),
+    ...(options.intent ? { intent: options.intent } : {}),
   }
 
   return new Promise<string | undefined>((resolve) => {

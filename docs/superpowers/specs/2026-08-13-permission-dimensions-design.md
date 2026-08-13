@@ -35,9 +35,11 @@ berguna: `bash: ask` + `bash(git *): allow` tidak akan pernah bisa berarti
 
 **✅ Yang dipakai:**
 
-1. **`deny` adalah tembok di tingkat mana pun.** Satu `deny` yang cocok
-   menghentikan segalanya, dan tidak ada aturan yang lebih spesifik yang bisa
-   membukanya.
+1. **`deny` setingkat ATURAN adalah tembok mutlak.** Tidak ada yang bisa
+   membukanya. Bentuknya eksplisit: `"network(*)": "deny"`.
+
+   **Direvisi beberapa jam kemudian:** aturan ini semula juga berlaku untuk
+   `deny` setingkat KELAS, dan itu keliru. Lihat "Revisi" di bawah.
 2. **Di antara `ask` dan `allow`, yang paling spesifik menang.** Diukur dari
    karakter bukan-wildcard, **bukan urutan di berkas** — urutan adalah hal yang
    paling mudah berubah tanpa disengaja.
@@ -159,6 +161,32 @@ Dari `Matched allowlist: "git *"` jadi `Allowed by rule "bash(git *)"`. Empat
 test ikut diperbarui, dan itu perbaikan bukan kerusakan: pesannya sekarang
 menyebut **aturan mana** yang memutuskan, yang merupakan seluruh alasan
 `explain` ada.
+
+## Revisi: kelas-deny jadi *default* deny
+
+Ditemukan saat mengerjakan mode Plan, beberapa jam setelah dokumen ini ditulis.
+
+Mode Plan ingin menyatakan hal yang paling wajar: **"tolak semua perintah shell,
+kecuali yang benar-benar hanya membaca."** Dengan aturan asli itu **tidak bisa
+diungkapkan sama sekali** — `bash: "deny"` menjadikan setiap `bash(git log*):
+"allow"` mati.
+
+Dan mati **tanpa suara**. Itu persis kelas kegagalan #12: aturan yang user
+tulis, terlihat berlaku, tidak pernah menyala.
+
+Jadi aturannya dipisah:
+
+- **`deny` setingkat aturan** — tembok mutlak, tidak bisa dibuka apa pun.
+- **`deny` setingkat kelas** — *default* deny; sebuah aturan `allow` yang
+  eksplisit boleh mempersempitnya.
+
+Ini bentuk yang dipakai firewall dan IAM, dan alasannya sama: default yang ketat
+harus bisa punya pengecualian yang disebut satu per satu, kalau tidak orang akan
+memakai `ask` sebagai gantinya — dan `ask` berarti user diganggu untuk hal yang
+sudah ia putuskan.
+
+Kekhawatiran yang melahirkan aturan asli tetap dijawab, hanya bentuknya jadi
+eksplisit: `"network(*)": "deny"` adalah tembok yang tidak bisa dibuka.
 
 ## Hasil
 

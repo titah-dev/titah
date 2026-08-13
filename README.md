@@ -330,6 +330,7 @@ snapshots resend every part each time.
 | `diagnostics` | Run `diagnostics.command` and return its output | `bash` |
 | `memory` | Record a durable project fact, recalled into every request | — |
 | `question` | Ask the user and wait for their answer | — |
+| `exit_plan` | Offer to leave Plan mode, and switch if accepted | — |
 | *(from MCP)* | Every tool an MCP server offers, as `<server>_<tool>` | `mcp` |
 
 All filesystem access is confined to the session working directory — paths that
@@ -349,9 +350,13 @@ explained can never differ from what runs.
 
 Two combining rules, and they are the whole design:
 
-1. **`deny` is a wall at every level.** One matching `deny` stops everything, and
-   no more specific rule can open it. Without that, "nothing leaves this machine"
-   stops being a guarantee the moment one `allow` pattern exists somewhere.
+1. **A rule-level `deny` is absolute.** Nothing can open it — that is how you
+   write a wall: `"network(*)": "deny"`.
+   A **class-level** `deny` is a *default* deny: an explicit `allow` rule can
+   narrow it. That is what makes "refuse everything except this" expressible at
+   all, and it is the shape every firewall and IAM policy uses. Treating it as a
+   wall instead made every `allow` rule under a denied class **silently dead** —
+   the same failure class as #12, where a written rule never fires.
 2. **Between `ask` and `allow`, the most specific pattern wins** — measured in
    non-wildcard characters, not file order. Ties go to `ask`: two equally
    specific rules that disagree are an ambiguous config, and guessing loose on
@@ -414,7 +419,20 @@ Memory is recalled **eagerly** — the whole store, every request — rather tha
 retrieved. With a 32-fact cap that is cheaper than a retrieval step that can
 pick wrong, and when retrieval picks wrong the missing fact leaves no trace.
 
-`question` is the only tool that stops and waits for a human. With no client
+**Plan mode reads, and only reads.** `read`, `list`, `glob`, `grep`, the skills,
+sub-agents, and the web tools all work, and so do read-only shell commands —
+`git log`, `git diff`, `wc`, `rg`, `ls` — declared as an explicit **allowlist**,
+not a blocklist. A blocklist has to anticipate every way to cause damage; an
+allowlist only has to be right about what it names. Everything else is *denied*,
+not asked: Plan mode does not offer a way out through the permission dialog.
+
+It offers one through `exit_plan`. When the user asks for a change while in Plan
+mode, the model calls it with the plan it would carry out, and the user gets a
+choice that actually switches mode. Refusing an edit and then reporting the
+refusal — or quietly writing a plan instead of doing what was asked — are both
+worse than saying which mode you are in.
+
+`question` is the only other tool that stops and waits for a human. With no client
 connected it does not hang: it returns "nobody answered, continue with your best
 assumption and say what you assumed", which is what headless and CI need.
 

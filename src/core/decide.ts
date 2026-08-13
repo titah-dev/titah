@@ -142,7 +142,8 @@ export function decide(input: DecideInput): Decision {
   const evaluate = (value: string | undefined): Decision => {
     const matched = matching(input.rules, input.kind, value)
 
-    // 1. `deny` di mana pun menang, tanpa memandang spesifisitas.
+    // 1. `deny` setingkat ATURAN menang mutlak, tanpa memandang spesifisitas.
+    //    Ini tembok yang sesungguhnya, dan satu-satunya yang tidak bisa dibuka.
     const denied = matched.find((rule) => rule.policy === "deny")
     if (denied) {
       return {
@@ -152,11 +153,34 @@ export function decide(input: DecideInput): Decision {
         alsoMatched: matched.filter((rule) => rule !== denied),
       }
     }
-    if (input.classPolicy === "deny") {
+
+    /*
+     * 2. `deny` setingkat KELAS adalah DEFAULT deny — ia bisa dipersempit
+     *    aturan `allow` yang eksplisit.
+     *
+     * Versi pertama memperlakukannya sebagai tembok juga, dan itu keliru karena
+     * dua alasan yang saling menguatkan.
+     *
+     * Pertama, ia membuat bentuk yang paling berguna tidak bisa diungkapkan:
+     * "tolak semuanya KECUALI ini" adalah pola daftar-putih yang dipakai setiap
+     * firewall dan setiap sistem IAM, dan tanpa ini satu-satunya cara
+     * mendekatinya adalah `ask` — yang berarti user diganggu untuk hal yang
+     * sudah ia putuskan.
+     *
+     * Kedua, dan lebih parah: ia membuat aturan `allow` di bawah kelas yang
+     * `deny` menjadi MATI TANPA SUARA. Itu persis kelas kegagalan #12 — pola
+     * yang ditulis user, terlihat berlaku, dan tidak pernah menyala.
+     *
+     * Tembok mutlak tetap bisa dinyatakan, dan bentuknya jadi eksplisit:
+     * `"network(*)": "deny"` menolak segalanya dan tidak bisa dibuka apa pun.
+     */
+    if (input.classPolicy === "deny" && !matched.some((rule) => rule.policy === "allow")) {
       return {
         policy: "deny",
         rule: classRule,
-        reason: `Denied by ${input.kind} = "deny".`,
+        reason:
+          `Denied by ${input.kind} = "deny", and no rule allows it.` +
+          (matched.length > 0 ? " (matching rules do not allow)" : ""),
         alsoMatched: matched,
       }
     }

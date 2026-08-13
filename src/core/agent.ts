@@ -20,6 +20,7 @@ import { clearLoopWindow, noteCall } from "./loop.ts"
 import { relative, resolveInside } from "./tool/types.ts"
 import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
+import { BUILD_MODES, setPlanExiter } from "./tool/exit-plan.ts"
 import { autoCompact } from "./auto-compact.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -522,6 +523,32 @@ export async function prompt(input: PromptInput): Promise<Message> {
         message: `MCP server "${failure.id}" is unavailable: ${failure.reason.split("\n")[0]}`,
       })
     }
+
+    /*
+     * Penawaran pindah mode memakai kanal yang SAMA dengan `question` — hanya
+     * `intent`-nya berbeda, dan itu yang dibaca TUI untuk tahu bahwa jawabannya
+     * adalah perintah untuk dirinya sendiri, bukan teks untuk model.
+     */
+    setPlanExiter(async (plan) => {
+      try {
+        return await askUser({
+          sessionID: session.id,
+          question: `You are in Plan mode, which cannot change anything.\n\n${plan}`,
+          options: [...BUILD_MODES],
+          listeners: bus.listenerCount(streamSessionID),
+          signal: controller.signal,
+          ...(agentID ? { agent: agentID } : {}),
+          streamSessionID,
+          intent: "switch-agent",
+        })
+      } catch (error) {
+        // Tanpa klien tidak ada yang bisa berpindah mode. Diperlakukan sebagai
+        // "tetap di Plan", bukan sebagai kegagalan — mode headless memang
+        // dijalankan dengan agent yang sudah dipilih di baris perintah.
+        if (error instanceof NoOneToAsk) return undefined
+        throw error
+      }
+    })
 
     setQuestionAsker(async (ask) => {
       try {

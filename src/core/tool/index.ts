@@ -17,6 +17,7 @@ import { bashOutputTool, bashStartTool, bashStopTool } from "./background.ts"
 import { diagnosticsTool } from "./diagnostics.ts"
 import { memoryTool } from "./memory.ts"
 import { questionTool } from "./question.ts"
+import { exitPlanTool } from "./exit-plan.ts"
 
 /**
  * Tool baca berjalan tanpa izin. Tool yang mengubah sesuatu (`mutates: true`)
@@ -65,6 +66,7 @@ export function allTools(): TitahTool[] {
     diagnosticsTool,
     memoryTool,
     questionTool,
+    exitPlanTool,
   ]
   return cached
 }
@@ -95,5 +97,6 @@ export {
   diagnosticsTool,
   memoryTool,
   questionTool,
+  exitPlanTool,
 }
 export * from "./types.ts"
