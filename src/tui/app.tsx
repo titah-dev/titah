@@ -930,7 +930,10 @@ export function App({
       // Batas atas dihitung dari riwayat yang ada. Tanpa ini, ↑ terus menaikkan
       // nilai scroll meski layar sudah menampilkan baris paling awal, dan ↓
       // berikutnya terasa tidak melakukan apa-apa selama puluhan tekanan.
-      const totalLines = allLines(state.messages, expandTools).length
+      // Lebar yang SAMA dengan yang dipakai saat merender di bawah. Kalau
+              // berbeda, jumlah baris untuk menghitung batas gulir tidak sama
+              // dengan jumlah baris yang benar-benar tampil, dan gulirnya meleset.
+              const totalLines = allLines(state.messages, expandTools, textWidth).length
       const page = Math.max(1, size.rows - 8)
       const maxScroll = Math.max(0, totalLines - 1)
       const clamp = (value: number) => Math.max(0, Math.min(value, maxScroll))
@@ -1038,6 +1041,16 @@ export function App({
     }
   })
 
+  /*
+   * Lebar tempat jawaban dibungkus.
+   *
+   * Dikurangi dua dari lebar terminal supaya tidak pernah menyentuh kolom
+   * terakhir: terminal yang membungkus sendiri di kolom terakhir menghasilkan
+   * baris kosong hantu, dan baris hantu itu menggeser seluruh perhitungan
+   * gulir sebanyak satu baris per paragraf.
+   */
+  const textWidth = Math.max(20, size.columns - 2)
+
   const usage = totalUsage(state.messages)
   const editorBox = <Editor value={draft} cursor={cursor} disabled={state.status === "working"} />
   const popupBox = popup ? (
@@ -1055,7 +1068,7 @@ export function App({
       <Working tick={tick} elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))} />
     ) : null
 
-  const lines = allLines(state.messages, expandTools)
+  const lines = allLines(state.messages, expandTools, textWidth)
   const editorHeight = editorRows(draft, size.rows)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   // Pertanyaan memakan tinggi juga, kalau tidak riwayat digambar di atasnya.
