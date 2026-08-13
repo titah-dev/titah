@@ -480,6 +480,20 @@ silently writing in the wrong place.
 
 ## Rendering
 
+Every history line carries a **two-column left gutter**, and the first line of
+each part — an answer, a tool call — carries a `⏺` in it. Two things at once:
+letters no longer sit against the terminal's edge, and each part's boundary is
+visible without reading it. Wrapping subtracts the gutter, so a wrapped line
+still fits; blank lines are left bare, since two spaces on an empty line is just
+trailing whitespace that follows you into the clipboard.
+
+The prompt stays at the **bottom** of the screen. Once the transcript is longer
+than the terminal, that happens by itself — the terminal scrolls and the dynamic
+frame sits at the bottom. Before that, a spacer holds it down, and its height is
+computable precisely because that case only exists before the terminal has
+scrolled: while the total is shorter than the screen, what was printed is what
+is visible.
+
 Spacing between messages is exactly **one** blank line, everywhere. It used to
 be two before a user prompt and one elsewhere, because each message already
 ended with a blank line *and* the user block added one of its own — the

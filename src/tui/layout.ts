@@ -157,6 +157,57 @@ export function userBlock(text: string, keyBase: string): Line[] {
  * dan pemanggil non-TUI tidak punya terminal, dan membungkus ke lebar yang
  * dikarang akan membuat hasilnya bergantung pada angka yang tidak ada artinya.
  */
+/**
+ * Lebar talang kiri, dalam kolom. Dua: cukup untuk melepaskan huruf dari tepi
+ * terminal, dan cukup sempit untuk tidak memakan lebar yang dipakai kode.
+ */
+const GUTTER = 2
+
+/** Bulatan yang menandai awal satu bagian — jawaban, atau satu panggilan tool. */
+const BULLET = "⏺"
+
+/**
+ * Memberi talang kiri pada satu blok, dengan bulatan di baris pertamanya.
+ *
+ * Dua hal sekaligus, dan keduanya diminta bersamaan: huruf tidak lagi menempel
+ * pada tepi terminal, dan tiap bagian punya penanda yang membuat batasnya
+ * terlihat tanpa harus membaca isinya.
+ *
+ * Dua spasi di depan teks aslinya DIBUANG lebih dulu. Baris tool sudah membawa
+ * indentasinya sendiri sejak sebelum talang ini ada; tanpa pembuangan itu ia
+ * akan bergeser dua kolom lagi dan bersarang lebih dalam daripada yang
+ * dimaksudkan. Yang bersarang lebih dalam dari itu — rincian tool — tetap
+ * bersarang, karena selisihnya yang dipertahankan, bukan angka mutlaknya.
+ */
+function withGutter(lines: Line[]): Line[] {
+  return lines.map((line, index) => {
+    // Baris kosong tidak diberi talang. Dua spasi pada baris yang isinya
+    // memang tidak ada hanyalah spasi menggantung: tidak terlihat, tapi ikut
+    // tersalin saat user menyeleksi teks dari terminal.
+    if (line.kind === "blank" || line.text === "") return line
+    const lead = index === 0 ? `${BULLET} ` : " ".repeat(GUTTER)
+    const body = line.text.startsWith("  ") ? line.text.slice(GUTTER) : line.text
+    return {
+      ...line,
+      text: `${lead}${body}`,
+      // Span ikut diberi talang sebagai potongan TERSENDIRI, bukan digabung ke
+      // potongan pertama: menempelkannya akan mewarisi warna dan ketebalan
+      // potongan itu, dan bulatan yang ikut menebal bersama judul terbaca
+      // sebagai bagian dari judulnya.
+      ...(line.spans
+        ? { spans: [{ text: lead, dim: index === 0 ? false : true }, ...trimSpans(line.spans)] }
+        : {}),
+    }
+  })
+}
+
+/** Membuang dua spasi pertama dari deretan span, kalau memang ada. */
+function trimSpans(spans: NonNullable<Line["spans"]>): NonNullable<Line["spans"]> {
+  const [first, ...rest] = spans
+  if (!first || !first.text.startsWith("  ")) return spans
+  return [{ ...first, text: first.text.slice(GUTTER) }, ...rest]
+}
+
 export function messageLines(message: Message, expanded: Expansion, width = 0): Line[] {
   const lines: Line[] = []
 
@@ -165,21 +216,27 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
       // Prompt user ditampilkan apa adanya: yang diketik user bukan markdown,
       // dan merendernya akan menyembunyikan karakter yang sengaja ia tulis.
       if (message.role === "user") {
-        lines.push(...userBlock(part.text, `${message.id}:${index}`))
+        lines.push(...withGutter(userBlock(part.text, `${message.id}:${index}`)))
         continue
       }
 
-      for (const [row, rendered] of renderMarkdown(part.text, width).entries()) {
-        lines.push({
-          kind: "assistant",
-          text: rendered.text,
-          spans: rendered.spans,
-          key: `${message.id}:${index}:${row}`,
-        })
-      }
+      lines.push(
+        ...withGutter(
+          // Lebar DIKURANGI talangnya. Tanpa ini, baris yang dibungkus tepat
+          // pada lebar terminal akan melewatinya dua kolom begitu talang
+          // ditambahkan — dan terminal membungkusnya lagi sendiri, yang persis
+          // masalah yang pembungkusan ini ada untuk mencegahnya.
+          renderMarkdown(part.text, width > 0 ? Math.max(8, width - GUTTER) : 0).map((rendered, row) => ({
+            kind: "assistant" as const,
+            text: rendered.text,
+            spans: rendered.spans,
+            key: `${message.id}:${index}:${row}`,
+          })),
+        ),
+      )
       continue
     }
-    lines.push(...toolLines(part, expanded))
+    lines.push(...withGutter(toolLines(part, expanded)))
   }
 
   if (message.error) {
