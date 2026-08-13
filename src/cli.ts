@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// HARUS yang pertama: modul ESM dievaluasi urut, dan peringatan `node:sqlite`
+// tercetak begitu modulnya dimuat oleh salah satu impor di bawah.
+import "./quiet.ts"
 import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
