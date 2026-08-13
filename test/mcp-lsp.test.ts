@@ -3,7 +3,13 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test, { after } from "node:test"
-import { diagnoseFile, renderDiagnostics, stopAllLanguageServers } from "../src/core/lsp.ts"
+import {
+  applyEdits,
+  diagnoseFile,
+  formatFile,
+  renderDiagnostics,
+  stopAllLanguageServers,
+} from "../src/core/lsp.ts"
 import { loadMcpTools, McpServer, stopAllMcpServers } from "../src/core/mcp.ts"
 import { MessageBuffer, encode } from "../src/core/rpc.ts"
 import { Config } from "../src/core/schema.ts"
@@ -184,7 +190,7 @@ test("tool MCP memakai sumbu izin `mcp`, dan dialognya menyatakan ia pihak ketig
 
 test("McpServer.connect kedua kali memakai hasil yang sudah ada", async () => {
   const file = script("mcp-once.mjs", MCP_SERVER)
-  const server = new McpServer("sekali", { command: process.execPath, args: [file], cwd: dir })
+  const server = McpServer.stdio("sekali", { command: process.execPath, args: [file], cwd: dir })
   const first = await server.connect()
   const second = await server.connect()
   assert.equal(first, second, "daftar yang sama, bukan permintaan kedua")
@@ -289,4 +295,126 @@ test("nol diagnostics tidak menambahkan apa pun ke hasil tool", () => {
   // Menempelkan "0 diagnostics" ke setiap suntingan adalah baris yang tidak
   // pernah berubah, dan baris yang tidak pernah berubah berhenti dibaca.
   assert.equal(renderDiagnostics("a.ts", []), "")
+})
+
+// ---------- LSP: formatter ----------
+
+/**
+ * Server yang MENGAKUI bisa memformat, dan menjawab dengan dua TextEdit yang
+ * sengaja diberikan dalam urutan maju.
+ *
+ * Urutan itu yang diuji. Spesifikasi LSP menjamin edit tidak tumpang tindih
+ * tapi tidak menjamin urutannya, dan menerapkannya dari depan menggeser setiap
+ * posisi sesudahnya sebanyak selisih panjang teks pengganti.
+ */
+const LSP_FORMATTER = `
+let buf = Buffer.alloc(0)
+const send = (m) => {
+  const body = JSON.stringify(m)
+  process.stdout.write("Content-Length: " + Buffer.byteLength(body, "utf8") + "\\r\\n\\r\\n" + body)
+}
+process.stdin.on("data", (c) => {
+  buf = Buffer.concat([buf, c])
+  for (;;) {
+    const sep = buf.indexOf("\\r\\n\\r\\n")
+    if (sep === -1) break
+    const len = Number(/content-length:\\s*(\\d+)/i.exec(buf.subarray(0, sep).toString())[1])
+    if (buf.length < sep + 4 + len) break
+    const msg = JSON.parse(buf.subarray(sep + 4, sep + 4 + len).toString("utf8"))
+    buf = buf.subarray(sep + 4 + len)
+    if (msg.method === "initialize") {
+      send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: { documentFormattingProvider: true } } })
+    }
+    if (msg.method === "textDocument/formatting") {
+      send({ jsonrpc: "2.0", id: msg.id, result: [
+        { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }, newText: "satu" },
+        { range: { start: { line: 1, character: 0 }, end: { line: 1, character: 4 } }, newText: "dua" },
+      ] })
+    }
+    if (msg.method === "textDocument/didOpen" || msg.method === "textDocument/didChange") {
+      send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics",
+             params: { uri: msg.params.textDocument.uri, diagnostics: [] } })
+    }
+  }
+})
+`
+
+test("berkas diformat di tempat, dan id servernya dilaporkan", async () => {
+  const server = script("fmt1.mjs", LSP_FORMATTER)
+  const target = path.join(dir, "f1.uji")
+  fs.writeFileSync(target, "AAAA\nBBBB\n")
+
+  const by = await formatFile(lspConfig(server), dir, target)
+  assert.equal(by, "uji", "yang memformat disebut namanya")
+  assert.equal(fs.readFileSync(target, "utf8"), "satu\ndua\n")
+})
+
+test("format: false dihormati, servernya tidak pernah ditanyai", async () => {
+  const server = script("fmt2.mjs", LSP_FORMATTER)
+  const config = Config.parse({
+    lsp: { uji: { command: process.execPath, args: [server], extensions: [".uji"], format: false } },
+  })
+  const target = path.join(dir, "f2.uji")
+  fs.writeFileSync(target, "AAAA\nBBBB\n")
+
+  assert.equal(await formatFile(config, dir, target), undefined)
+  assert.equal(fs.readFileSync(target, "utf8"), "AAAA\nBBBB\n", "berkas tidak disentuh")
+})
+
+test("server yang TIDAK mengaku bisa memformat tidak pernah diminta", async () => {
+  /*
+   * Kapabilitasnya dibaca dari jawaban `initialize`, bukan diasumsikan.
+   * Mengirim `textDocument/formatting` ke server yang tidak mendukungnya bukan
+   * sekadar sia-sia: sebagian menjawab error, dan error itu terbaca seperti
+   * suntingannya yang bermasalah.
+   */
+  const server = script("fmt3.mjs", LSP_SERVER)
+  const target = path.join(dir, "f3.uji")
+  fs.writeFileSync(target, "AAAA\nBBBB\n")
+
+  assert.equal(await formatFile(lspConfig(server), dir, target), undefined)
+  assert.equal(fs.readFileSync(target, "utf8"), "AAAA\nBBBB\n")
+})
+
+test("TextEdit diterapkan dari BELAKANG, supaya posisinya tidak bergeser", () => {
+  /*
+   * Ini inti perbaikannya, dan ia bisa diuji tanpa proses sama sekali.
+   * Edit pertama memanjangkan teks; kalau diterapkan lebih dulu, offset edit
+   * kedua meleset sebanyak selisihnya dan hasilnya berkas yang rusak dengan
+   * cara yang terlihat acak.
+   */
+  const text = "ab\ncd\n"
+  const edits = [
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 2 } }, newText: "PANJANG" },
+    { range: { start: { line: 1, character: 0 }, end: { line: 1, character: 2 } }, newText: "XY" },
+  ]
+
+  assert.equal(applyEdits(text, edits), "PANJANG\nXY\n")
+  assert.equal(applyEdits(text, [...edits].reverse()), "PANJANG\nXY\n", "urutan masukan tidak berpengaruh")
+})
+
+test("posisi di luar berkas dijepit, bukan merusak isinya", () => {
+  // Server yang salah hitung satu baris tidak boleh membuat berkas orang hilang.
+  const text = "satu\ndua\n"
+  const jauh = [
+    { range: { start: { line: 99, character: 0 }, end: { line: 99, character: 9 } }, newText: "X" },
+  ]
+  assert.equal(applyEdits(text, jauh), "satu\ndua\nX")
+
+  const kolomLewat = [
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 999 } }, newText: "Z" },
+  ]
+  assert.equal(applyEdits(text, kolomLewat), "Z\ndua\n", "kolom dijepit di ujung barisnya")
+})
+
+test("berkas yang sudah rapi tidak ditulis ulang", async () => {
+  // Menulis ulang berkas dengan isi yang sama tetap mengubah mtime, dan itu
+  // memicu watcher, rebuild, dan test runner tanpa ada yang berubah.
+  const server = script("fmt4.mjs", LSP_FORMATTER)
+  const target = path.join(dir, "f4.uji")
+  fs.writeFileSync(target, "satu\ndua\n")
+  const sebelum = fs.statSync(target).mtimeMs
+
+  assert.equal(await formatFile(lspConfig(server), dir, target), undefined)
+  assert.equal(fs.statSync(target).mtimeMs, sebelum, "mtime tidak berubah")
 })

@@ -44,6 +44,28 @@ export const Provider = z.object({
     .describe("AI SDK package to use. openai-compatible is the default."),
   options: ProviderOptions.optional(),
   models: z.record(z.string(), ProviderModel).default({}),
+  /**
+   * Kirim `cache_control` di badan permintaan, untuk gateway OpenAI-compatible
+   * yang meneruskannya ke Anthropic.
+   *
+   * DINYATAKAN, tidak ditebak — aturan yang sama dengan `contextWindow`.
+   * Titah tidak punya cara mengetahui apa yang ada di balik sebuah baseURL:
+   * gateway yang meneruskan ke Anthropic dan endpoint vLLM yang meng-cache
+   * sendiri terlihat persis sama dari sini. Menebak salah ke arah "kirim" bisa
+   * ditolak sebagian server; menebak salah ke arah sebaliknya diam-diam
+   * membayar penuh untuk awalan yang sebenarnya bisa di-cache.
+   *
+   * Tidak diperlukan untuk `@ai-sdk/anthropic` (sudah lewat jalur resminya),
+   * maupun untuk endpoint yang meng-cache awalan secara otomatis — di sana
+   * urutan yang stabil sudah cukup, dan itu selalu dilakukan Titah.
+   */
+  cacheControl: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Send cache_control in the request body. Only for OpenAI-compatible gateways that " +
+        "forward it to Anthropic. Ask your gateway operator before turning this on.",
+    ),
 })
 
 /**
@@ -357,12 +379,49 @@ export const Account = z
  * tool. Menyatakan batasnya lebih baik daripada membangun setengah dari
  * segalanya — yang setengah jadi terlihat sama dengan yang jadi, sampai dipakai.
  */
-export const McpServerConfig = z.object({
-  command: z.string().describe("Executable that speaks MCP over stdio"),
-  args: z.array(z.string()).default([]),
-  env: z.record(z.string(), z.string()).optional(),
-  enabled: z.boolean().default(true),
-})
+export const McpServerConfig = z
+  .object({
+    command: z.string().optional().describe("Executable that speaks MCP over stdio"),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).optional(),
+    /**
+     * Server remote, bicara MCP lewat HTTP. Saling meniadakan dengan `command`.
+     *
+     * Satu endpoint untuk semuanya: permintaan dikirim POST, dan jawabannya
+     * boleh berupa JSON biasa ATAU aliran `text/event-stream`. Server memilih
+     * mana yang dipakai per permintaan, jadi klien harus siap keduanya.
+     */
+    url: z.string().optional().describe("HTTP endpoint of a remote MCP server"),
+    /** Header tetap, mis. token statis: {"Authorization": "Bearer ${env:X}"}. */
+    headers: z.record(z.string(), z.string()).optional(),
+    /**
+     * Menyalakan OAuth untuk server ini.
+     *
+     * Token disimpan terpisah dari config dan tidak pernah ditulis ke sana —
+     * `titah mcp login <id>` yang mengisinya. Server yang cukup dengan token
+     * statis tidak perlu ini; isi `headers` saja.
+     */
+    oauth: z.boolean().default(false),
+    enabled: z.boolean().default(true),
+  })
+  .superRefine((entry, ctx) => {
+    // Satu server, satu transport. Menyetel keduanya berarti tidak ada jawaban
+    // atas "yang mana yang dipakai", dan diam-diam memilih salah satunya
+    // menyembunyikan kesalahan konfigurasi yang nyata.
+    const has = [entry.command !== undefined, entry.url !== undefined].filter(Boolean).length
+    if (has !== 1) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          has === 0
+            ? 'An MCP server needs either "command" (stdio) or "url" (remote HTTP).'
+            : 'An MCP server has one transport: set "command" or "url", not both.',
+      })
+    }
+    if (entry.oauth && entry.url === undefined) {
+      ctx.addIssue({ code: "custom", message: '"oauth" only applies to remote servers with a "url".' })
+    }
+  })
 
 /**
  * Language server per bahasa, untuk diagnostics OTOMATIS setelah menyunting.
@@ -378,6 +437,39 @@ export const LspServerConfig = z.object({
   extensions: z
     .array(z.string())
     .describe('File extensions it handles, e.g. [".ts", ".tsx"]'),
+  enabled: z.boolean().default(true),
+  /**
+   * Memformat berkas otomatis setiap kali disunting, lewat
+   * `textDocument/formatting`.
+   *
+   * Menyala secara bawaan, tapi hanya berlaku kalau server BILANG ia bisa
+   * memformat — kapabilitasnya dibaca dari jawaban `initialize`, bukan
+   * diasumsikan. Matikan kalau proyeknya punya pemformat sendiri dan dua
+   * pemformat yang berbeda pendapat lebih buruk daripada tidak ada sama sekali.
+   */
+  format: z.boolean().default(true),
+  /**
+   * Dua angka yang WAJIB dikirim protokolnya bersama permintaan format.
+   *
+   * Kebanyakan language server mengabaikannya dan memakai konfigurasi proyek
+   * (`.editorconfig`, prettier, gofmt), jadi ini bukan pilihan gaya — ia nilai
+   * yang harus ada di dalam amplop. Yang benar-benar memakainya adalah server
+   * tanpa konfigurasi proyek.
+   */
+  tabSize: z.number().int().positive().default(2),
+  insertSpaces: z.boolean().default(true),
+})
+
+/**
+ * Satu plugin, dikenali dari apa yang user tulis sebagai kuncinya.
+ *
+ * Tiga bentuk kunci: nama paket npm (`@acme/titah-prettier`), path berkas
+ * (`./plugin/audit.ts`), atau `market:<id>` yang tempatnya sudah disediakan
+ * tapi belum bisa diresolusi. Lihat `parsePluginSpec`.
+ */
+export const PluginConfig = z.object({
+  /** Diteruskan apa adanya ke factory plugin; bentuknya milik plugin itu. */
+  options: z.record(z.string(), z.unknown()).default({}),
   enabled: z.boolean().default(true),
 })
 
@@ -430,6 +522,12 @@ export const Config = z.object({
   diagnostics: Diagnostics.optional(),
   mcp: z.record(z.string(), McpServerConfig).default({}),
   lsp: z.record(z.string(), LspServerConfig).default({}),
+  /*
+   * Plugin disebut SATU PER SATU, tidak pernah ditemukan otomatis dari
+   * node_modules. Plugin berjalan di dalam proses ini tanpa sandbox, dan
+   * "terpasang" tidak pernah berarti "dipercaya".
+   */
+  plugin: z.record(z.string(), PluginConfig).default({}),
   compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())

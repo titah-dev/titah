@@ -1,5 +1,6 @@
 import type { LanguageModel } from "ai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { withCacheControl } from "./cache-control.ts"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import type { Config, Provider } from "./schema.ts"
 import { readAuth } from "./auth.ts"
@@ -114,6 +115,13 @@ export function resolveModel(config: Config, full?: string): LanguageModel {
       const compatible = createOpenAICompatible({
         name: providerId,
         baseURL,
+        /*
+         * Penandaan cache terjadi di sini, bukan lewat `providerOptions`.
+         * `providerOptions` bernamespace per provider, jadi tanda yang ditulis
+         * di namespace `anthropic` dibuang sebelum menyentuh kabel — diam-diam.
+         * Lihat cache-control.ts.
+         */
+        ...(provider.cacheControl ? { fetch: withCacheControl() } : {}),
         // Tanpa ini, endpoint OpenAI-compatible tidak melaporkan token saat
         // streaming, dan penghitung biaya di footer (Q24) selalu kosong.
         includeUsage: provider.options?.includeUsage ?? true,

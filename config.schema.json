@@ -85,6 +85,11 @@
                 }
               }
             }
+          },
+          "cacheControl": {
+            "default": false,
+            "description": "Send cache_control in the request body. Only for OpenAI-compatible gateways that forward it to Anthropic. Ask your gateway operator before turning this on.",
+            "type": "boolean"
           }
         }
       }
@@ -572,8 +577,8 @@
         "type": "object",
         "properties": {
           "command": {
-            "type": "string",
-            "description": "Executable that speaks MCP over stdio"
+            "description": "Executable that speaks MCP over stdio",
+            "type": "string"
           },
           "args": {
             "default": [],
@@ -591,14 +596,28 @@
               "type": "string"
             }
           },
+          "url": {
+            "description": "HTTP endpoint of a remote MCP server",
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "oauth": {
+            "default": false,
+            "type": "boolean"
+          },
           "enabled": {
             "default": true,
             "type": "boolean"
           }
-        },
-        "required": [
-          "command"
-        ]
+        }
       }
     },
     "lsp": {
@@ -631,12 +650,50 @@
           "enabled": {
             "default": true,
             "type": "boolean"
+          },
+          "format": {
+            "default": true,
+            "type": "boolean"
+          },
+          "tabSize": {
+            "default": 2,
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "insertSpaces": {
+            "default": true,
+            "type": "boolean"
           }
         },
         "required": [
           "command",
           "extensions"
         ]
+      }
+    },
+    "plugin": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "options": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          }
+        }
       }
     },
     "compaction": {
