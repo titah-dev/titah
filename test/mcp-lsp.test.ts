@@ -190,7 +190,7 @@ test("tool MCP memakai sumbu izin `mcp`, dan dialognya menyatakan ia pihak ketig
 
 test("McpServer.connect kedua kali memakai hasil yang sudah ada", async () => {
   const file = script("mcp-once.mjs", MCP_SERVER)
-  const server = new McpServer("sekali", { command: process.execPath, args: [file], cwd: dir })
+  const server = McpServer.stdio("sekali", { command: process.execPath, args: [file], cwd: dir })
   const first = await server.connect()
   const second = await server.connect()
   assert.equal(first, second, "daftar yang sama, bukan permintaan kedua")

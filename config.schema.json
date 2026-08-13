@@ -572,8 +572,8 @@
         "type": "object",
         "properties": {
           "command": {
-            "type": "string",
-            "description": "Executable that speaks MCP over stdio"
+            "description": "Executable that speaks MCP over stdio",
+            "type": "string"
           },
           "args": {
             "default": [],
@@ -591,14 +591,28 @@
               "type": "string"
             }
           },
+          "url": {
+            "description": "HTTP endpoint of a remote MCP server",
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "oauth": {
+            "default": false,
+            "type": "boolean"
+          },
           "enabled": {
             "default": true,
             "type": "boolean"
           }
-        },
-        "required": [
-          "command"
-        ]
+        }
       }
     },
     "lsp": {

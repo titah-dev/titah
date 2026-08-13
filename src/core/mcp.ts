@@ -1,25 +1,29 @@
 import { z } from "zod"
 import { RpcPeer, RpcError } from "./rpc.ts"
+import { HttpTransport, NeedsAuthorization, type HttpTransportOptions } from "./mcp-http.ts"
+import { validToken } from "./mcp-oauth.ts"
 import type { Config } from "./schema.ts"
 import { ToolError, type TitahTool } from "./tool/types.ts"
 
 /**
- * Klien MCP (Model Context Protocol) lewat stdio.
+ * Klien MCP (Model Context Protocol): stdio dan HTTP remote.
  *
  * Ini gap terbesar Titah di `docs/gap-analysis.md`, dan sifatnya berbeda dari
  * gap lain: ia bukan satu kemampuan yang hilang, melainkan PINTU ke semua
  * kemampuan pihak ketiga. Selama tidak ada, setiap integrasi baru berarti
  * menulis tool di dalam Titah.
  *
- * # Yang didukung, dan yang tidak
+ * # Dua transport, satu jalur di atasnya
  *
- * Hanya **stdio**, hanya **tools**. Bukan karena yang lain tidak berguna, tapi
- * karena keduanya yang menutup gap-nya: server MCP yang dipasang orang hampir
- * selalu stdio, dan yang dicari darinya hampir selalu tool. `resources` dan
- * `prompts` bisa menyusul lewat peer yang sama; transport HTTP/SSE juga.
+ * Yang berbeda antara stdio dan HTTP hanya bagaimana satu pesan JSON-RPC
+ * berpindah tempat. Jabat tangan, penamaan tool, dan penanganan `isError`
+ * identik — jadi keduanya disatukan di balik `Transport`, dan sisa berkas ini
+ * tidak tahu yang mana yang sedang dipakai.
  *
- * Menyatakan batas itu di sini lebih baik daripada membangun setengah dari
- * segalanya: yang setengah jadi terlihat sama dengan yang jadi, sampai dipakai.
+ * Yang masih belum ada: `resources` dan `prompts`. Keduanya bisa menyusul lewat
+ * transport yang sama. Menyatakan batas itu di sini lebih baik daripada
+ * membangun setengah dari segalanya — yang setengah jadi terlihat sama dengan
+ * yang jadi, sampai dipakai.
  */
 
 const PROTOCOL_VERSION = "2024-11-05"
@@ -49,26 +53,54 @@ interface CallResult {
  * yang lambat bisa memakan detik, dan mengulanginya tiap giliran berarti
  * membayar itu berulang untuk daftar yang praktis tidak pernah berubah.
  */
+/**
+ * Yang dibutuhkan `McpServer` dari sebuah transport, dan tidak lebih.
+ *
+ * `RpcPeer` (stdio) dan `HttpTransport` (remote) sama-sama sudah berbentuk ini
+ * tanpa pembungkus — itu bukan kebetulan, melainkan alasan keduanya bisa
+ * disatukan tanpa lapisan tambahan yang harus ikut diuji.
+ */
+export interface Transport {
+  request(method: string, params?: unknown): Promise<unknown>
+  notify(method: string, params?: unknown): void
+  stop(): void
+}
+
 export class McpServer {
-  #peer: RpcPeer
+  #peer: Transport
   #tools: McpTool[] | undefined
   #failure: string | undefined
   readonly id: string
+  readonly remote: boolean
 
-  constructor(
+  constructor(id: string, transport: Transport, remote = false) {
+    this.id = id
+    this.#peer = transport
+    this.remote = remote
+  }
+
+  /** Server stdio: satu proses anak, satu objek JSON per baris. */
+  static stdio(
     id: string,
     options: { command: string; args: string[]; cwd: string; env?: Record<string, string> },
-  ) {
-    this.id = id
-    this.#peer = new RpcPeer({
-      command: options.command,
-      args: options.args,
-      cwd: options.cwd,
-      ...(options.env ? { env: options.env } : {}),
-      // MCP memakai satu objek JSON per baris, bukan header Content-Length ala
-      // LSP. Satu-satunya perbedaan antara keduanya di lapisan ini.
-      framing: "ndjson",
-    })
+  ): McpServer {
+    return new McpServer(
+      id,
+      new RpcPeer({
+        command: options.command,
+        args: options.args,
+        cwd: options.cwd,
+        ...(options.env ? { env: options.env } : {}),
+        // MCP memakai satu objek JSON per baris, bukan header Content-Length
+        // ala LSP. Satu-satunya perbedaan antara keduanya di lapisan itu.
+        framing: "ndjson",
+      }),
+    )
+  }
+
+  /** Server remote: satu endpoint HTTP, jawaban JSON atau aliran SSE. */
+  static http(id: string, options: HttpTransportOptions): McpServer {
+    return new McpServer(id, new HttpTransport(options), true)
   }
 
   get failure(): string | undefined {
@@ -111,6 +143,17 @@ export class McpServer {
         }))
       return this.#tools
     } catch (error) {
+      /*
+       * 401 diberi kalimatnya sendiri.
+       *
+       * "HTTP 401" tidak memberi tahu apa pun yang bisa ditindaklanjuti. Yang
+       * dibutuhkan user adalah perintah berikutnya, dan hanya di sini kita tahu
+       * server mana yang dimaksud.
+       */
+      if (error instanceof NeedsAuthorization) {
+        this.#failure = `${error.message} Run \`titah mcp login ${this.id}\`.`
+        return []
+      }
       this.#failure = error instanceof RpcError ? error.message : String(error)
       return []
     }
@@ -148,12 +191,33 @@ export function mcpServers(config: Config, cwd: string): McpServer[] {
     if (entry.enabled === false) continue
     let server = servers.get(id)
     if (!server) {
-      server = new McpServer(id, {
-        command: entry.command,
-        args: entry.args,
-        cwd,
-        ...(entry.env ? { env: entry.env } : {}),
-      })
+      server =
+        entry.url === undefined
+          ? McpServer.stdio(id, {
+              command: entry.command as string,
+              args: entry.args,
+              cwd,
+              ...(entry.env ? { env: entry.env } : {}),
+            })
+          : McpServer.http(id, {
+              url: entry.url,
+              ...(entry.headers ? { headers: entry.headers } : {}),
+              /*
+               * Token dibaca SETIAP permintaan, bukan sekali saat server
+               * dibuat. Sesi Titah berjalan berjam-jam sementara token OAuth
+               * hidup beberapa menit — membacanya sekali berarti permintaan
+               * pertama berhasil dan sisanya 401, kegagalan yang muncul di
+               * tengah pekerjaan tanpa sebab yang terlihat.
+               */
+              ...(entry.oauth
+                ? {
+                    authorization: async () => {
+                      const token = validToken(id)
+                      return token ? `${token.tokenType} ${token.accessToken}` : undefined
+                    },
+                  }
+                : {}),
+            })
       servers.set(id, server)
     }
     out.push(server)

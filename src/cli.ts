@@ -15,6 +15,19 @@ import {
   planImport,
 } from "./core/portable.ts"
 import { loadPlugins } from "./core/plugin.ts"
+import {
+  authorizationUrl,
+  createPkce,
+  discover,
+  exchangeCode,
+  forgetToken,
+  loopback,
+  openBrowser,
+  randomState,
+  registerClient,
+  validToken,
+  writeToken,
+} from "./core/mcp-oauth.ts"
 import { checkPermissions, readAuth, removeCredential, setCredential } from "./core/auth.ts"
 import {
   AccountError,
@@ -120,6 +133,9 @@ Configuration:
   export [-o <file>]       Write a portable config bundle (no credentials) to stdout or a file
   import <file> [-y]       Show what a bundle would change; -y applies it
   plugin list              Load the configured plugins and report what each provides
+  mcp list                 Configured MCP servers, their transport, and sign-in state
+  mcp login <server>       Sign in to a remote MCP server with OAuth
+  mcp logout <server>      Forget a remote server's stored token
   auth list                Providers and where their credentials come from
   auth set <provider>      Store an API key in auth.json (mode 0600), read from stdin
   auth remove <provider>   Remove a provider's credentials
@@ -215,6 +231,8 @@ async function main(argv: string[]): Promise<void> {
     case "plugin":
     case "plugins":
       return cmdPlugin(rest)
+    case "mcp":
+      return cmdMcp(rest, values["no-browser"] !== true)
     case "auth":
       return cmdAuth(rest)
     case "models":
@@ -444,6 +462,98 @@ async function cmdPlugin(args: string[]): Promise<void> {
 
   const disabled = specs.length - plugins.length - failures.length
   if (disabled > 0) out(`\n${disabled} disabled with "enabled": false.`)
+}
+
+/**
+ * Login OAuth ke satu server MCP remote.
+ *
+ * Alirannya authorization code + PKCE lewat loopback, karena itu yang
+ * ditetapkan spesifikasi MCP — bukan device flow yang dipakai akun Titah
+ * sendiri. Konsekuensinya jujur disebutkan di bawah: loopback butuh browser di
+ * MESIN INI, dan di dalam SSH atau container itu tidak ada.
+ */
+async function cmdMcp(args: string[], browser: boolean): Promise<void> {
+  const sub = args[0] ?? "list"
+  const loaded = loadConfig()
+
+  if (sub === "list") {
+    const entries = Object.entries(loaded.config.mcp)
+    if (entries.length === 0) return out("No MCP servers configured.")
+    for (const [id, entry] of entries) {
+      const where = entry.url ?? `${entry.command} ${entry.args.join(" ")}`.trim()
+      const auth = entry.url === undefined ? "" : entry.oauth ? (validToken(id) ? "  signed in" : "  needs login") : "  static"
+      out(`${entry.enabled === false ? "·" : "✓"} ${id.padEnd(14)} ${entry.url ? "http" : "stdio"}  ${where}${auth}`)
+    }
+    return
+  }
+
+  if (sub === "logout") {
+    const id = args[1]
+    if (!id) fail("Usage: titah mcp logout <server>")
+    out(forgetToken(id) ? `Forgot the token for "${id}".` : `No stored token for "${id}".`)
+    return
+  }
+
+  if (sub !== "login") fail(`Unknown mcp subcommand: "${sub}". Options: list, login, logout.`)
+
+  const id = args[1]
+  if (!id) fail("Usage: titah mcp login <server>")
+  const entry = loaded.config.mcp[id]
+  if (!entry) fail(`No MCP server named "${id}" in the config.`)
+  if (entry.url === undefined) fail(`"${id}" is a stdio server — it has nothing to sign in to.`)
+
+  const metadata = await discover(entry.url)
+  const pkce = createPkce()
+  const state = randomState()
+  const handle = await loopback(state)
+
+  try {
+    const clientId = await registerClient(metadata, handle.redirectUri)
+    const url = authorizationUrl({
+      metadata,
+      clientId,
+      redirectUri: handle.redirectUri,
+      pkce,
+      state,
+      resource: entry.url,
+      ...(metadata.scopes_supported ? { scope: metadata.scopes_supported.join(" ") } : {}),
+    })
+
+    const opened = browser && openBrowser(url)
+    process.stderr.write(
+      opened
+        ? `titah: opened your browser to sign in to "${id}".\n`
+        : `titah: open this URL to sign in to "${id}":\n\n  ${url}\n\n`,
+    )
+    /*
+     * Disebut apa adanya, karena ia batas nyata: redirect ke 127.0.0.1 mengarah
+     * ke loopback MESIN YANG MENJALANKAN BROWSER. Lewat SSH itu mesin yang
+     * berbeda, dan halamannya akan gagal dimuat tanpa menjelaskan kenapa.
+     */
+    process.stderr.write("titah: the redirect lands on this machine — forward the port if you are over SSH.\n")
+
+    const code = await handle.code
+    const token = await exchangeCode({
+      metadata,
+      clientId,
+      redirectUri: handle.redirectUri,
+      code,
+      verifier: pkce.verifier,
+      resource: entry.url,
+    })
+
+    writeToken(id, token)
+    out(`Signed in to "${id}".`)
+    if (token.expiresAt !== undefined) {
+      out(
+        token.refreshToken
+          ? "The token expires, and Titah refreshes it automatically."
+          : "The token expires and no refresh token was issued — you will need to sign in again.",
+      )
+    }
+  } finally {
+    handle.close()
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -773,9 +883,17 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   if (mcpIds.length > 0 || lspIds.length > 0) {
     out("MCP & language servers")
     for (const [id, entry] of Object.entries(loaded.config.mcp)) {
-      const found = which(entry.command)
+      // Server remote tidak punya biner untuk dicari di PATH; yang bisa
+      // dilaporkan tentangnya adalah URL-nya dan apakah ia sudah punya token.
+      if (entry.url !== undefined) {
+        const auth = entry.oauth ? (validToken(id) ? "signed in" : "needs `titah mcp login`") : "static headers"
+        out(`  mcp ${id.padEnd(14)} ${entry.enabled === false ? "disabled" : `${entry.url}  ${auth}`}`)
+        continue
+      }
+      const command = entry.command as string
+      const found = which(command)
       out(
-        `  mcp ${id.padEnd(14)} ${entry.enabled === false ? "disabled" : (found ?? `! ${entry.command} not in PATH`)}`,
+        `  mcp ${id.padEnd(14)} ${entry.enabled === false ? "disabled" : (found ?? `! ${command} not in PATH`)}`,
       )
     }
     for (const [id, entry] of Object.entries(loaded.config.lsp)) {
