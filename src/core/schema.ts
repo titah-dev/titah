@@ -446,65 +446,50 @@ export type LspServerConfig = z.infer<typeof LspServerConfig>
  */
 export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
   plan: {
-    description: "Plan — explore and analyse; nothing is changed",
+    description: "Plan — explore, analyse, and draft; no file edits",
     prompt:
       "Your job is to understand and to draft a plan, NOT to carry it out.\n\n" +
-      "You can read as much as you need: read, list, glob, grep, skill, task, and the " +
-      "web tools all work here, and so do read-only shell commands like `git log` and " +
-      "`wc -l`. Analysing a codebase is exactly what this mode is for — do it thoroughly " +
-      "before you propose anything.\n\n" +
-      "What you CANNOT do is change anything: edit, write, patch, move, remove, MCP " +
-      "tools, and any shell command that is not on the read-only list are all refused.\n\n" +
-      "If the user asks for a change, do NOT attempt it and then report the refusal, and " +
-      "do NOT silently draft a plan instead of doing what they asked. Call `exit_plan`: " +
-      "it tells them they are in Plan mode and offers to switch. Say what you would do " +
-      "first, so they are choosing with the plan in front of them.\n\n" +
+      "Explore as much as you need. Every reading tool works here, and so does the " +
+      "shell: run the tests, read the git history, check the types, count the lines. " +
+      "Analysing a codebase is exactly what this mode is for, and a plan written " +
+      "without looking is a guess.\n\n" +
+      "The file tools — edit, write, patch, move, remove — are refused in this mode, " +
+      "and so are MCP tools. The shell is NOT refused, and that is a trust placed in " +
+      "you: do not use it to work around the refusal. Do not write files with " +
+      "redirection, do not `sed -i`, do not `git checkout` over someone's work. If a " +
+      "command would change the repository, do not run it.\n\n" +
+      "If the user asks for a change, do NOT attempt it and then report the refusal, " +
+      "and do NOT silently draft a plan instead of doing what they asked. Call " +
+      "`exit_plan`: it tells them they are in Plan mode and offers to switch. Say what " +
+      "you would do first, so they are choosing with the plan in front of them.\n\n" +
       "End with numbered steps someone else could execute.",
     /*
-     * `edit` `write` `delete` `mcp` ditolak KERAS: mode ini menjanjikan tidak
-     * ada yang berubah, dan menghapus adalah bentuk berubah yang paling tidak
-     * bisa ditarik kembali.
+     * `bash: "allow"` atas permintaan eksplisit user, dan ongkosnya perlu
+     * dicatat di sini alih-alih ditemukan belakangan.
      *
-     * `bash` juga `deny` — tapi sekarang itu berarti DEFAULT deny, dan aturan
-     * di bawahnya membuka perintah yang benar-benar hanya membaca. Itu yang
-     * membuat mode ini bisa menganalisa sungguhan: `git log`, `wc -l`, dan
-     * `rg` adalah alat analisis, dan menolaknya membuat mode plan hanya bisa
-     * menebak-nebak.
+     * Versi sebelumnya memakai daftar putih perintah baca. Daftar putih itu
+     * benar secara keamanan dan salah secara kegunaan: `npm run typecheck`,
+     * `find`, `jq`, dan setiap alat yang tidak terpikir saat menulisnya ikut
+     * tertolak, dan mode Plan jadi tidak bisa menganalisa dengan alat yang
+     * benar-benar dipakai orang. Daftar putih untuk perintah shell harus
+     * memperkirakan setiap alat yang berguna — itu daftar yang tidak akan
+     * pernah selesai.
      *
-     * Daftarnya PUTIH, bukan hitam, dan itu disengaja. Daftar hitam harus
-     * memperkirakan setiap cara merusak; daftar putih hanya perlu benar tentang
-     * yang ia sebut. Perintah yang tidak ada di sini ditolak, bukan ditanyakan
-     * — mode plan tidak menawarkan jalan keluar lewat dialog izin, ia
-     * menawarkannya lewat `exit_plan`.
+     * Konsekuensinya jujur: shell bisa mengubah berkas. Jadi mode ini TIDAK
+     * lagi menjamin bahwa tidak ada yang berubah — yang dijamin hanya bahwa
+     * TOOL berkas menolak. Sisanya bersandar pada prompt di atas, dan
+     * deskripsinya diubah supaya tidak menjanjikan lebih dari itu.
      *
-     * `network` sengaja TIDAK ditolak: membaca dokumentasi sebelum menyusun
-     * rencana justru pekerjaan mode ini, dan itu tidak mengubah apa pun.
+     * `edit` `write` `delete` `mcp` tetap ditolak: itu jalur yang wajar bagi
+     * model untuk mengubah sesuatu, dan menutupnya membuat "jangan mengubah"
+     * jadi jalan yang paling mudah ditempuh, bukan sekadar diminta.
      */
     permission: {
       edit: "deny",
       write: "deny",
-      bash: "deny",
+      bash: "allow",
       delete: "deny",
       mcp: "deny",
-      rules: {
-        "bash(git status*)": "allow",
-        "bash(git log*)": "allow",
-        "bash(git diff*)": "allow",
-        "bash(git show*)": "allow",
-        "bash(git branch*)": "allow",
-        "bash(git blame*)": "allow",
-        "bash(ls*)": "allow",
-        "bash(pwd)": "allow",
-        "bash(cat *)": "allow",
-        "bash(head *)": "allow",
-        "bash(tail *)": "allow",
-        "bash(wc *)": "allow",
-        "bash(rg *)": "allow",
-        "bash(grep *)": "allow",
-        "bash(which *)": "allow",
-        "bash(node --version)": "allow",
-        "bash(npm ls*)": "allow",
-      },
     },
   },
   build: {

@@ -206,7 +206,9 @@ test("tiga mode bawaan disuntikkan: plan, build, build-auto", () => {
       ["build", "build-auto", "plan"],
     )
     assert.equal(config.agent["plan"]?.permission?.write, "deny")
-    assert.equal(config.agent["plan"]?.permission?.bash, "deny")
+    // `bash` di mode Plan sengaja ALLOW: yang ditegakkan mode itu adalah tool
+    // berkas menolak, bukan shell. Lihat test/plan-mode.test.ts.
+    assert.equal(config.agent["plan"]?.permission?.bash, "allow")
     assert.equal(config.agent["build"]?.permission?.write, "ask")
     assert.equal(config.agent["build-auto"]?.permission?.write, "allow")
   } finally {

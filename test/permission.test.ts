@@ -334,11 +334,23 @@ test("Build Manual selalu bertanya, dan tanpa klien tetap ditolak", async () => 
   assert.match(tanpaKlien.reason, /no client/i)
 })
 
-test("Plan menolak setiap perubahan, dan alasannya bisa dibaca model", async () => {
+test("Plan menolak TOOL BERKAS, dan alasannya bisa dibaca model", async () => {
+  /*
+   * `bash` sengaja TIDAK ada di daftar ini lagi.
+   *
+   * Mode Plan sempat menolaknya juga, lalu memakai daftar putih perintah baca,
+   * dan keduanya membuat mode itu tidak bisa menjalankan pemeriksa proyeknya
+   * sendiri. Daftar putih untuk shell adalah daftar yang tidak akan pernah
+   * selesai — `npm run typecheck`, `find`, `jq` selalu ada yang terlewat.
+   *
+   * Yang ditegakkan sekarang lebih sempit dan lebih jujur: tool berkas
+   * menolak. Shell tidak, dan yang menahannya adalah prompt. Test ini memaku
+   * batas yang sesungguhnya, bukan batas yang enak dibaca.
+   */
   const plan = Agent.parse(DEFAULT_AGENTS["plan"])
   const permission = effectivePermission(Config.parse({}), "plan", plan)
 
-  for (const kind of ["edit", "write", "bash"] as const) {
+  for (const kind of ["edit", "write", "delete", "mcp"] as const) {
     const result = await ask({
       sessionID: nextSession(),
       permission,
@@ -351,6 +363,21 @@ test("Plan menolak setiap perubahan, dan alasannya bisa dibaca model", async () 
     assert.equal(result.granted, false, `${kind} harus ditolak di mode plan`)
     assert.match(result.reason, /agent "plan"/, "alasan harus menyebut mode-nya")
   }
+})
+
+test("Plan BOLEH memakai shell — itu yang membuatnya bisa menganalisa", async () => {
+  const plan = Agent.parse(DEFAULT_AGENTS["plan"])
+  const result = await ask({
+    sessionID: nextSession(),
+    permission: effectivePermission(Config.parse({}), "plan", plan),
+    kind: "bash",
+    title: "bash: npm run typecheck",
+    detail: "npm run typecheck",
+    pattern: "npm *",
+    segments: ["npm run typecheck"],
+    listeners: 1,
+  })
+  assert.equal(result.granted, true)
 })
 
 test("Plan tetap boleh membaca — menyusun rencana butuh menelusuri kode", () => {

@@ -49,40 +49,32 @@ test("tool baca tidak pernah meminta izin, jadi mode Plan bisa menganalisa", () 
   }
 })
 
-test("perintah shell yang hanya MEMBACA diizinkan di mode Plan", () => {
-  // `git log` dan `wc -l` adalah alat analisis. Menolaknya membuat mode Plan
-  // hanya bisa menebak-nebak isi repo.
+test("shell TERBUKA di mode Plan — termasuk alat yang tidak akan terpikir didaftar", () => {
+  /*
+   * Versi sebelumnya memakai daftar putih perintah baca, dan itu benar secara
+   * keamanan tapi salah secara kegunaan: `npm run typecheck`, `find`, dan `jq`
+   * ikut tertolak, jadi mode Plan tidak bisa menganalisa dengan alat yang
+   * benar-benar dipakai orang.
+   *
+   * Daftar putih untuk perintah shell harus memperkirakan setiap alat yang
+   * berguna — daftar yang tidak akan pernah selesai.
+   */
   for (const command of [
     "git log --oneline -20",
-    "git diff HEAD~1",
-    "git status --short",
+    "npm run typecheck",
+    "find . -name '*.ts'",
+    "jq '.version' package.json",
     "wc -l src/core/agent.ts",
-    "rg 'export function' src",
-    "ls -la",
   ]) {
     assert.equal(judgeBash(command), "allow", command)
   }
 })
 
-test("perintah yang MENGUBAH tetap ditolak, dan tidak ditanyakan", () => {
-  // Ditolak, bukan ditanya: mode Plan tidak menawarkan jalan keluar lewat
-  // dialog izin — ia menawarkannya lewat `exit_plan`.
-  for (const command of ["rm -rf build", "git push origin main", "npm install", "curl -X POST x"]) {
-    assert.equal(judgeBash(command), "deny", command)
-  }
-})
-
-test("perintah baca yang DIRANTAI dengan perintah ubah tetap ditolak", () => {
-  // Satu segmen memutuskan keseluruhan — aturan #12, dan di sini ia menahan
-  // jalan pintas yang paling jelas keluar dari mode Plan.
-  assert.equal(judgeBash("git log && rm -rf ~"), "deny")
-  assert.equal(judgeBash("ls; npm publish"), "deny")
-})
-
-test("substitusi tidak bisa menyelundupkan perintah ke dalam yang diizinkan", () => {
-  // `commandSegments` memulangkan undefined untuk substitusi, jadi tidak ada
-  // kandidat sama sekali — dan daftar kandidat kosong tidak pernah lolos.
-  assert.equal(judgeBash("git log $(rm -rf ~)"), "deny")
+test("shell yang terbuka berarti mode Plan TIDAK lagi menjamin nol perubahan", () => {
+  // Dipaku sebagai kenyataan, bukan disembunyikan. Yang dijamin sekarang hanya
+  // bahwa TOOL berkas menolak; sisanya bersandar pada prompt.
+  assert.equal(judgeBash("rm -rf build"), "allow")
+  assert.equal(judgeBash("sed -i s/a/b/ f"), "allow")
 })
 
 // ---------- tidak mengubah ----------
@@ -173,11 +165,17 @@ test("exit_plan tidak memakai sumbu izin — ia tidak mengubah apa pun sendiri",
   assert.equal(exitPlanTool.permission, undefined)
 })
 
-test("deskripsi mode Plan tidak lagi menjanjikan hal yang keliru", () => {
+test("deskripsi dan prompt tidak menjanjikan lebih dari yang ditegakkan", () => {
   const plan = DEFAULT_AGENTS["plan"] as { description: string; prompt: string }
-  // Dulu berbunyi "Every attempt to change a file or run a command WILL BE
-  // REFUSED" — dan sekarang sebagian perintah justru diizinkan.
-  assert.doesNotMatch(plan.prompt, /run a command WILL BE REFUSED/)
-  assert.match(plan.prompt, /read-only shell commands/)
+
+  // Deskripsi lama berbunyi "nothing is changed". Dengan shell terbuka itu
+  // tidak lagi ditegakkan Titah, jadi ia tidak boleh dijanjikan.
+  assert.doesNotMatch(plan.description, /nothing is changed/)
+  assert.match(plan.description, /no file edits/)
+
+  // Prompt HARUS menyebut batas yang sesungguhnya: tool berkas ditolak, shell
+  // tidak — dan itu kepercayaan, bukan penjagaan.
+  assert.match(plan.prompt, /shell is NOT refused/)
+  assert.match(plan.prompt, /would change the repository, do not run it/)
   assert.match(plan.prompt, /exit_plan/)
 })
