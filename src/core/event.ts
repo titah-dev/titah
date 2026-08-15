@@ -24,6 +24,14 @@ export type Event =
   | { type: "session.updated"; sessionID: string; session: Session }
   | { type: "message.updated"; sessionID: string; message: Message }
   | { type: "text.delta"; sessionID: string; messageID: string; text: string }
+  /**
+   * Penalaran yang mengalir, dipisah dari `text.delta`.
+   *
+   * Klien HARUS bisa membedakannya: yang satu jawaban, yang satu jalan menuju
+   * jawaban. Menyatukannya berarti setiap klien harus menebak yang mana yang
+   * baru saja ia terima, dan TUI akan merendernya sebagai jawaban.
+   */
+  | { type: "reasoning.delta"; sessionID: string; messageID: string; text: string }
   | { type: "session.idle"; sessionID: string }
   | { type: "session.error"; sessionID: string; message: string }
   /**

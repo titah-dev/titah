@@ -115,6 +115,11 @@ export const bashTool: TitahTool<typeof inputSchema> = {
         }
         if (target === "out") stdout += text
         else stderr += text
+
+        // Kabar bahwa sesuatu masih bergerak. Di tempat yang SUDAH menangkap
+        // setiap potongan — menambahkan listener kedua berarti dua jalur yang
+        // bisa berbeda pendapat tentang apa yang sudah keluar.
+        ctx.progress?.(text)
       }
 
       child.stdout.on("data", (chunk: Buffer) => append("out", chunk))
