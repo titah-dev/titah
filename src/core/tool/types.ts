@@ -20,6 +20,18 @@ export interface ToolContext {
    * untuk membatasi dirinya relatif jendela (issue #5).
    */
   contextWindow?: number
+  /**
+   * Melaporkan keluaran yang sudah keluar SELAGI tool masih berjalan.
+   *
+   * Opsional dengan sengaja: dari dua puluh tiga tool, hanya `bash` yang punya
+   * sesuatu untuk dilaporkan di tengah jalan. Mewajibkannya berarti dua puluh
+   * dua tool harus tahu fitur ini ada tanpa pernah memakainya.
+   *
+   * Pemanggilnya boleh memanggil ini sesering apa pun — pembatasan lajunya ada
+   * di sisi penerima, bukan di sini. Tool tidak boleh perlu tahu berapa kali
+   * layar sanggup digambar ulang.
+   */
+  progress?(chunk: string): void
 }
 
 export interface ToolResult {

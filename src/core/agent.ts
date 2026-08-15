@@ -17,6 +17,7 @@ import { buildCachedRequest, shouldCache } from "./cag.ts"
 import { loadMcpTools } from "./mcp.ts"
 import { diagnoseFile, formatFile, renderDiagnostics } from "./lsp.ts"
 import { loadPlugins, runAfter, runBefore, type LoadedPlugin } from "./plugin.ts"
+import { throttleProgress } from "./progress.ts"
 import { clearLoopWindow, noteCall } from "./loop.ts"
 import { relative, resolveInside } from "./tool/types.ts"
 import { askUser, NoOneToAsk } from "./question.ts"
@@ -739,6 +740,32 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
     for await (const part of result.fullStream) {
       switch (part.type) {
+        /*
+         * Penalaran model, kalau ia mengirimkannya.
+         *
+         * Ditangani dengan pola yang PERSIS sama dengan `text-delta` di bawah,
+         * dan itu disengaja: keduanya aliran teks yang tumbuh, dan menulis dua
+         * mekanisme untuk satu bentuk berarti yang kedua akan tertinggal saat
+         * yang pertama diperbaiki.
+         *
+         * Model yang tidak mengirim reasoning tidak melewati cabang ini sama
+         * sekali — tidak ada part yang dibuat, dan riwayatnya identik dengan
+         * sebelum perubahan ini.
+         */
+        case "reasoning-delta": {
+          if (part.text === "") break
+          const last = assistant.parts.at(-1)
+          if (last?.type === "reasoning") last.text += part.text
+          else assistant.parts.push({ type: "reasoning", text: part.text })
+          bus.publish({
+            type: "reasoning.delta",
+            sessionID: session.id,
+            messageID: assistant.id,
+            text: part.text,
+          })
+          break
+        }
+
         case "text-delta": {
           if (part.text === "") break
           const last = assistant.parts.at(-1)
@@ -1520,12 +1547,30 @@ function buildTools(options: BuildToolsOptions): ToolSet {
       async execute(original: unknown, options2: { toolCallId: string }) {
         const callID = options2.toolCallId
         const started = Date.now()
+        /*
+         * Kabar dari tool yang sedang berjalan, dibatasi lajunya.
+         *
+         * Dibuat untuk SETIAP panggilan, bukan sekali per sesi: `buffer` di
+         * dalamnya milik satu panggilan, dan berbagi satu pembatas antar tool
+         * akan membuat keluaran `npm test` muncul di bawah `grep` yang
+         * kebetulan berjalan sesudahnya.
+         */
+        const progress = throttleProgress((tail) => {
+          upsert(callID, definition.name, {
+            status: "running",
+            input: original,
+            started,
+            output: tail,
+          })
+        })
+
         const ctx = {
           cwd,
           sessionID,
           callID,
           signal,
           config: options.config,
+          progress: (chunk: string) => progress.push(chunk),
           ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
         }
         upsert(callID, definition.name, { status: "running", input: original, started })
@@ -1616,6 +1661,15 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           }
 
           const result = await definition.execute(input, ctx)
+          /*
+           * WAJIB, dan di sini bukan di `finally`.
+           *
+           * Potongan yang datang di jendela terakhir belum terbit, dan justru
+           * potongan itu yang biasanya berisi hasilnya. Diterbitkan SEBELUM
+           * state `completed` menggantikannya — sesudahnya ia hanya akan
+           * menimpa hasil akhir dengan kabar sekilas.
+           */
+          progress.flush()
 
           /*
            * Diagnostics OTOMATIS, ditempelkan ke hasil tool yang baru saja
@@ -1679,6 +1733,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           })
           return stored.output
         } catch (error) {
+          progress.flush()
           const message = error instanceof Error ? error.message : String(error)
           upsert(callID, definition.name, {
             // Yang ASLI, bukan yang sudah diubah plugin: `input` hidup di dalam

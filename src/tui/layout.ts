@@ -1,5 +1,6 @@
 import type { Message, Part } from "../core/message.ts"
 import { renderMarkdown, type Span } from "./markdown.ts"
+import { splitLines } from "../core/tool/types.ts"
 
 /**
  * Perataan pesan menjadi baris siap-render.
@@ -9,7 +10,17 @@ import { renderMarkdown, type Span } from "./markdown.ts"
  * riwayat harus dipotong lebih dulu, bukan dibiarkan meluber.
  */
 
-export type LineKind = "user" | "user-head" | "assistant" | "tool-ok" | "tool-run" | "tool-bad" | "detail" | "error" | "blank"
+export type LineKind =
+  | "user"
+  | "user-head"
+  | "assistant"
+  | "tool-ok"
+  | "tool-run"
+  | "tool-bad"
+  | "detail"
+  | "reasoning"
+  | "error"
+  | "blank"
 
 export interface Line {
   kind: LineKind
@@ -58,6 +69,13 @@ export function wrappedHeight(text: string, columns: number): number {
   return Math.max(1, Math.ceil(text.length / columns))
 }
 
+/**
+ * Batas baris ekor yang digambar. Harus SAMA dengan `PROGRESS_LINES`, dan
+ * disebut di sini juga supaya render tidak pernah bergantung pada janji
+ * penghasilnya.
+ */
+const RUNNING_TAIL_LINES = 5
+
 function toolLines(part: Extract<Part, { type: "tool" }>, expansion: Expansion): Line[] {
   const state = part.state
   const base = part.callID
@@ -79,7 +97,27 @@ function toolLines(part: Extract<Part, { type: "tool" }>, expansion: Expansion):
       key: `${base}:run`,
       toolID: base,
     }
-    return expanded ? [head, ...body(detail)] : [head]
+
+    /*
+     * Ekor keluaran, kalau tool-nya melaporkan.
+     *
+     * Dibatasi LAGI di sini, bukan hanya di penghasilnya. `historyRows`
+     * menghitung baris, dan blok yang tumbuh tak terduga mendorong isi keluar
+     * layar — kelas bug yang sudah beberapa kali dikejar di TUI ini. Dua batas
+     * untuk satu angka terlihat berlebihan sampai salah satunya berubah.
+     */
+    const live = (state.output ?? "")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .slice(-RUNNING_TAIL_LINES)
+      .map((line, index) => ({
+        kind: "detail" as const,
+        text: `  │ ${line}`,
+        key: `${base}:live:${index}`,
+        toolID: base,
+      }))
+
+    return expanded ? [head, ...body(detail), ...live] : [head, ...live]
   }
   if (state.status === "denied") {
     return [
@@ -211,6 +249,73 @@ function trimSpans(spans: NonNullable<Line["spans"]>): NonNullable<Line["spans"]
   return [{ ...first, text: first.text.slice(GUTTER) }, ...rest]
 }
 
+/**
+ * Penalaran model: mengalir saat berlangsung, terlipat setelah selesai.
+ *
+ * # Bagaimana ia tahu masih berlangsung
+ *
+ * Dari posisinya, bukan dari state tambahan: penalaran yang menjadi part
+ * TERAKHIR berarti model belum mulai menjawab. Begitu teks jawaban menyusul, ia
+ * bukan lagi yang terakhir dan langsung terlipat. Tidak ada flag yang harus
+ * dijaga tetap sinkron, dan tidak ada keadaan yang bisa nyangkut menyala.
+ *
+ * # Kenapa tidak dirender sebagai markdown
+ *
+ * Ia bukan jawaban. Judul dan daftar berpoin di dalam penalaran akan tampil
+ * dengan gaya yang sama dengan struktur jawaban, dan riwayat berhenti bisa
+ * dibaca sekilas — yang justru satu-satunya alasan penalaran ditampilkan.
+ *
+ * # Kenapa memakai mekanisme lipat yang sudah ada
+ *
+ * Penalaran biasanya jauh lebih panjang daripada jawabannya; dibiarkan penuh ia
+ * menenggelamkan yang sebenarnya dicari orang. Yang dipakai `Expansion` yang
+ * SAMA dengan blok tool (`ctrl+x d`) — mekanisme kedua berarti dua tombol untuk
+ * satu gagasan, dan yang kedua tidak akan ditemukan.
+ */
+export function reasoningLines(
+  text: string,
+  base: string,
+  options: { live: boolean; expansion: Expansion; width?: number },
+): Line[] {
+  const body = splitLines(text)
+  const open = options.live || isOpen(options.expansion, base)
+  const width = options.width ?? 0
+  const room = width > 0 ? Math.max(8, width - GUTTER - 2) : 0
+
+  if (!open) {
+    // Terlipat: satu baris, dan jumlahnya disebut supaya orang tahu ada berapa
+    // banyak yang disembunyikan sebelum memutuskan membukanya.
+    return [
+      {
+        kind: "reasoning",
+        text: `  ✻ thinking (${body.length} ${body.length === 1 ? "line" : "lines"})`,
+        key: `${base}:think`,
+        toolID: base,
+      },
+    ]
+  }
+
+  return [
+    { kind: "reasoning", text: "  ✻ thinking", key: `${base}:think`, toolID: base },
+    ...body.flatMap((line, row) =>
+      (room > 0 ? hardWrap(line, room) : [line]).map((piece, part) => ({
+        kind: "reasoning" as const,
+        text: `  │ ${piece}`,
+        key: `${base}:think:${row}:${part}`,
+        toolID: base,
+      })),
+    ),
+  ]
+}
+
+/** Memotong keras ke lebar tertentu. Penalaran tidak perlu dibungkus di batas kata. */
+function hardWrap(line: string, room: number): string[] {
+  if (line.length <= room) return [line]
+  const out: string[] = []
+  for (let at = 0; at < line.length; at += room) out.push(line.slice(at, at + room))
+  return out
+}
+
 export function messageLines(message: Message, expanded: Expansion, width = 0): Line[] {
   const lines: Line[] = []
 
@@ -249,6 +354,21 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
             spans: rendered.spans,
             key: `${message.id}:${index}:${row}`,
           })),
+        ),
+      )
+      continue
+    }
+    if (part.type === "reasoning") {
+      lines.push(
+        ...withGutter(
+          reasoningLines(part.text, `${message.id}:${index}`, {
+            // Part TERAKHIR berarti model belum mulai menjawab — ia masih
+            // berpikir, dan menyembunyikannya persis saat itu terjadi
+            // menghapus satu-satunya gunanya.
+            live: index === message.parts.length - 1,
+            expansion: expanded,
+            width,
+          }),
         ),
       )
       continue

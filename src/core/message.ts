@@ -12,7 +12,24 @@ export interface Session {
 
 export type ToolState =
   | { status: "pending"; input?: unknown }
-  | { status: "running"; input: unknown; title?: string; started: number }
+  | {
+      status: "running"
+      input: unknown
+      title?: string
+      started: number
+      /**
+       * Ekor keluaran yang sudah keluar SEJAUH INI, untuk perintah panjang.
+       *
+       * Opsional dengan sengaja: hanya `bash` yang mengisinya, dan dua puluh
+       * tiga tool lain tidak berubah sama sekali karena field ini ada.
+       *
+       * Hanya EKOR, bukan seluruhnya. Keluaran penuh sudah punya tempatnya di
+       * `completed.output`; yang dibutuhkan selagi berjalan cuma kabar bahwa
+       * sesuatu masih bergerak, dan menyimpan megabyte di state yang
+       * diterbitkan berkali-kali per detik membayar mahal untuk itu.
+       */
+      output?: string
+    }
   | {
       status: "completed"
       input: unknown
@@ -40,6 +57,20 @@ export type ToolState =
 
 export type Part =
   | { type: "text"; text: string }
+  /**
+   * Penalaran model, kalau ia mengirimkannya.
+   *
+   * Dipisah dari `text` dan bukan digabung, karena keduanya berbeda derajat:
+   * `text` adalah jawaban, ini adalah jalan menuju jawaban. Menggabungkannya
+   * membuat riwayat tidak bisa lagi menjawab "apa yang sebenarnya ia katakan".
+   *
+   * Ia TIDAK bisa bocor ke permintaan model. Yang dikirim dibangun dari tabel
+   * `model_message`, yang diisi dari `step.response.messages` milik AI SDK —
+   * bukan dari `parts` di sini. Keduanya memang dua jalur yang berbeda, dan
+   * satu test memaku sifat itu karena ia tidak terbaca dari satu berkas mana
+   * pun.
+   */
+  | { type: "reasoning"; text: string }
   | { type: "tool"; callID: string; tool: string; state: ToolState }
 
 export interface Message {

@@ -492,3 +492,122 @@ test("task yang gagal atau dihentikan TIDAK digambar dengan glyph sukses", () =>
   assert.match(dihentikan?.text ?? "", /⊘ task penulis \(stopped\)/)
   assert.equal(dihentikan?.kind, "tool-bad")
 })
+
+// ---------- penalaran ----------
+
+test("penalaran yang masih mengalir TIDAK dilipat", () => {
+  /*
+   * Menyembunyikannya persis ketika ia sedang terjadi menghapus satu-satunya
+   * gunanya. "Masih mengalir" dibaca dari POSISI — part terakhir berarti model
+   * belum mulai menjawab — bukan dari flag yang harus dijaga tetap sinkron.
+   */
+  const lines = messageLines(
+    message("m", { parts: [{ type: "reasoning", text: "satu\ndua" }] }),
+    false,
+  )
+
+  assert.match(lines[0]?.text ?? "", /✻ thinking$/)
+  assert.match(lines[1]?.text ?? "", /satu/)
+  assert.match(lines[2]?.text ?? "", /dua/)
+})
+
+test("begitu jawaban menyusul, penalaran terlipat jadi satu baris", () => {
+  const lines = messageLines(
+    message("m", {
+      parts: [
+        { type: "reasoning", text: "satu\ndua\ntiga" },
+        { type: "text", text: "jawabannya" },
+      ],
+    }),
+    false,
+  )
+
+  const think = lines.find((line) => line.text.includes("thinking"))
+  assert.match(think?.text ?? "", /✻ thinking \(3 lines\)/, "jumlahnya disebut")
+  assert.equal(
+    lines.some((line) => line.text.includes("satu")),
+    false,
+    "isinya benar-benar disembunyikan",
+  )
+})
+
+test("penalaran yang terlipat bisa dibuka dengan mekanisme yang SAMA dengan tool", () => {
+  // Mekanisme lipat kedua berarti dua tombol untuk satu gagasan, dan yang kedua
+  // tidak akan ditemukan.
+  const lines = messageLines(
+    message("m", {
+      parts: [
+        { type: "reasoning", text: "isinya" },
+        { type: "text", text: "jawab" },
+      ],
+    }),
+    true,
+  )
+  assert.ok(lines.some((line) => line.text.includes("isinya")))
+})
+
+test("satu baris penalaran ditulis \"line\", bukan \"lines\"", () => {
+  const lines = messageLines(
+    message("m", {
+      parts: [
+        { type: "reasoning", text: "cuma satu" },
+        { type: "text", text: "x" },
+      ],
+    }),
+    false,
+  )
+  assert.match(lines.find((l) => l.text.includes("thinking"))?.text ?? "", /\(1 line\)/)
+})
+
+// ---------- ekor tool yang sedang berjalan ----------
+
+const running = (output?: string) =>
+  message("m", {
+    parts: [
+      {
+        type: "tool",
+        callID: "c1",
+        tool: "bash",
+        state: {
+          status: "running",
+          input: { command: "npm test" },
+          title: "bash: npm test",
+          started: 1,
+          ...(output === undefined ? {} : { output }),
+        },
+      },
+    ],
+  })
+
+test("ekor keluaran tampil di bawah nama perintah selagi berjalan", () => {
+  const lines = messageLines(running("ℹ tests 926\nℹ pass 926"), false)
+  assert.match(lines[0]?.text ?? "", /◐ bash: npm test…/)
+  assert.match(lines[1]?.text ?? "", /│ ℹ tests 926/)
+  assert.match(lines[2]?.text ?? "", /│ ℹ pass 926/)
+})
+
+test("ekor dibatasi DI SINI juga, bukan hanya di penghasilnya", () => {
+  /*
+   * `historyRows` menghitung baris, dan blok yang tumbuh tak terduga mendorong
+   * isi keluar layar. Dua batas untuk satu angka terlihat berlebihan sampai
+   * salah satunya berubah.
+   */
+  const banyak = Array.from({ length: 500 }, (_, i) => `baris ${i}`).join("\n")
+  const lines = messageLines(running(banyak), false).filter((line) => line.text.includes("│"))
+  assert.ok(lines.length <= 5, `${lines.length} baris, seharusnya ≤ 5`)
+  assert.match(lines.at(-1)?.text ?? "", /baris 499/, "yang TERAKHIR yang disimpan")
+})
+
+test("tool berjalan tanpa keluaran tetap satu baris, seperti sebelumnya", () => {
+  // Tool yang diam tidak boleh memunculkan blok kosong di bawah namanya.
+  const lines = messageLines(running(), false).filter((line) => line.kind !== "blank")
+  assert.equal(lines.length, 1)
+})
+
+test("baris kosong di dalam ekor tidak ikut memakan jatah", () => {
+  const lines = messageLines(running("a\n\n\nb"), false).filter((line) => line.text.includes("│"))
+  assert.deepEqual(
+    lines.map((line) => line.text.trim()),
+    ["│ a", "│ b"],
+  )
+})

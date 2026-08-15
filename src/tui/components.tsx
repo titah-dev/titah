@@ -19,6 +19,10 @@ const COLOR: Record<LineKind, { color?: string; dim?: boolean; bold?: boolean }>
   "tool-run": { color: "yellow" },
   "tool-bad": { color: "red" },
   detail: { dim: true },
+  // Redup seperti `detail`, dan itu disengaja: penalaran adalah bahan mentah,
+  // bukan jawaban, dan warna yang setara dengan jawaban akan membuatnya dibaca
+  // sebagai jawaban.
+  reasoning: { dim: true },
   error: { color: "red" },
   blank: {},
 }

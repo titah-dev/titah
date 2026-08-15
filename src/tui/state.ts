@@ -46,7 +46,19 @@ function upsertMessage(messages: Message[], next: Message): Message[] {
   return copy
 }
 
-function appendDelta(messages: Message[], messageID: string, text: string): Message[] {
+/**
+ * Menyambung potongan yang mengalir ke part TERAKHIR, kalau sejenis.
+ *
+ * `kind` memisahkan jawaban dari penalaran. Tanpa pemisahan itu, penalaran yang
+ * datang tepat sebelum jawaban akan tersambung ke part yang sama, dan riwayat
+ * tidak bisa lagi menjawab "apa yang sebenarnya ia katakan".
+ */
+function appendDelta(
+  messages: Message[],
+  messageID: string,
+  text: string,
+  kind: "text" | "reasoning" = "text",
+): Message[] {
   const index = messages.findIndex((message) => message.id === messageID)
   if (index === -1) return messages
 
@@ -54,8 +66,8 @@ function appendDelta(messages: Message[], messageID: string, text: string): Mess
   const parts = message.parts.slice()
   const last = parts.at(-1)
 
-  if (last?.type === "text") parts[parts.length - 1] = { type: "text", text: last.text + text }
-  else parts.push({ type: "text", text })
+  if (last?.type === kind) parts[parts.length - 1] = { type: kind, text: last.text + text }
+  else parts.push({ type: kind, text })
 
   const copy = messages.slice()
   copy[index] = { ...message, parts }
@@ -128,6 +140,12 @@ export function reduce(state: TuiState, event: TuiAction): TuiState {
 
     case "text.delta":
       return { ...state, messages: appendDelta(state.messages, event.messageID, event.text) }
+
+    case "reasoning.delta":
+      return {
+        ...state,
+        messages: appendDelta(state.messages, event.messageID, event.text, "reasoning"),
+      }
 
     case "question.request":
       return { ...state, question: event.request }
