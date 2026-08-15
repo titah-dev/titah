@@ -74,7 +74,7 @@ import {
 } from "./storage/session.ts"
 import { allTools } from "./tool/index.ts"
 import type { TitahTool } from "./tool/index.ts"
-import { dispatchableAgents } from "./subagent.ts"
+import { dispatchableAgents, teamAgents, teamSkipped } from "./subagent.ts"
 
 /** Batas langkah bawaan, dipakai agent yang tidak menyatakan `steps` sendiri. */
 const MAX_STEPS = 20
@@ -86,17 +86,30 @@ const MAX_STEPS = 20
  * `buildTeamPrompt` di bawah menempelkan roster sungguhan setelah teks ini.
  */
 const TEAM_PROMPT = [
-  "For this turn you are coordinating a team. Split the work across these sub-agents and",
+  "For this turn you are coordinating a team of SUPER AGENTS — other agent CLIs, each with",
+  "its own model and its own strengths. Split the work by what each one is best at and",
   "dispatch them with the `task` tool; several calls in one step run at the same time.",
-  "Agents that may write files are serialised for you — do not try to order them yourself.",
+  "",
+  "They are not Titah's own sub-agents: Titah's permission rules do not reach them, they",
+  "have their own tools, and they will edit files on their own judgement. Give each one a",
+  "self-contained brief — they cannot see this conversation.",
+  "",
   "Do the work that is left over yourself rather than inventing an agent for it.",
 ].join("\n")
 
 /** Ditunjukkan saat `/tim` dipanggil tanpa satu pun agent yang bisa dibawahi. */
 const NO_ROSTER_MESSAGE =
-  'No sub-agents are configured yet. Add `"mode": "subagent"` (or `"all"`) to an `agent` ' +
-  'block in titah.json — for example `"agent": { "explore": { "mode": "subagent" } }` — ' +
-  "then run /tim again."
+  "No super agents are ready for /tim. Register one under `externalAgent` in titah.json, " +
+  "with a `specialist` describing what it is best at — for example:\n\n" +
+  '  "externalAgent": {\n' +
+  '    "claude": {\n' +
+  '      "command": "claude",\n' +
+  '      "specialist": "deep architectural reasoning, cross-module refactors"\n' +
+  "    }\n" +
+  "  }\n\n" +
+  "Run `titah doctor` for ready-made blocks for the CLIs found on this machine. " +
+  "/tim dispatches only super agents; to coordinate Titah's own agents, just ask — " +
+  "they are already listed in every turn."
 
 /**
  * TEAM_PROMPT saja — rosternya TIDAK diulang di sini.
@@ -106,8 +119,21 @@ const NO_ROSTER_MESSAGE =
  * kali dalam satu permintaan. Yang ditambahkan `/tim` hanyalah instruksi untuk
  * MEMBAGI pekerjaan, yang memang tidak berlaku di giliran biasa.
  */
-function buildTeamPrompt(): string {
-  return TEAM_PROMPT
+function buildTeamPrompt(config: Config, roster: string[], skipped: { id: string; why: string }[]): string {
+  const lines = roster.map((id) => `  ${id} — ${config.externalAgent[id]?.specialist ?? ""}`)
+  const parts = [TEAM_PROMPT, "", "Super agents you can dispatch with `task`:", ...lines]
+
+  /*
+   * Yang dilewati DISEBUTKAN, kepada model maupun lewat notice.
+   *
+   * Super agent yang terdaftar tapi diam-diam tidak dipakai adalah kegagalan
+   * yang paling membingungkan: user melihat namanya di config, tidak melihatnya
+   * bekerja, dan tidak ada apa pun yang menjelaskan kenapa.
+   */
+  if (skipped.length > 0) {
+    parts.push("", `Not available this turn: ${skipped.map((entry) => entry.id).join(", ")}.`)
+  }
+  return parts.join("\n")
 }
 
 /**
@@ -313,15 +339,32 @@ export async function prompt(input: PromptInput): Promise<Message> {
       // giliran LLM BIASA (streamText, tool task, dst) — cuma dengan tambahan
       // di system prompt. Menyalin mesin giliran itu ke sini lagi persis jenis
       // "mesin sendiri" yang titik desainnya melarang.
-      const roster = dispatchableAgents(config)
+      /*
+       * `/tim` memakai SUPER AGENT saja, bukan agent internal Titah.
+       *
+       * Agent internal sudah didaftar di system prompt setiap giliran
+       * (`rosterSection`), jadi mengoordinasinya tidak perlu perintah khusus —
+       * cukup diminta. Yang tidak bisa diminta begitu saja adalah membagi
+       * pekerjaan ke beberapa CLI agent lain sekaligus, dan itulah yang
+       * disediakan perintah ini.
+       */
+      const roster = teamAgents(config)
+      const skipped = teamSkipped(config)
       if (roster.length === 0) {
         return infoTurn(session, input.text, NO_ROSTER_MESSAGE, true)
       }
       if (command.args === "") {
         return infoTurn(session, input.text, "Usage: /tim <task>", true)
       }
+      for (const entry of skipped) {
+        bus.publish({
+          type: "session.notice",
+          sessionID: session.id,
+          message: `/tim skipped "${entry.id}": ${entry.why}`,
+        })
+      }
       text = command.args
-      teamPrompt = buildTeamPrompt()
+      teamPrompt = buildTeamPrompt(config, roster, skipped)
     } else if (isBuiltin(command.name)) {
       return builtinTurn(
         session,
@@ -628,6 +671,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       messages,
       tools: buildTools({
         mcpTools: mcp.tools,
+        ...(agentDef?.escalate ? { escalateTo: agentDef.escalate.to } : {}),
         plugins: loaded.plugins,
         contextWindow,
         sessionID: session.id,
@@ -1491,6 +1535,8 @@ interface BuildToolsOptions {
   mcpTools?: TitahTool[]
   /** Plugin yang sudah dimuat untuk giliran ini. Kosong berarti tidak ada. */
   plugins?: LoadedPlugin[]
+  /** Super agent yang boleh diminta giliran ini — lihat `Agent.escalate`. */
+  escalateTo?: string
 }
 
 /**
@@ -1503,12 +1549,25 @@ interface BuildToolsOptions {
  */
 function activeTools(options: {
   isChild: boolean
+  /** Super agent yang boleh diminta sub-agent ini. Lihat `Agent.escalate`. */
+  escalateTo?: string
   toolFilter?: Record<string, boolean>
   /** Tool dari server MCP, sudah dibungkus. Kosong kalau tidak ada yang dikonfigurasi. */
   extra?: TitahTool[]
 }): TitahTool[] {
   return [...allTools(), ...(options.extra ?? [])].filter((definition) => {
-    if (definition.name === "task" && options.isChild) return false
+    /*
+     * Sub-agent tidak punya `task` — kecuali ia punya `escalate`.
+     *
+     * Batas kedalaman ada untuk mencegah rekursi tanpa akhir: sub-agent yang
+     * bisa memanggil sub-agent lagi, dan seterusnya. Pengecualian ini TIDAK
+     * membukanya, karena satu-satunya yang boleh ia panggil adalah super agent
+     * — CLI di luar Titah, yang tidak punya tool `task` untuk memanggil balik.
+     * Rantainya berhenti di sana secara struktural, bukan karena dijaga.
+     */
+    if (definition.name === "task" && options.isChild && options.escalateTo === undefined) {
+      return false
+    }
     if (options.toolFilter?.[definition.name] === false) return false
     return true
   })
@@ -1612,6 +1671,22 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           progress: (chunk: string) => progress.push(chunk),
           // Diwariskan `task` sebagai batas atas sub-agent. Lihat `narrower`.
           permission: options.permission,
+          /*
+           * Siapa yang boleh dimintai bantuan, dihitung DI SINI karena hanya di
+           * sini semua faktanya ada: apakah giliran ini anak, dan apakah
+           * agent-nya punya `escalate`.
+           *
+           * Giliran utama boleh memanggil super agent mana pun yang terdaftar —
+           * ia yang dipilih user, dan user yang mendaftarkan mereka. Sub-agent
+           * hanya boleh ke satu tujuan yang disebut `escalate.to`-nya.
+           */
+          supersAllowed: options.isChild
+            ? options.escalateTo === undefined
+              ? []
+              : [options.escalateTo]
+            : Object.entries(options.config.externalAgent)
+                .filter(([, agent]) => agent.enabled !== false)
+                .map(([id]) => id),
           ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
         }
         upsert(callID, definition.name, { status: "running", input: original, started })

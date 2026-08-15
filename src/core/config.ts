@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser"
-import { Agent, Config, ExternalAgent, DEFAULT_AGENTS, DEFAULT_EXTERNAL_AGENTS } from "./schema.ts"
+import { Agent, Config, DEFAULT_AGENTS } from "./schema.ts"
 import { globalConfigFile, projectConfigFile } from "./paths.ts"
 import { setExternalRoots } from "./tool/types.ts"
 
@@ -136,12 +136,20 @@ export function loadConfig(cwd: string = process.cwd()): LoadedConfig {
 
   const config = parsed.data
 
-  // Registry agent eksternal punya default bawaan, tapi config user menang.
-  for (const [id, preset] of Object.entries(DEFAULT_EXTERNAL_AGENTS)) {
-    if (config.externalAgent[id] === undefined) {
-      config.externalAgent[id] = ExternalAgent.parse(preset)
-    }
-  }
+  /*
+   * `externalAgent` TIDAK lagi diisi otomatis.
+   *
+   * Dulu `claude` dan `opencode` disuntik ke setiap config. Itu masuk akal
+   * ketika keduanya satu-satunya yang ada, dan berhenti masuk akal begitu
+   * daftar ini jadi tempat user mendaftarkan super agent apa pun — hermes,
+   * antigravity, kiro, cursor. Menyuntik dua nama berarti dua di antaranya
+   * istimewa tanpa alasan, dan `specialist` yang kini wajib tidak bisa ditebak
+   * Titah untuk mereka.
+   *
+   * Presetnya tidak dibuang: `docs/super-agents.md` memuatnya siap salin, dan
+   * argumen CLI di dalamnya diverifikasi langsung terhadap biner claude dan
+   * opencode — bukan disalin dari dokumentasi.
+   */
 
   // Tiga mode bawaan: plan / build / build-auto. Sama seperti di atas, id yang
   // sudah didefinisikan user tidak disentuh.

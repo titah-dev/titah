@@ -153,17 +153,34 @@ test("nilai enum yang tidak sah melempar ConfigError, bukan diam-diam diterima",
   }
 })
 
-test("registry agent eksternal punya default claude + opencode, config user menang", () => {
+test("registry agent eksternal MURNI milik user — tidak ada yang disuntik", () => {
+  /*
+   * Dulu `claude` dan `opencode` disuntik ke setiap config. Itu masuk akal
+   * ketika keduanya satu-satunya yang ada, dan berhenti masuk akal begitu
+   * daftar ini jadi tempat user mendaftarkan super agent apa pun — menyuntik
+   * dua nama berarti dua di antaranya istimewa tanpa alasan.
+   */
   const box = sandbox()
   try {
     writeGlobal(box.configHome, {
       externalAgent: { claude: { command: "claude-custom", timeout: 1000 } },
     })
     const { config } = loadConfig(box.project)
+
     assert.equal(config.externalAgent["claude"]?.command, "claude-custom")
     assert.equal(config.externalAgent["claude"]?.timeout, 1000)
-    assert.equal(config.externalAgent["opencode"]?.command, "opencode")
-    assert.equal(config.externalAgent["opencode"]?.timeout, 600_000, "default 10 menit (Q24)")
+    assert.equal(config.externalAgent["opencode"], undefined, "yang tidak ditulis tidak ada")
+    assert.deepEqual(Object.keys(config.externalAgent), ["claude"])
+  } finally {
+    box.cleanup()
+  }
+})
+
+test("config tanpa externalAgent menghasilkan registry kosong, bukan dua bawaan", () => {
+  const box = sandbox()
+  try {
+    writeGlobal(box.configHome, {})
+    assert.deepEqual(loadConfig(box.project).config.externalAgent, {})
   } finally {
     box.cleanup()
   }

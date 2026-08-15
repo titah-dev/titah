@@ -107,6 +107,11 @@
             "type": "string",
             "description": "Executable to invoke, e.g. \"claude\""
           },
+          "specialist": {
+            "description": "What this agent is best at, e.g. \"deep architectural reasoning, cross-module refactors\". Used by /tim to decide who gets which part.",
+            "type": "string",
+            "minLength": 1
+          },
           "args": {
             "default": [],
             "description": "Arguments for the FIRST call. `{prompt}` and `{session}` are substituted.",
@@ -185,6 +190,24 @@
           "delegate": {
             "description": "Run this agent by spawning an external CLI from `externalAgent` instead of Titah's own loop. Mutually exclusive with `model`. Titah's `permission` block is NOT enforced on the external CLI, which applies its own policy — so a delegating agent always counts as a writer and is serialised with the other writers.",
             "type": "string"
+          },
+          "escalate": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "string",
+                "description": "id di `externalAgent` yang boleh dimintai bantuan"
+              },
+              "when": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Kriteria, dalam kalimat. Mis. \"perubahan lintas modul, atau butuh memahami arsitektur dulu\""
+              }
+            },
+            "required": [
+              "to",
+              "when"
+            ]
           },
           "prompt": {
             "description": "Appended to the system prompt",

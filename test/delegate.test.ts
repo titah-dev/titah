@@ -7,7 +7,7 @@ import { claudeParser, opencodeParser, textParser, finalize } from "../src/core/
 import { createSubprocessAdapter } from "../src/core/delegate/subprocess.ts"
 import { listAgents, parseMention } from "../src/core/delegate/index.ts"
 import { DelegationError } from "../src/core/delegate/types.ts"
-import { Config, DEFAULT_EXTERNAL_AGENTS, ExternalAgent } from "../src/core/schema.ts"
+import { Config, EXAMPLE_EXTERNAL_AGENTS, ExternalAgent } from "../src/core/schema.ts"
 
 const STUB = path.join(import.meta.dirname, "fixtures", "stub-agent.js")
 const cwd = fs.realpathSync(os.tmpdir())
@@ -243,11 +243,18 @@ test("agent yang tidak terpasang tetap terdaftar, tidak disembunyikan", () => {
   )
 })
 
-test("default registry berisi claude dan opencode dengan argumen yang terverifikasi", () => {
-  // Default disuntikkan oleh loadConfig, bukan oleh skema — jadi diuji dari
-  // sumbernya langsung.
-  const claude = ExternalAgent.parse(DEFAULT_EXTERNAL_AGENTS["claude"])
-  const opencode = ExternalAgent.parse(DEFAULT_EXTERNAL_AGENTS["opencode"])
+test("contoh claude dan opencode memakai argumen yang terverifikasi", () => {
+  /*
+   * Keduanya TIDAK lagi disuntik ke config siapa pun — mereka contoh siap
+   * salin. Tetap diuji karena argumen di dalamnya diverifikasi langsung
+   * terhadap biner, bukan disalin dari dokumentasi, dan `titah doctor`
+   * menawarkannya apa adanya.
+   */
+  const claude = ExternalAgent.parse(EXAMPLE_EXTERNAL_AGENTS["claude"])
+  const opencode = ExternalAgent.parse(EXAMPLE_EXTERNAL_AGENTS["opencode"])
+
+  assert.ok(claude.specialist.length > 0, "contoh harus memuat specialist yang wajib itu")
+  assert.ok(opencode.specialist.length > 0)
 
   assert.ok(claude.args.includes("--verbose"), "Claude menolak stream-json tanpa --verbose")
   assert.ok(claude.resumeArgs.includes("--resume"), "resume bukan --session-id lagi")

@@ -15,6 +15,7 @@ import {
   planImport,
 } from "./core/portable.ts"
 import { loadPlugins } from "./core/plugin.ts"
+import { EXAMPLE_EXTERNAL_AGENTS } from "./core/schema.ts"
 import {
   authorizationUrl,
   createPkce,
@@ -912,10 +913,36 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   }
 
   // Q24: agent yang tidak terpasang tetap ditampilkan, tidak disembunyikan.
-  out("External agents")
-  for (const [id, agent] of Object.entries(loaded.config.externalAgent)) {
-    const found = which(agent.command)
-    out(`  ${id.padEnd(18)} ${found ?? `unavailable (${agent.command} not in PATH)`}`)
+  out("Super agents")
+  {
+    const registered = Object.entries(loaded.config.externalAgent)
+    for (const [id, agent] of registered) {
+      const found = which(agent.command)
+      const where = found ?? `unavailable (${agent.command} not in PATH)`
+      // Spesialis disebut karena ia yang menentukan apakah agent ini ikut /tim.
+      const spec = agent.specialist ? `  · ${agent.specialist}` : "  · no specialist — /tim skips it"
+      out(`  ${id.padEnd(18)} ${where}${spec}`)
+    }
+
+    /*
+     * Blok siap-salin untuk CLI yang BENAR-BENAR ada di mesin ini.
+     *
+     * Titah tidak lagi menyuntik `claude` dan `opencode` ke config siapa pun —
+     * daftar itu murni milik user sekarang. Tapi menemukan CLI-nya terpasang
+     * lalu diam saja berarti membiarkan orang menulis argumen yang sudah
+     * diverifikasi di sini, dari ingatan.
+     */
+    const suggestions = Object.entries(EXAMPLE_EXTERNAL_AGENTS).filter(
+      ([id, preset]) => loaded.config.externalAgent[id] === undefined && which(preset.command as string),
+    )
+    if (registered.length === 0 && suggestions.length === 0) {
+      out("  (none registered — /tim needs at least one)")
+    }
+    for (const [id, preset] of suggestions) {
+      out("")
+      out(`  ${id} is installed but not registered. Add this to titah.json:`)
+      out(`    "externalAgent": { ${JSON.stringify(id)}: ${JSON.stringify(preset)} }`)
+    }
   }
   out()
 

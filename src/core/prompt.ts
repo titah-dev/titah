@@ -186,6 +186,31 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
   const roster = rosterSection(config)
   if (roster) sections.push(roster)
 
+  /*
+   * Kriteria eskalasi, apa adanya dari config.
+   *
+   * TIDAK diurai Titah. Satu-satunya yang bisa menilai "butuh pemahaman
+   * arsitektur dulu" adalah yang sedang mengerjakan pekerjaannya, dan setiap
+   * usaha menerjemahkan kalimat itu jadi aturan akan salah pada kasus yang
+   * justru paling ingin ditangkap user.
+   */
+  if (agent?.escalate) {
+    const target = config.externalAgent[agent.escalate.to]
+    sections.push(
+      [
+        `--- Escalating to "${agent.escalate.to}" ---`,
+        `You may hand work to "${agent.escalate.to}" with the \`task\` tool when:`,
+        `  ${agent.escalate.when}`,
+        target?.specialist ? `It is best at: ${target.specialist}` : "",
+        "",
+        "It is a separate agent CLI with its own model and its own tools. Give it a",
+        "self-contained brief — it cannot see this conversation. Do the rest yourself.",
+      ]
+        .filter((line) => line !== "")
+        .join("\n"),
+    )
+  }
+
   // `always` berlaku untuk semua agent; `agent.skills` menambahkan yang khusus
   // agent ini. Keduanya dimuat UTUH — sisanya cukup dikatalogkan, karena memuat
   // semuanya menghabiskan context window sebelum kerja dimulai.

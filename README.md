@@ -187,6 +187,7 @@ dashboard.
 | `titah export [-o file]` | Portable config bundle, credentials left out and listed |
 | `titah import <file> [-y]` | Preview what a bundle changes; `-y` applies it |
 | `titah plugin list` | Load the configured plugins and report what each provides |
+| `/tim <task>` | Fan out to the **super agents** in `externalAgent`, split by `specialist` |
 | `titah auth list` \| `set <p>` \| `remove <p>` | Manage credentials in `auth.json` (0600) |
 | `titah models` | List configured models |
 | `titah doctor [--probe]` | Check environment, config, external agents |

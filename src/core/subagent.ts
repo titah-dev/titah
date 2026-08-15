@@ -79,6 +79,27 @@ export function dispatchableAgents(config: Config): string[] {
     .map(([id]) => id)
 }
 
+/**
+ * Super agent yang siap ikut `/tim`: terdaftar, hidup, dan punya spesialis.
+ *
+ * Yang tanpa `specialist` DILEWATI, bukan dimasukkan dengan nama saja. `/tim`
+ * membagi tugas berdasarkan spesialis; memasukkan yang tidak punya berarti
+ * membaginya berdasarkan nama, dan nama tidak memberi tahu apa pun tentang
+ * siapa yang paling cocok mengerjakan apa.
+ */
+export function teamAgents(config: Config): string[] {
+  return Object.entries(config.externalAgent)
+    .filter(([, agent]) => agent.enabled !== false && (agent.specialist ?? "") !== "")
+    .map(([id]) => id)
+}
+
+/** Super agent yang terdaftar tapi tidak bisa ikut `/tim`, beserta sebabnya. */
+export function teamSkipped(config: Config): { id: string; why: string }[] {
+  return Object.entries(config.externalAgent)
+    .filter(([, agent]) => agent.enabled !== false && (agent.specialist ?? "") === "")
+    .map(([id]) => ({ id, why: "no `specialist` — /tim cannot tell what to give it" }))
+}
+
 export interface RunSubagentOptions {
   parentSessionID: string
   agentID: string
@@ -109,7 +130,22 @@ export interface SubagentResult {
  * kemajuan anak yang hanya disiarkan ke sesinya sendiri tidak akan pernah terlihat.
  */
 export async function runSubagent(options: RunSubagentOptions): Promise<SubagentResult> {
-  const definition = options.config.agent[options.agentID]
+  /*
+   * Super agent memakai jalur yang SAMA dengan agent internal ber-`delegate`.
+   *
+   * Definisi sintetis, bukan mesin kedua: yang membedakan keduanya hanya dari
+   * mana nama CLI-nya datang — dari `agent.<id>.delegate` atau dari id
+   * `externalAgent` itu sendiri. Sisanya identik, dan menyalin sesi anak,
+   * penerbitan event panel, serta penanganan pembatalan ke tempat kedua berarti
+   * dua tempat yang bisa diam-diam melenceng.
+   */
+  const external = options.config.externalAgent[options.agentID]
+  const definition =
+    options.config.agent[options.agentID] ??
+    (external && external.enabled !== false
+      ? ({ mode: "subagent", delegate: options.agentID, tools: {}, skills: [] } as unknown as Agent)
+      : undefined)
+
   if (!definition || definition.mode === "primary") {
     return {
       answer: `Agent "${options.agentID}" is not dispatchable. Available: ${dispatchableAgents(options.config).join(", ") || "(none)"}.`,
