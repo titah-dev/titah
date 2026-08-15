@@ -93,11 +93,19 @@ test("/tim adalah giliran biasa dengan roster di system prompt", async () => {
   const restore = setModelResolver(() => captureSystem((s) => (systemSeen = s)))
   try {
     await prompt({ sessionID: session.id, text: "/tim perbaiki bug auth" })
-    // Header roster DAN id agent-nya, bukan cuma kata yang kebetulan sama
-    // dengan BASE_PROMPT — lihat komentar di fixture `roster-scout` di atas.
-    assert.match(systemSeen, /Sub-agents you can dispatch with `task`:/, "header roster ada")
+    /*
+     * Rosternya sekarang datang dari `rosterSection`, yang dipasang di SETIAP
+     * giliran — bukan lagi dirakit khusus di cabang `/tim`. Yang tersisa milik
+     * `/tim` hanyalah instruksi membagi pekerjaan.
+     */
+    assert.match(systemSeen, /Sub-agents you may dispatch with `task`/, "header roster ada")
     assert.match(systemSeen, /roster-scout/, "roster menyebut agent yang dikonfigurasi")
     assert.match(systemSeen, /split the work/i)
+    assert.equal(
+      systemSeen.split("roster-scout").length - 1,
+      1,
+      "rosternya tidak dobel — /tim tidak boleh mengulang apa yang sudah dipasang",
+    )
   } finally {
     restore()
   }
@@ -115,4 +123,38 @@ test("/tim tanpa argumen ditolak dengan pesan usage, bukan diteruskan kosong", a
   const message = await prompt({ sessionID: session.id, text: "/tim" })
   const text = message.parts.map((part) => (part.type === "text" ? part.text : "")).join("")
   assert.match(text, /usage.*\/tim/i)
+})
+
+test("roster muncul di giliran BIASA, bukan hanya /tim", async () => {
+  /*
+   * Ini yang membuat delegasi benar-benar bisa dipakai. Sebelumnya tool `task`
+   * ditawarkan tanpa satu pun nama yang sah — model harus menebak, dan tebakan
+   * yang salah baru ketahuan setelah panggilan gagal. Deskripsi yang ditulis
+   * user di config tidak pernah sampai ke tempat yang bisa memakainya.
+   */
+  const session = createSession(withRoster)
+  let systemSeen = ""
+  const restore = setModelResolver(() => captureSystem((s) => (systemSeen = s)))
+  try {
+    await prompt({ sessionID: session.id, text: "perbaiki sesuatu" })
+    assert.match(systemSeen, /Sub-agents you may dispatch with `task`/)
+    assert.match(systemSeen, /roster-scout/)
+    assert.doesNotMatch(systemSeen, /split the work/i, "instruksi /tim tidak ikut di giliran biasa")
+  } finally {
+    restore()
+  }
+})
+
+test("tanpa sub-agent, tidak ada bagian roster sama sekali", async () => {
+  // Bukan judul dengan daftar kosong di bawahnya: bagian yang isinya tidak ada
+  // hanya mengajari model bahwa bagian itu boleh diabaikan.
+  const session = createSession(withoutRoster)
+  let systemSeen = ""
+  const restore = setModelResolver(() => captureSystem((s) => (systemSeen = s)))
+  try {
+    await prompt({ sessionID: session.id, text: "halo" })
+    assert.doesNotMatch(systemSeen, /Sub-agents you may dispatch/)
+  } finally {
+    restore()
+  }
 })

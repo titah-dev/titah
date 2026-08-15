@@ -217,6 +217,64 @@ export interface EffectivePermission {
   source?: string
 }
 
+/** Urutan ketat→longgar. Dipakai `narrower` untuk memilih yang lebih menahan. */
+const STRICTNESS = { deny: 2, ask: 1, allow: 0 } as const
+
+function stricter(a: Policy, b: Policy): Policy {
+  return STRICTNESS[a] >= STRICTNESS[b] ? a : b
+}
+
+/**
+ * Batas atas izin untuk sub-agent: yang paling ketat dari induk dan anak.
+ *
+ * # Kenapa ini ada
+ *
+ * Tanpa ini, `plan` — yang `edit` dan `write`-nya `deny` — bisa memanggil
+ * `task("senior-developer")` dan agent itu menulis berkas dengan bebas. Batas
+ * Plan mode bocor lewat delegasi, dan bocornya lewat jalan yang justru
+ * disediakan Titah sendiri.
+ *
+ * Aturannya satu kalimat: **induk tidak pernah bisa memberi lebih dari yang ia
+ * punya.** Ia berlaku dua arah — anak yang lebih ketat juga tidak dilonggarkan
+ * induk, karena `deny` milik anak adalah pernyataan tentang dirinya sendiri.
+ *
+ * # Yang TIDAK diiriskan, dan kenapa
+ *
+ * `rules` dan `allowlist` DIGABUNG, bukan diambil yang lebih sedikit. Keduanya
+ * bekerja di lapisan yang berbeda: sumbu memutuskan kelas tindakan, aturan
+ * memutuskan argumen. Sebuah aturan `deny` dari induk tetap berlaku karena ia
+ * ikut terbawa; sebuah aturan `allow` dari anak tidak bisa membuka apa pun yang
+ * sumbunya sudah `deny`, karena `decide()` memeriksa sumbu lebih dulu.
+ */
+export function narrower(parent: EffectivePermission, child: EffectivePermission): EffectivePermission {
+  return {
+    edit: stricter(parent.edit, child.edit),
+    write: stricter(parent.write, child.write),
+    bash: stricter(parent.bash, child.bash),
+    network: stricter(parent.network, child.network),
+    delete: stricter(parent.delete, child.delete),
+    mcp: stricter(parent.mcp, child.mcp),
+    external_directory: stricter(parent.external_directory, child.external_directory),
+    doom_loop: stricter(parent.doom_loop, child.doom_loop),
+    rules: [...parent.rules, ...child.rules],
+    allowlist: [...parent.allowlist, ...child.allowlist],
+    ...(child.source ? { source: child.source } : parent.source ? { source: parent.source } : {}),
+  }
+}
+
+/**
+ * Apakah pemilik izin ini boleh menjalankan CLI eksternal atas namanya?
+ *
+ * Blok izin Titah TIDAK PERNAH sampai ke CLI eksternal — mesin itu punya
+ * kebijakannya sendiri dan menyunting berkas tanpa bertanya ke sini (lihat
+ * `isReader` di subagent.ts). Jadi induk yang tidak boleh menulis juga tidak
+ * boleh mendelegasikan ke sana: menolaknya lebih jujur daripada berpura-pura
+ * membatasi sesuatu yang memang tidak bisa dibatasi dari sini.
+ */
+export function maySpawnExternal(permission: EffectivePermission): boolean {
+  return permission.edit !== "deny" || permission.write !== "deny"
+}
+
 /**
  * Izin global ditimpa izin milik agent yang sedang aktif (Q21).
  *

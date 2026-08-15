@@ -32,6 +32,18 @@ export interface ToolContext {
    * layar sanggup digambar ulang.
    */
   progress?(chunk: string): void
+  /**
+   * Izin efektif giliran yang menjalankan tool ini.
+   *
+   * Hanya `task` yang memakainya, dan hanya untuk satu hal: mewariskannya
+   * sebagai BATAS ATAS ke sub-agent. Tanpa itu, agent read-only bisa
+   * mendelegasikan pekerjaan tulis yang ia sendiri tidak boleh lakukan.
+   *
+   * Tipe sengaja `unknown`: `tool/types.ts` tidak boleh mengimpor
+   * `permission.ts`, yang mengimpor `decide.ts`, yang pada gilirannya kembali
+   * ke tipe tool. `task` yang menyempitkannya kembali, di satu tempat.
+   */
+  permission?: unknown
 }
 
 export interface ToolResult {

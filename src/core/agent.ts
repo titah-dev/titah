@@ -52,6 +52,7 @@ import {
   ask,
   clearTurn,
   effectivePermission,
+  narrower,
   setAutoApprove,
   type EffectivePermission,
 } from "./permission.ts"
@@ -97,13 +98,37 @@ const NO_ROSTER_MESSAGE =
   'block in titah.json — for example `"agent": { "explore": { "mode": "subagent" } }` — ' +
   "then run /tim again."
 
-/** Roster + TEAM_PROMPT, dirakit sekali di sini supaya /tim sendiri tetap tanpa mesin. */
-function buildTeamPrompt(config: Config, roster: string[]): string {
-  const lines = roster.map((id) => {
-    const description = config.agent[id]?.description
-    return description ? `  ${id} — ${description}` : `  ${id}`
+/**
+ * TEAM_PROMPT saja — rosternya TIDAK diulang di sini.
+ *
+ * Sejak roster masuk ke system prompt setiap giliran (`rosterSection` di
+ * prompt.ts), mencantumkannya lagi berarti model membaca daftar yang sama dua
+ * kali dalam satu permintaan. Yang ditambahkan `/tim` hanyalah instruksi untuk
+ * MEMBAGI pekerjaan, yang memang tidak berlaku di giliran biasa.
+ */
+function buildTeamPrompt(): string {
+  return TEAM_PROMPT
+}
+
+/**
+ * Sesi yang sudah diberi tahu bahwa modelnya sempat berputar.
+ *
+ * Sekali per sesi, pola yang sama dengan peringatan auto-compaction di bawah:
+ * kabar yang terulang setiap langkah berhenti dibaca justru ketika ia mulai
+ * berarti.
+ */
+const loopNoticed = new Set<string>()
+
+function noteLoop(sessionID: string, tool: string, streamSessionID: string): void {
+  if (loopNoticed.has(sessionID)) return
+  loopNoticed.add(sessionID)
+  bus.publish({
+    type: "session.notice",
+    sessionID: streamSessionID,
+    message:
+      `The model repeated the same "${tool}" call. This mode does not stop for that ` +
+      "(doom_loop is allowed), so it will keep going — press Esc if it is stuck.",
   })
-  return [TEAM_PROMPT, "", "Sub-agents you can dispatch with `task`:", ...lines].join("\n")
 }
 
 export class AgentError extends Error {}
@@ -206,6 +231,14 @@ export interface PromptInput {
   agent?: string
   /** Menyetujui otomatis izin yang tidak ditolak eksplisit oleh config. */
   auto?: boolean
+  /**
+   * Batas atas izin, diwariskan dari giliran yang mendelegasikan ini.
+   *
+   * Diisi HANYA oleh `runSubagent`. Izin efektif giliran ini menjadi yang
+   * paling ketat antara ini dan izin agent-nya sendiri — induk tidak pernah
+   * bisa memberi lebih dari yang ia punya. Lihat `narrower`.
+   */
+  permissionCeiling?: EffectivePermission
 }
 
 export async function prompt(input: PromptInput): Promise<Message> {
@@ -288,7 +321,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         return infoTurn(session, input.text, "Usage: /tim <task>", true)
       }
       text = command.args
-      teamPrompt = buildTeamPrompt(config, roster)
+      teamPrompt = buildTeamPrompt()
     } else if (isBuiltin(command.name)) {
       return builtinTurn(
         session,
@@ -602,7 +635,13 @@ export async function prompt(input: PromptInput): Promise<Message> {
         config,
         signal: controller.signal,
         upsert: upsertTool,
-        permission: effectivePermission(config, agentID, agentDef),
+        permission: (() => {
+          const own = effectivePermission(config, agentID, agentDef)
+          // Tanpa induk, izin agent ini apa adanya. Dengan induk, yang paling
+          // ketat dari keduanya — inilah yang menahan `plan` mendelegasikan
+          // pekerjaan tulis yang ia sendiri tidak boleh lakukan.
+          return input.permissionCeiling ? narrower(input.permissionCeiling, own) : own
+        })(),
         isChild,
         allowlistSessionID,
         streamSessionID,
@@ -1571,6 +1610,8 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           signal,
           config: options.config,
           progress: (chunk: string) => progress.push(chunk),
+          // Diwariskan `task` sebagai batas atas sub-agent. Lihat `narrower`.
+          permission: options.permission,
           ...(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow }),
         }
         upsert(callID, definition.name, { status: "running", input: original, started })
@@ -1613,6 +1654,19 @@ function buildTools(options: BuildToolsOptions): ToolSet {
             // Dicatat SEBELUM tool jalan: kalau dicatat sesudah, panggilan yang
             // memicu deteksi adalah yang sudah terlanjur dijalankan.
             const looping = noteCall(sessionID, definition.name, input)
+
+            /*
+             * Loop yang TIDAK menyela tetap harus terdengar.
+             *
+             * `doom_loop: "allow"` — yang dipakai build-auto — membuat deteksi
+             * ini lewat tanpa dialog, dan itu memang yang diminta. Tapi diam
+             * sepenuhnya berarti model yang berputar membakar token sampai
+             * seseorang kebetulan memperhatikan. Satu kabar, sekali per sesi:
+             * cukup untuk tahu, tidak cukup untuk mengganggu.
+             */
+            if (looping && options.permission.doom_loop === "allow") {
+              noteLoop(sessionID, definition.name, options.streamSessionID)
+            }
             const verdict = await ask({
               sessionID,
               permission: options.permission,

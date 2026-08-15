@@ -627,9 +627,21 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "Since nobody is checking each step, the responsibility is yours: read before " +
       "changing, run the tests after changing, and report failures exactly as they are. " +
       "Never claim success without verifying it.",
-    // Termasuk `delete` dan `network`, dan itu memang arti "no confirmations".
-    // Tidak ada risiko baru yang ditambahkan keduanya di sini: mode ini sudah
-    // punya `bash: allow`, yang bisa menghapus dan mengunduh apa pun.
+    /*
+     * SEMUA sumbu, bukan enam dari delapan.
+     *
+     * `delete` dan `network` tidak menambah risiko baru: mode ini sudah punya
+     * `bash: allow`, yang bisa menghapus dan mengunduh apa pun.
+     *
+     * `external_directory` dan `doom_loop` dulu tidak disebut, jadi keduanya
+     * jatuh ke global — `deny` dan `ask` — dan mode yang menjanjikan "tanpa
+     * konfirmasi" tetap bisa berhenti di tengah jalan. Janji yang hanya berlaku
+     * enam dari delapan kali adalah janji yang tidak bisa diandalkan.
+     *
+     * `doom_loop: "allow"` TIDAK berarti loop dibiarkan tanpa kabar: `agent.ts`
+     * menerbitkan satu notice per sesi saat mendeteksinya. Yang hilang adalah
+     * dialognya, bukan pemberitahuannya.
+     */
     permission: {
       edit: "allow",
       write: "allow",
@@ -637,6 +649,8 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       network: "allow",
       delete: "allow",
       mcp: "allow",
+      external_directory: "allow",
+      doom_loop: "allow",
     },
   },
 }

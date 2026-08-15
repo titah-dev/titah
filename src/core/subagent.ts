@@ -4,6 +4,7 @@ import { adapterFor } from "./delegate/index.ts"
 import { bus } from "./event.ts"
 import type { SubagentState } from "./event.ts"
 import { textOf } from "./message.ts"
+import { maySpawnExternal, type EffectivePermission } from "./permission.ts"
 import type { Agent, Config } from "./schema.ts"
 import { createChildSession } from "./storage/session.ts"
 
@@ -85,6 +86,13 @@ export interface RunSubagentOptions {
   cwd: string
   config: Config
   signal: AbortSignal
+  /**
+   * Izin efektif induk. Sub-agent tidak pernah mendapat lebih dari ini.
+   *
+   * Opsional supaya pemanggil lama tetap sah, tapi `task` SELALU mengisinya —
+   * dan tanpa isian itu batas induk tidak berlaku sama sekali.
+   */
+  parentPermission?: EffectivePermission
 }
 
 export interface SubagentResult {
@@ -180,6 +188,30 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
       // "tidak pernah melempar" untuk kedua mesin, bukan dua tempat yang bisa
       // diam-diam melenceng satu sama lain.
       if (definition.delegate !== undefined) {
+        /*
+         * Induk yang tidak boleh menulis tidak boleh menjalankan CLI eksternal
+         * atas namanya.
+         *
+         * Blok izin Titah tidak pernah sampai ke sana — CLI itu punya
+         * kebijakannya sendiri dan menyunting berkas tanpa bertanya. Jadi
+         * membiarkannya jalan berarti `plan` bisa mengubah repo lewat pintu
+         * yang tidak punya kunci sama sekali. Menolaknya lebih jujur daripada
+         * berpura-pura membatasi.
+         */
+        if (options.parentPermission && !maySpawnExternal(options.parentPermission)) {
+          const note = `blocked: "${options.agentID}" runs an external CLI`
+          publish("failed", note)
+          return {
+            answer:
+              `Refused: "${options.agentID}" runs through the external CLI ` +
+              `"${definition.delegate}", and the agent dispatching it may not write files. ` +
+              "Titah's permission block never reaches an external CLI, so it cannot be " +
+              "held to that limit — it is refused instead of pretending.",
+            childSessionID: child.id,
+            status: "failed",
+          }
+        }
+
         const adapter = adapterFor(options.config, definition.delegate)
         if (!adapter) {
           const note = `unknown external agent "${definition.delegate}"`
@@ -225,6 +257,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         sessionID: child.id,
         text: options.instruction,
         agent: options.agentID,
+        ...(options.parentPermission ? { permissionCeiling: options.parentPermission } : {}),
       })
 
       if (cancelled()) {
