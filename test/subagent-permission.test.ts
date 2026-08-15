@@ -296,7 +296,23 @@ test(
         false,
         "grant 'write' turun-temurun sub-agent seharusnya sudah hilang setelah giliran induk berakhir",
       )
-      assert.equal(setelahGiliranBerakhir.status, "done", "giliran anak tetap selesai normal, cuma tool-nya ditolak")
+      /*
+       * `failed`, bukan `done` — dan itu perubahan yang disengaja.
+       *
+       * Gilirannya memang selesai tanpa error, dan komentar lama di sini
+       * menyebutnya "selesai normal, cuma tool-nya ditolak". Tapi sub-agent
+       * yang SETIAP tool call-nya ditolak tidak mengerjakan apa pun, dan glyph
+       * sukses di atasnya membuat koordinator membangun langkah berikutnya di
+       * atas pekerjaan yang tidak pernah terjadi.
+       *
+       * Yang diuji test ini tetap sama: `anak2.txt` tidak dibuat. Statusnya
+       * kebetulan ikut, dan sekarang ikut dengan nilai yang benar.
+       */
+      assert.equal(
+        setelahGiliranBerakhir.status,
+        "failed",
+        "semua tool-nya ditolak, jadi ia tidak mengerjakan apa pun",
+      )
 
       // Giliran 4 — INDUK sendiri mengedit lagi. Harus lolos TANPA dialog:
       // grant permanennya (dari giliran 1) tidak boleh ikut terhapus oleh

@@ -169,3 +169,73 @@ test("agent ber-delegate ditolak dari induk read-only", async () => {
   assert.match(output, /Refused/i)
   assert.match(output, /external CLI/i, "alasannya menyebut kenapa ia tidak bisa dibatasi")
 })
+
+test("sub-agent yang SETIAP tool-nya ditolak dilaporkan gagal, bukan done", async () => {
+  /*
+   * Gilirannya memang selesai tanpa error — ia menerima penolakan, lalu
+   * menjawab. Tapi bagi koordinator, `✓` di atas sub-agent yang tidak
+   * mengerjakan apa pun adalah kabar yang salah: ia melihat keberhasilan, dan
+   * langkah berikutnya dibangun di atas pekerjaan yang tidak pernah terjadi.
+   */
+  configWith()
+  mock([
+    call("task", { agent: "penulis", instruction: "buat y.ts" }),
+    call("write", { path: "y.ts", content: "y\n" }),
+    text("sudah saya kerjakan"),
+  ])
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "buat", agent: "plan" })
+
+  const state = toolStates(session.id).find((entry) => "output" in entry) as
+    | { title?: string; outcome?: string; output?: string }
+    | undefined
+
+  assert.equal(state?.outcome, "failed", "glyph sukses akan berbohong di sini")
+  assert.match(state?.title ?? "", /\(failed\)/)
+  assert.match(state?.output ?? "", /REFUSED/, "koordinator diberi tahu, bukan dibiarkan menebak")
+  assert.match(state?.output ?? "", /sudah saya kerjakan/, "kata-kata anaknya tetap ikut")
+})
+
+test("sub-agent yang TIDAK memakai tool sama sekali tetap done", async () => {
+  /*
+   * Buktinya adalah percobaan yang ditolak, bukan ketiadaan percobaan. Giliran
+   * tanpa tool call bisa saja jawaban yang benar dari konteks yang diberikan —
+   * menandainya gagal akan salah lebih sering daripada benar.
+   */
+  configWith()
+  mock([
+    call("task", { agent: "penulis", instruction: "jawab saja" }),
+    text("jawabannya empat"),
+  ])
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "tanya", agent: "plan" })
+
+  const state = toolStates(session.id).find((entry) => "output" in entry) as
+    | { outcome?: string; output?: string }
+    | undefined
+
+  assert.equal(state?.outcome, undefined, "tanpa percobaan, tidak ada bukti kegagalan")
+  assert.match(state?.output ?? "", /jawabannya empat/)
+})
+
+test("sub-agent yang SEBAGIAN tool-nya lolos tetap done", async () => {
+  // Satu penolakan di antara pekerjaan yang berhasil bukan kegagalan; menandainya
+  // begitu membuat penanda ini berhenti berarti apa-apa.
+  configWith()
+  mock([
+    call("task", { agent: "penulis", instruction: "baca lalu tulis" }),
+    call("read", { path: "kode.ts" }, "c2"),
+    call("write", { path: "z.ts", content: "z\n" }, "c3"),
+    text("sebagian selesai"),
+  ])
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "plan" })
+
+  const state = toolStates(session.id).find((entry) => "output" in entry) as
+    | { outcome?: string }
+    | undefined
+  assert.equal(state?.outcome, undefined, "ada yang berhasil, jadi bukan sepenuhnya ditolak")
+})

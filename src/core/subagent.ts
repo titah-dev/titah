@@ -6,7 +6,7 @@ import type { SubagentState } from "./event.ts"
 import { textOf } from "./message.ts"
 import { maySpawnExternal, type EffectivePermission } from "./permission.ts"
 import type { Agent, Config } from "./schema.ts"
-import { createChildSession } from "./storage/session.ts"
+import { createChildSession, listMessages } from "./storage/session.ts"
 
 /**
  * Penjadwalan sub-agent.
@@ -114,6 +114,22 @@ export interface RunSubagentOptions {
    * dan tanpa isian itu batas induk tidak berlaku sama sekali.
    */
   parentPermission?: EffectivePermission
+}
+
+/**
+ * Apakah sub-agent ini mencoba memakai tool dan SEMUANYA ditolak?
+ *
+ * `false` kalau ia tidak mencoba apa pun: giliran tanpa tool call bisa saja
+ * jawaban yang benar dari konteks yang sudah diberikan, dan menandainya gagal
+ * akan salah lebih sering daripada benar.
+ */
+function allToolsRefused(childSessionID: string): boolean {
+  const states = listMessages(childSessionID)
+    .flatMap((message) => message.parts)
+    .filter((part) => part.type === "tool")
+    .map((part) => (part as { state: { status: string } }).state.status)
+
+  return states.length > 0 && states.every((status) => status === "denied")
 }
 
 export interface SubagentResult {
@@ -308,6 +324,33 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
       if (message.error !== undefined) {
         publish("failed", message.error)
         return { answer: `FAILED: ${message.error}`, childSessionID: child.id, status: "failed" }
+      }
+
+      /*
+       * Sub-agent yang SETIAP tool call-nya ditolak tidak "done".
+       *
+       * Gilirannya memang selesai tanpa error — ia menerima penolakan, lalu
+       * menjawab. Tapi bagi koordinator, glyph `✓` di atas sub-agent yang tidak
+       * mengerjakan apa pun adalah kabar yang salah: ia melihat keberhasilan,
+       * dan langkah berikutnya dibangun di atas pekerjaan yang tidak pernah
+       * terjadi.
+       *
+       * Yang menjadi buktinya adalah PERCOBAAN, bukan ketiadaan percobaan.
+       * Sub-agent yang tidak memanggil tool sama sekali bisa saja sudah
+       * menjawab dengan benar dari konteks yang diberikan — menandainya gagal
+       * akan salah lebih sering daripada benar.
+       */
+      const blocked = allToolsRefused(child.id)
+      if (blocked) {
+        publish("failed", "every tool call was refused")
+        return {
+          answer:
+            `REFUSED: "${options.agentID}" was not allowed to do any of it. ` +
+            `Every tool it tried was denied — most likely because the agent dispatching it ` +
+            `has narrower permission. Its own words follow.\n\n${textOf(message).trim()}`,
+          childSessionID: child.id,
+          status: "failed",
+        }
       }
 
       publish("done", "done")
