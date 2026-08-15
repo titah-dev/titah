@@ -58,6 +58,9 @@ export const taskTool: TitahTool<typeof inputSchema> = {
        * read-only bisa mendelegasikan pekerjaan tulis.
        */
       ...(ctx.permission ? { parentPermission: ctx.permission as EffectivePermission } : {}),
+      // Model induk: diwarisi anak yang tidak punya sendiri, dan jadi cadangan
+      // kalau model milik anak ternyata tidak bisa dipakai.
+      ...(ctx.model ? { parentModel: ctx.model } : {}),
     })
 
     return {

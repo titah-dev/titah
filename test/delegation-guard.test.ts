@@ -239,3 +239,43 @@ test("sub-agent yang SEBAGIAN tool-nya lolos tetap done", async () => {
     | undefined
   assert.equal(state?.outcome, undefined, "ada yang berhasil, jadi bukan sepenuhnya ditolak")
 })
+
+test("model yang DIUKUR sama dengan model yang DIPANGGIL", async () => {
+  /*
+   * Bug yang ditemukan saat menguji pewarisan model, dan kelasnya sudah dikenal
+   * di repo ini: "yang diukur bukan yang dikirim".
+   *
+   * `prompt()` dulu menghitung model giliran DUA KALI dari ekspresi berbeda —
+   * satu untuk model yang benar-benar dipanggil, satu untuk jendela konteks dan
+   * pemilihan peringkas. Keduanya sepakat selama tidak ada jalur ketiga yang
+   * memberi model, lalu berhenti sepakat begitu sub-agent mewarisi model induk:
+   * ia MENGUKUR dengan model warisan itu, lalu MEMANGGIL `config.model`.
+   *
+   * Diuji dari luar: `config.model` sengaja dibuat tidak bisa diresolusi, jadi
+   * sub-agent hanya bisa selesai kalau warisan induknya benar-benar terpakai.
+   */
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      model: "tidakada/model-palsu",
+      skills: { discover: [], paths: [] },
+      agent: { polos: { mode: "all", description: "Menjawab singkat" } },
+    }),
+  )
+
+  mock([call("task", { agent: "polos", instruction: "sebut satu warna" }), text("selesai")])
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "delegasikan", agent: "build-auto", auto: true })
+
+  const hasil = toolStates(session.id).find((state) => "output" in state) as
+    | { outcome?: string; output?: string }
+    | undefined
+
+  assert.equal(hasil?.outcome, undefined, `sub-agent gagal: ${hasil?.output?.slice(0, 140)}`)
+  assert.equal(
+    (hasil?.output ?? "").includes("tidakada"),
+    false,
+    "config.model yang rusak tidak boleh pernah dipanggil",
+  )
+})

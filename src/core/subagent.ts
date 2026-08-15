@@ -5,6 +5,7 @@ import { bus } from "./event.ts"
 import type { SubagentState } from "./event.ts"
 import { textOf } from "./message.ts"
 import { maySpawnExternal, type EffectivePermission } from "./permission.ts"
+import { resolveModel } from "./provider.ts"
 import type { Agent, Config } from "./schema.ts"
 import { createChildSession, listMessages } from "./storage/session.ts"
 
@@ -114,6 +115,14 @@ export interface RunSubagentOptions {
    * dan tanpa isian itu batas induk tidak berlaku sama sekali.
    */
   parentPermission?: EffectivePermission
+  /**
+   * Model yang menjalankan induk.
+   *
+   * Dua kegunaan, dan keduanya penting: diwarisi sub-agent yang tidak menyebut
+   * modelnya sendiri, dan jadi cadangan kalau model milik sub-agent itu
+   * ternyata tidak bisa dipakai. Lihat `childModel`.
+   */
+  parentModel?: string
 }
 
 /**
@@ -130,6 +139,59 @@ function allToolsRefused(childSessionID: string): boolean {
     .map((part) => (part as { state: { status: string } }).state.status)
 
   return states.length > 0 && states.every((status) => status === "denied")
+}
+
+/**
+ * Model untuk sub-agent, beserta kabar kalau ia bukan yang diminta.
+ *
+ * Urutannya, dan alasan tiap langkahnya:
+ *
+ *   1. `agent.<id>.model` — yang user tulis untuk agent ini menang. Seorang
+ *      agent yang memang butuh model tertentu tidak boleh kehilangan itu hanya
+ *      karena dipanggil dari giliran yang memakai model lain.
+ *   2. Kalau model itu TIDAK BISA DIRESOLUSI — provider tidak dikenal,
+ *      kredensial hilang — pakai model induk. Ini yang dulu tidak ada: agent
+ *      dengan model yang salah tulis akan gagal seluruhnya, padahal induknya
+ *      punya model yang jelas bekerja.
+ *   3. Tanpa model sendiri, warisi model induk. Sebelumnya ia jatuh ke
+ *      `config.model`, jadi `-m` pada induk hanya memindahkan induknya dan
+ *      delegasi diam-diam berjalan di model lain.
+ *   4. Tanpa induk (mis. dipanggil langsung dari test), `undefined` — dan
+ *      `resolveModel` yang memilih `config.model`, seperti sebelumnya.
+ *
+ * # Yang SENGAJA tidak dilakukan
+ *
+ * Jatuh-balik hanya untuk kegagalan RESOLUSI, yang terjadi sebelum satu
+ * permintaan pun dikirim. Kegagalan saat berjalan — endpoint mati di tengah,
+ * 500, timeout — TIDAK memicu penggantian model: pada titik itu sub-agent bisa
+ * saja sudah menulis berkas, dan mengulanginya di model lain berarti
+ * mengerjakan efek yang sama dua kali. Yang seperti itu dilaporkan apa adanya.
+ */
+export function childModel(
+  config: Config,
+  agentID: string,
+  parentModel: string | undefined,
+): { model: string | undefined; fellBack?: string } {
+  const own = config.agent[agentID]?.model
+  if (own === undefined) return { model: parentModel }
+
+  try {
+    resolveModel(config, own)
+    return { model: own }
+  } catch (error) {
+    if (parentModel === undefined) {
+      // Tidak ada cadangan. Biarkan ia gagal dengan pesan aslinya, yang menyebut
+      // provider mana yang tidak dikenal — jauh lebih berguna daripada
+      // "modelnya tidak bisa dipakai".
+      return { model: own }
+    }
+    return {
+      model: parentModel,
+      fellBack: `"${own}" cannot be used (${
+        error instanceof Error ? error.message.split("\n")[0] : String(error)
+      }) — falling back to "${parentModel}"`,
+    }
+  }
 }
 
 export interface SubagentResult {
@@ -305,10 +367,26 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         }
       }
 
+      const chosen = childModel(options.config, options.agentID, options.parentModel)
+      if (chosen.fellBack) {
+        // Diberitahukan, tidak diam-diam: model yang berbeda dari yang ditulis
+        // user di config adalah hal yang harus ia tahu, terutama ketika
+        // hasilnya nanti terasa berbeda dari biasanya.
+        bus.publish({
+          type: "session.notice",
+          sessionID: options.parentSessionID,
+          message: `Sub-agent "${options.agentID}": ${chosen.fellBack}`,
+        })
+      }
+
       const message = await prompt({
         sessionID: child.id,
         text: options.instruction,
         agent: options.agentID,
+        // `resolvedModel`, bukan `model`: `turnModelFor` membuat `agent.model`
+        // menang atas `model` biasa, dan jatuh-balik justru dipakai ketika
+        // `agent.model` itulah yang rusak.
+        ...(chosen.model ? { resolvedModel: chosen.model } : {}),
         ...(options.parentPermission ? { permissionCeiling: options.parentPermission } : {}),
       })
 

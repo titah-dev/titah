@@ -52,6 +52,14 @@ export interface ToolContext {
    * tidak dimiliki tool.
    */
   supersAllowed?: string[]
+  /**
+   * Model yang menjalankan giliran ini.
+   *
+   * Dipakai `task` untuk mewariskannya ke sub-agent yang tidak menyebut
+   * modelnya sendiri, dan sebagai cadangan kalau model milik sub-agent itu
+   * ternyata tidak bisa dipakai.
+   */
+  model?: string
 }
 
 export interface ToolResult {

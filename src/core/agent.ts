@@ -265,6 +265,18 @@ export interface PromptInput {
    * bisa memberi lebih dari yang ia punya. Lihat `narrower`.
    */
   permissionCeiling?: EffectivePermission
+  /**
+   * Model yang SUDAH diputuskan pemanggil, melewati `turnModelFor`.
+   *
+   * Dibutuhkan karena `turnModelFor` membuat `agent.<id>.model` menang atas
+   * `model` biasa — dan itu memang benar untuk `-m` yang diketik user. Tapi
+   * `runSubagent` memakai jalur ini justru ketika `agent.model` TIDAK BISA
+   * dipakai: kalau ia tetap menang, jatuh-balik ke model induk tidak akan
+   * pernah berlaku dan sub-agent gagal dengan model yang sudah diketahui rusak.
+   *
+   * Hanya `runSubagent` yang mengisinya.
+   */
+  resolvedModel?: string
 }
 
 export async function prompt(input: PromptInput): Promise<Message> {
@@ -372,7 +384,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         command.name,
         command.args,
         input,
-        turnModelFor(config, agentID, modelOverride),
+        input.resolvedModel ?? turnModelFor(config, agentID, modelOverride),
       )
     } else {
       const CLI_HINT: Record<string, string> = {
@@ -412,7 +424,22 @@ export async function prompt(input: PromptInput): Promise<Message> {
     return infoTurn(session, input.text, `Agent "${agentID}" is not defined in the config.`, true)
   }
 
-  const model = resolver(config, agentDef?.model ?? modelOverride)
+  /*
+   * SATU perhitungan model untuk giliran ini, dipakai keduanya.
+   *
+   * Sebelumnya ada dua yang berjalan sendiri-sendiri: `resolver(config,
+   * agentDef?.model ?? modelOverride)` di sini untuk model yang benar-benar
+   * dipanggil, dan `turnModelFor(...)` di bawah untuk jendela konteks serta
+   * pemilihan peringkas. Keduanya kebetulan sepakat selama tidak ada yang
+   * memberi model dari jalur ketiga — dan berhenti sepakat begitu
+   * `resolvedModel` ada: sub-agent memakai model warisan induk untuk mengukur,
+   * lalu memanggil `config.model` untuk mengerjakan.
+   *
+   * Kelas kesalahan yang sama dengan "yang diukur bukan yang dikirim", dan
+   * obatnya sama: satu definisi, dua pemakai.
+   */
+  const turnModel = input.resolvedModel ?? turnModelFor(config, agentID, modelOverride)
+  const model = resolver(config, turnModel)
   const built = buildSystemPrompt(config, session.directory, agentID)
   const system = teamPrompt ? `${built.system}\n\n${teamPrompt}` : built.system
 
@@ -462,7 +489,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // gagal atau dibatalkan tidak pernah sempat mengukur apa pun, dan memakainya
   // akan mematikan pemadatan otomatis sampai ada giliran yang sukses.
   const lastMeasured = lastContextTokens(session.id)
-  const modelID = turnModelFor(config, agentID, modelOverride)
+  const modelID = turnModel
   const contextWindow = contextWindowFor(config, modelID)
   if (contextWindow === undefined) warnUndeclaredWindow(session, config, modelID)
   // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
@@ -672,6 +699,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       tools: buildTools({
         mcpTools: mcp.tools,
         ...(agentDef?.escalate ? { escalateTo: agentDef.escalate.to } : {}),
+        ...(modelID ? { model: modelID } : {}),
         plugins: loaded.plugins,
         contextWindow,
         sessionID: session.id,
@@ -1537,6 +1565,14 @@ interface BuildToolsOptions {
   plugins?: LoadedPlugin[]
   /** Super agent yang boleh diminta giliran ini — lihat `Agent.escalate`. */
   escalateTo?: string
+  /**
+   * Model yang menjalankan giliran ini, sudah diresolusi.
+   *
+   * Diwariskan `task` ke sub-agent yang tidak menyebut modelnya sendiri.
+   * Tanpa ini, anak jatuh ke `config.model` — jadi `-m` pada induk hanya
+   * memindahkan induknya, dan delegasi diam-diam berjalan di model lain.
+   */
+  model?: string
 }
 
 /**
@@ -1671,6 +1707,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
           progress: (chunk: string) => progress.push(chunk),
           // Diwariskan `task` sebagai batas atas sub-agent. Lihat `narrower`.
           permission: options.permission,
+          ...(options.model ? { model: options.model } : {}),
           /*
            * Siapa yang boleh dimintai bantuan, dihitung DI SINI karena hanya di
            * sini semua faktanya ada: apakah giliran ini anak, dan apakah
