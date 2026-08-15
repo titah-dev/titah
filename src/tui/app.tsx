@@ -222,9 +222,29 @@ export function App({
   const [tick, setTick] = useState(0)
   const [startedAt, setStartedAt] = useState(0)
 
-  // Daftar agent selalu diawali entri kosong = tanpa agent, supaya Tab bisa
-  // kembali ke perilaku default tanpa harus tahu nama agent mana pun.
-  const agentRing = useRef<(string | undefined)[]>([undefined, ...(agents ?? [])]).current
+  /*
+   * Putaran agent, TANPA entri kosong di depannya.
+   *
+   * Dulu ia diawali `undefined` sebagai "tanpa agent", supaya Tab bisa kembali
+   * ke perilaku default tanpa harus tahu nama agent mana pun. Entri itu tidak
+   * pernah benar-benar berarti apa yang tertulis: `client.send` menghilangkan
+   * field `agent` saat nilainya kosong, dan server mengisinya sendiri dengan
+   * `config.defaultAgent` — yang selalu terisi `build`. Jadi "tanpa agent"
+   * menjalankan `build`, lengkap dengan prompt dan izinnya.
+   *
+   * Yang tersisa hanyalah akibatnya di layar: header menyembunyikan nama mode
+   * saat entri itu dipilih, jadi user menjalankan `build` sambil melihat layar
+   * yang tidak menyebut mode apa pun. Persis yang ingin dicegah `defaultAgent`
+   * saat ia diisi otomatis.
+   *
+   * `[undefined]` dipertahankan HANYA sebagai jaring pengaman untuk daftar yang
+   * kosong: Tab pada array kosong menghasilkan `undefined` dan mode hilang
+   * tanpa sebab. Pada praktiknya `DEFAULT_AGENTS` selalu menyuntik
+   * plan/build/build-auto, jadi cabang itu tidak pernah ditempuh.
+   */
+  const agentRing = useRef<(string | undefined)[]>(
+    agents && agents.length > 0 ? [...agents] : [undefined],
+  ).current
   const [agentIndex, setAgentIndex] = useState(() => {
     const start = agentRing.indexOf(defaultAgent)
     return start === -1 ? 0 : start

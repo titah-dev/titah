@@ -556,17 +556,24 @@ test("teks tempelan yang berakhir dengan CR tidak menyelundupkan kontrol ke prom
   }
 })
 
-test("Tab berputar di antara agent, dimulai dari tanpa agent", async () => {
+test("Tab berputar di antara agent, dan TIDAK pernah singgah di keadaan tanpa nama", async () => {
+  /*
+   * Dulu putarannya diawali entri kosong "tanpa agent". Entri itu tidak pernah
+   * berarti apa yang tertulis — `client.send` menghilangkan field `agent` yang
+   * kosong, dan server mengisinya dengan `config.defaultAgent`, yang selalu
+   * `build`. Yang benar-benar terjadi hanyalah header berhenti menyebut mode,
+   * jadi user menjalankan `build` sambil melihat layar yang diam soal itu.
+   */
   const h = mount({ agents: ["explore", "qc"] })
   try {
     await tick()
 
-    // Tanpa menekan Tab: tidak ada agent yang dikirim.
+    // Tanpa menekan Tab: agent PERTAMA, bukan keadaan kosong.
     h.stdin.press("a")
     await tick(1)
     h.stdin.press("\r")
     await tick()
-    assert.equal(h.recorded.sent[0]?.agent, undefined)
+    assert.equal(h.recorded.sent[0]?.agent, "explore")
 
     h.stdin.press("\t")
     await tick()
@@ -574,24 +581,38 @@ test("Tab berputar di antara agent, dimulai dari tanpa agent", async () => {
     await tick(1)
     h.stdin.press("\r")
     await tick()
-    assert.equal(h.recorded.sent[1]?.agent, "explore")
+    assert.equal(h.recorded.sent[1]?.agent, "qc")
 
+    // Putaran kembali ke yang PERTAMA, bukan ke keadaan kosong.
     h.stdin.press("\t")
     await tick()
     h.stdin.press("c")
     await tick(1)
     h.stdin.press("\r")
     await tick()
-    assert.equal(h.recorded.sent[2]?.agent, "qc")
+    assert.equal(h.recorded.sent[2]?.agent, "explore", "berputar ke agent pertama")
 
-    // Putaran kembali ke tanpa agent.
-    h.stdin.press("\t")
+    assert.equal(
+      h.recorded.sent.some((message) => message.agent === undefined),
+      false,
+      "tidak satu pun giliran dikirim tanpa nama agent",
+    )
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("header tidak pernah kehilangan nama mode saat Tab diputar penuh", async () => {
+  // Inti perbaikannya. Satu posisi yang menyembunyikan nama mode sudah cukup
+  // untuk membuat user tidak tahu ia sedang di mode apa.
+  const h = mount({ agents: ["explore", "qc"] })
+  try {
     await tick()
-    h.stdin.press("d")
-    await tick(1)
-    h.stdin.press("\r")
-    await tick()
-    assert.equal(h.recorded.sent[3]?.agent, undefined, "Tab harus berputar kembali")
+    for (const nama of ["explore", "qc", "explore"]) {
+      assert.match(h.frame(), new RegExp(`${nama} · uji/model`), `hilang di ${nama}`)
+      h.stdin.press("\t")
+      await tick()
+    }
   } finally {
     h.cleanup()
   }
@@ -612,6 +633,8 @@ test("defaultAgent dipakai sejak awal tanpa menekan Tab", async () => {
 })
 
 test("Tab tidak melakukan apa-apa kalau tidak ada agent di config", async () => {
+  // Jaring pengaman: daftar kosong tidak boleh menghasilkan putaran kosong,
+  // yang membuat Tab menghasilkan `undefined` dan mode hilang tanpa sebab.
   const h = mount()
   try {
     await tick()

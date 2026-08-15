@@ -149,8 +149,18 @@ export function loadConfig(cwd: string = process.cwd()): LoadedConfig {
     if (config.agent[id] === undefined) config.agent[id] = Agent.parse(preset)
   }
 
-  // Tanpa ini, sesi dimulai "tanpa agent" — perilakunya identik dengan `build`
-  // tapi namanya tidak muncul di mana pun, dan user tidak tahu ia sedang di mode apa.
+  /*
+   * Isian ini yang membuat setiap giliran punya NAMA mode.
+   *
+   * `prompt()` menyelesaikan agent dengan `input.agent ?? config.defaultAgent`,
+   * jadi tanpa isian ini permintaan yang tidak menyebut agent akan berjalan
+   * benar-benar tanpa preset: tanpa prompt `build`, dan dengan `permission`
+   * global apa adanya alih-alih yang dipaksa `build`. Bukan sekadar tanpa nama
+   * — perilakunya memang berbeda.
+   *
+   * (Komentar sebelumnya di sini menyebut keduanya "identik". Itu benar dulu,
+   * dan berhenti benar begitu `build` diberi prompt sendiri.)
+   */
   if (config.defaultAgent === undefined && config.agent["build"] !== undefined) {
     config.defaultAgent = "build"
   }
