@@ -2,6 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
+import { dispatchableAgents } from "./subagent.ts"
 import { buildSkillIndex, skillById, skillCatalog, type Skill } from "./skill.ts"
 
 /**
@@ -119,6 +120,32 @@ export interface BuiltPrompt {
   sources: string[]
 }
 
+/**
+ * Bagian roster, atau `undefined` kalau tidak ada yang bisa dipanggil.
+ *
+ * Dipisah jadi fungsi supaya `/tim` bisa memakai perakit yang sama untuk
+ * daftarnya sendiri — dua perakit untuk satu bentuk berarti yang kedua akan
+ * tertinggal saat yang pertama diperbaiki.
+ */
+export function rosterSection(config: Config): string | undefined {
+  const ids = dispatchableAgents(config)
+  if (ids.length === 0) return undefined
+
+  const lines = ids.map((id) => {
+    const description = config.agent[id]?.description
+    return description ? `  ${id} — ${description}` : `  ${id}`
+  })
+
+  return [
+    "--- Sub-agents you may dispatch with `task` ---",
+    ...lines,
+    "",
+    "Hand work to one of them when it matches their description better than doing it",
+    "yourself. Several calls in one step run at the same time; the ones allowed to write",
+    "files are serialised for you. A sub-agent never gets more permission than you have.",
+  ].join("\n")
+}
+
 export function buildSystemPrompt(config: Config, cwd: string, agentID?: string): BuiltPrompt {
   const files = discover(cwd)
 
@@ -142,6 +169,22 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
   if (agent?.prompt) {
     sections.push(`--- Instructions for agent "${agentID}" ---\n${agent.prompt.trim()}`)
   }
+
+  /*
+   * Daftar sub-agent yang boleh dipanggil, SETIAP giliran.
+   *
+   * Sebelumnya daftar ini hanya dirakit di cabang `/tim`. Akibatnya tool `task`
+   * ditawarkan ke model tanpa satu pun nama yang sah: ia harus menebak, dan
+   * tebakan yang salah baru ketahuan setelah panggilan gagal. Deskripsi yang
+   * susah payah ditulis user di config tidak pernah sampai ke tempat yang bisa
+   * memakainya.
+   *
+   * Roster KOSONG berarti tidak ada bagian sama sekali — bukan judul dengan
+   * daftar kosong di bawahnya, yang hanya mengajari model bahwa bagian ini
+   * boleh diabaikan.
+   */
+  const roster = rosterSection(config)
+  if (roster) sections.push(roster)
 
   // `always` berlaku untuk semua agent; `agent.skills` menambahkan yang khusus
   // agent ini. Keduanya dimuat UTUH — sisanya cukup dikatalogkan, karena memuat

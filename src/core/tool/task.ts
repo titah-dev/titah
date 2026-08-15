@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { dispatchableAgents, runSubagent } from "../subagent.ts"
+import type { EffectivePermission } from "../permission.ts"
 import type { TitahTool } from "./types.ts"
 
 const inputSchema = z.object({
@@ -34,6 +35,15 @@ export const taskTool: TitahTool<typeof inputSchema> = {
       cwd: ctx.cwd,
       config: ctx.config,
       signal: ctx.signal,
+      /*
+       * Batas atas, bukan sekadar informasi.
+       *
+       * `ToolContext.permission` bertipe `unknown` supaya `tool/types.ts` tidak
+       * perlu mengimpor mesin izin; di sinilah ia disempitkan kembali. Tanpa
+       * baris ini, sub-agent berjalan dengan izinnya sendiri dan agent
+       * read-only bisa mendelegasikan pekerjaan tulis.
+       */
+      ...(ctx.permission ? { parentPermission: ctx.permission as EffectivePermission } : {}),
     })
 
     return {
