@@ -44,6 +44,14 @@ export interface ToolContext {
    * ke tipe tool. `task` yang menyempitkannya kembali, di satu tempat.
    */
   permission?: unknown
+  /**
+   * Super agent yang boleh dipanggil giliran ini lewat `task`.
+   *
+   * Dihitung di `buildTools`, bukan di tool: yang menentukan adalah apakah
+   * giliran ini anak dan apakah agent-nya punya `escalate` — dua fakta yang
+   * tidak dimiliki tool.
+   */
+  supersAllowed?: string[]
 }
 
 export interface ToolResult {

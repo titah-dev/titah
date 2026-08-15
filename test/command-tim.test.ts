@@ -29,6 +29,17 @@ before(() => {
   fs.writeFileSync(
     path.join(withRoster, "titah.json"),
     JSON.stringify({
+      // `/tim` sekarang membagi tugas ke SUPER AGENT (CLI lain), bukan ke agent
+      // internal Titah. Agent internal tetap ada di sini karena roster mereka
+      // harus tetap muncul di system prompt setiap giliran — itu jalur lain,
+      // dan test di bawah memisahkan keduanya.
+      externalAgent: {
+        "super-scout": {
+          command: process.execPath,
+          specialist: "menelusuri repo besar sampai tuntas",
+        },
+        "super-bisu": { command: process.execPath },
+      },
       agent: {
         // BUKAN "explore": kata itu sudah muncul di BASE_PROMPT ("tools to
         // explore it" — src/core/prompt.ts) tanpa /tim melakukan apa pun.
@@ -98,14 +109,17 @@ test("/tim adalah giliran biasa dengan roster di system prompt", async () => {
      * giliran — bukan lagi dirakit khusus di cabang `/tim`. Yang tersisa milik
      * `/tim` hanyalah instruksi membagi pekerjaan.
      */
-    assert.match(systemSeen, /Sub-agents you may dispatch with `task`/, "header roster ada")
-    assert.match(systemSeen, /roster-scout/, "roster menyebut agent yang dikonfigurasi")
-    assert.match(systemSeen, /split the work/i)
+    assert.match(systemSeen, /Super agents you can dispatch with `task`:/, "roster super agent")
+    assert.match(systemSeen, /super-scout — menelusuri repo besar/, "spesialisnya ikut")
+    assert.match(systemSeen, /Split the work/i)
+    // Agent internal TETAP terdaftar — /tim menambah, bukan menggantikan.
+    assert.match(systemSeen, /roster-scout/, "roster agent internal tetap ada")
     assert.equal(
       systemSeen.split("roster-scout").length - 1,
       1,
-      "rosternya tidak dobel — /tim tidak boleh mengulang apa yang sudah dipasang",
+      "roster agent internal tidak dobel",
     )
+    assert.match(systemSeen, /Not available this turn: super-bisu/, "yang dilewati disebutkan")
   } finally {
     restore()
   }
@@ -115,7 +129,8 @@ test("/tim tanpa sub-agent apa pun menjelaskan cara mendaftarkannya", async () =
   const session = createSession(withoutRoster)
   const message = await prompt({ sessionID: session.id, text: "/tim kerjakan sesuatu" })
   const text = message.parts.map((part) => (part.type === "text" ? part.text : "")).join("")
-  assert.match(text, /mode.*subagent/i)
+  assert.match(text, /externalAgent/)
+  assert.match(text, /specialist/)
 })
 
 test("/tim tanpa argumen ditolak dengan pesan usage, bukan diteruskan kosong", async () => {

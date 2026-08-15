@@ -74,6 +74,33 @@ export const Provider = z.object({
  */
 export const ExternalAgent = z.object({
   command: z.string().describe("Executable to invoke, e.g. \"claude\""),
+  /**
+   * Apa yang paling baik dikerjakan super agent ini.
+   *
+   * OPSIONAL di skema, tapi WAJIB untuk ikut `/tim` — dan pembedaan itu
+   * disengaja.
+   *
+   * `externalAgent` melayani tiga hal: `@claude` yang diketik user,
+   * `agent.delegate`, dan pembagian tugas `/tim`. Hanya yang ketiga yang
+   * membutuhkan spesialis. Mewajibkannya di skema berarti menagih kalimat ini
+   * dari orang yang hanya ingin mengetik `@claude` sesekali, untuk fitur yang
+   * mungkin tidak pernah ia pakai.
+   *
+   * Yang dijaga tetap utuh: `/tim` TIDAK PERNAH membagi tugas berdasarkan nama
+   * belaka. Super agent tanpa spesialis dilewati, dan `/tim` menyebutkan siapa
+   * yang ia lewati — kegagalannya terlihat, bukan diam-diam.
+   *
+   * Ditulis untuk dibaca MODEL, bukan manusia: kalimat yang menyebut kekuatan
+   * dan batasnya, bukan label satu kata.
+   */
+  specialist: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'What this agent is best at, e.g. "deep architectural reasoning, cross-module refactors". ' +
+        "Used by /tim to decide who gets which part.",
+    ),
   args: z
     .array(z.string())
     .default([])
@@ -129,6 +156,27 @@ export const Agent = z
           "enforced on the external CLI, which applies its own policy — so a delegating " +
           "agent always counts as a writer and is serialised with the other writers.",
       ),
+    /**
+     * Boleh meminta bantuan super agent, dan kapan.
+     *
+     * Berbeda dari `delegate`, dan bedanya menentukan: `delegate` mengganti
+     * SELURUH mesin agent ini dengan CLI eksternal, sedangkan `escalate`
+     * membiarkannya berjalan di loop Titah — dengan tool dan izin Titah — dan
+     * hanya menyerahkan sebagian pekerjaan saat kriterianya terpenuhi.
+     *
+     * `when` ditulis USER dan dinilai MODEL. Titah tidak mengurainya; ia
+     * ditempelkan apa adanya ke prompt agent ini, karena satu-satunya yang bisa
+     * menilai "butuh pemahaman arsitektur" adalah yang sedang mengerjakannya.
+     */
+    escalate: z
+      .object({
+        to: z.string().describe("id di `externalAgent` yang boleh dimintai bantuan"),
+        when: z
+          .string()
+          .min(1)
+          .describe('Kriteria, dalam kalimat. Mis. "perubahan lintas modul, atau butuh memahami arsitektur dulu"'),
+      })
+      .optional(),
     prompt: z.string().optional().describe("Appended to the system prompt"),
     model: z.string().optional().describe("Model override, in \"provider/model\" form"),
     steps: z
@@ -177,6 +225,16 @@ export const Agent = z
       ctx.addIssue({
         code: "custom",
         message: "An agent cannot set both `delegate` and `model` — it has one engine, not two.",
+      })
+    }
+    // Agent yang SELURUHNYA dijalankan CLI eksternal tidak punya sisa untuk
+    // dieskalasi: tidak ada loop Titah di dalamnya yang bisa memutuskan kapan.
+    if (agent.delegate !== undefined && agent.escalate !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "An agent cannot set both `delegate` and `escalate` — `delegate` already hands " +
+          "every turn to an external CLI, so there is nothing left to escalate.",
       })
     }
   })
@@ -666,9 +724,21 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
  * - opencode tidak menerima id sesi buatan kita; id-nya dibaca dari output
  *   panggilan pertama, lalu dikirim balik lewat `--session`.
  */
-export const DEFAULT_EXTERNAL_AGENTS: Record<string, z.input<typeof ExternalAgent>> = {
+/**
+ * Contoh siap-salin, BUKAN lagi bawaan.
+ *
+ * Sejak `externalAgent` jadi tempat user mendaftarkan super agent apa pun,
+ * menyuntik dua nama secara otomatis berarti dua di antaranya istimewa tanpa
+ * alasan — dan `specialist` yang wajib tidak bisa ditebak Titah untuk mereka.
+ *
+ * Tetap disimpan karena argumen CLI di sini DIVERIFIKASI langsung terhadap
+ * biner, bukan disalin dari dokumentasi. Dipakai `titah doctor` untuk
+ * menawarkan blok siap-salin, dan didokumentasikan di docs/super-agents.md.
+ */
+export const EXAMPLE_EXTERNAL_AGENTS: Record<string, z.input<typeof ExternalAgent>> = {
   claude: {
     command: "claude",
+    specialist: "deep architectural reasoning, cross-module refactors, hard debugging",
     args: [
       "-p",
       "{prompt}",
@@ -684,6 +754,7 @@ export const DEFAULT_EXTERNAL_AGENTS: Record<string, z.input<typeof ExternalAgen
   },
   opencode: {
     command: "opencode",
+    specialist: "broad codebase exploration, plugin and tooling work",
     args: ["run", "{prompt}", "--format", "json"],
     resumeArgs: ["run", "{prompt}", "--format", "json", "--session", "{session}"],
     sessionMode: "discover",

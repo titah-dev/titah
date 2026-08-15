@@ -20,11 +20,25 @@ export const taskTool: TitahTool<typeof inputSchema> = {
   // ia jalankan meminta izinnya masing-masing, dengan namanya sendiri.
 
   async execute(input, ctx) {
-    const available = dispatchableAgents(ctx.config)
-    if (!available.includes(input.agent)) {
+    /*
+     * Dua kelompok, satu tool.
+     *
+     * Agent internal Titah dan super agent (CLI lain) dipanggil dengan cara
+     * yang sama karena dari sudut pandang model memang tidak berbeda: keduanya
+     * "serahkan pekerjaan ini ke sana". Tool terpisah untuk masing-masing akan
+     * memaksa model memilih tool yang benar sebelum ia memilih agent yang
+     * benar — satu keputusan lagi yang bisa salah, tanpa imbalan.
+     */
+    const internal = dispatchableAgents(ctx.config)
+    // Sudah disaring `buildTools` sesuai siapa pemanggilnya. Kosong berarti
+    // giliran ini memang tidak boleh memanggil super agent mana pun.
+    const supers = ctx.supersAllowed ?? []
+
+    if (!internal.includes(input.agent) && !supers.includes(input.agent)) {
+      const known = [...internal, ...supers].join(", ") || "(none)"
       return {
         title: `task ${input.agent} (unknown)`,
-        output: `No dispatchable agent named "${input.agent}". Available: ${available.join(", ") || "(none)"}.`,
+        output: `No agent named "${input.agent}" can be dispatched. Available: ${known}.`,
       }
     }
 
