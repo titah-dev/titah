@@ -197,3 +197,50 @@ test("penalaran kosong tidak membuat part", async () => {
     false,
   )
 })
+
+// ---------- premis "(no agent)" ----------
+
+test("giliran TANPA agent memakai defaultAgent, bukan berjalan tanpa preset", async () => {
+  /*
+   * Ini premis di balik dibuangnya entri "(no agent)" dari putaran Tab.
+   *
+   * `prompt()` menyelesaikan agent dengan `input.agent ?? config.defaultAgent`,
+   * dan loader mengisi `defaultAgent` dengan "build" setiap kali user tidak
+   * menyebutkannya. Jadi tidak menyebut agent BUKAN berarti tanpa preset — ia
+   * berarti `build`, lengkap dengan prompt-nya.
+   *
+   * Diperiksa dari yang benar-benar dikirim ke model, bukan dari nilai
+   * `agentID` di dalam: yang menentukan perilaku adalah system prompt yang
+   * sampai ke sana.
+   */
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      agent: { build: { prompt: "PENANDA-BUILD" } },
+    }),
+  )
+
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "t" },
+          { type: "text-delta", id: "t", delta: "ok" },
+          { type: "text-end", id: "t" },
+          { type: "finish", finishReason: "stop", usage: USAGE },
+        ] as LanguageModelV4StreamPart[],
+      }),
+    }),
+  })
+  restore?.()
+  restore = setModelResolver(() => model)
+
+  const session = createSession(project)
+  // Sengaja TANPA `agent` — persis yang dikirim TUI saat "(no agent)" dipilih.
+  await prompt({ sessionID: session.id, text: "halo" })
+
+  const system = JSON.stringify(model.doStreamCalls[0]?.prompt ?? "")
+  assert.match(system, /PENANDA-BUILD/, "prompt build ikut, jadi ini memang build")
+})

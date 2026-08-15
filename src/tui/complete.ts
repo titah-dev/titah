@@ -210,7 +210,10 @@ export function agentPickerItems(
   return agentIds.map((id) => ({
     kind: "pick-agent" as const,
     value: id ?? "",
-    label: id ?? "(no agent)",
+    // `(default)` hanya untuk jaring pengaman "tidak ada agent sama sekali".
+    // Label lamanya, `(no agent)`, menjanjikan mode yang tidak pernah ada:
+    // giliran tanpa agent tetap dijalankan `config.defaultAgent`.
+    label: id ?? "(default)",
     ...(id && config.agent[id]?.description ? { detail: config.agent[id].description } : {}),
   }))
 }

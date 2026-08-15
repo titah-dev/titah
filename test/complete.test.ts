@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import {
+  agentPickerItems,
   applySuggestion,
   detectTrigger,
   modelSuggestions,
@@ -243,4 +244,31 @@ test("spinner berputar dan tidak pernah keluar dari bingkainya", () => {
   assert.equal(frames.size, 10, "sepuluh bingkai unik")
   assert.equal(spinnerFrame(0), spinnerFrame(10), "berulang setelah satu putaran")
   assert.ok([...frames].every((frame) => frame.length === 1))
+})
+
+test("pemilih agent tidak lagi menawarkan \"(no agent)\"", () => {
+  /*
+   * Label itu menjanjikan mode yang tidak pernah ada: giliran tanpa agent tetap
+   * dijalankan `config.defaultAgent`. `(default)` hanya tersisa untuk jaring
+   * pengaman "tidak ada agent sama sekali", yang tidak pernah ditempuh karena
+   * DEFAULT_AGENTS selalu menyuntik plan/build/build-auto.
+   */
+  const config = Config.parse({ agent: { build: { description: "Build Manual" } } })
+  const items = agentPickerItems(config, ["build", "plan"])
+
+  assert.equal(
+    items.some((item) => item.label.includes("no agent")),
+    false,
+  )
+  assert.deepEqual(
+    items.map((item) => item.label),
+    ["build", "plan"],
+  )
+  assert.equal(items[0]?.detail, "Build Manual", "deskripsi agent ikut terbawa")
+})
+
+test("jaring pengaman: entri kosong diberi label yang jujur", () => {
+  const items = agentPickerItems(Config.parse({}), [undefined])
+  assert.equal(items[0]?.label, "(default)")
+  assert.equal(items[0]?.value, "")
 })
