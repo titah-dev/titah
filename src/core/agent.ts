@@ -52,6 +52,7 @@ import {
   ask,
   clearTurn,
   effectivePermission,
+  inheritedPermission,
   narrower,
   setAutoApprove,
   type EffectivePermission,
@@ -708,11 +709,19 @@ export async function prompt(input: PromptInput): Promise<Message> {
         signal: controller.signal,
         upsert: upsertTool,
         permission: (() => {
-          const own = effectivePermission(config, agentID, agentDef)
-          // Tanpa induk, izin agent ini apa adanya. Dengan induk, yang paling
-          // ketat dari keduanya — inilah yang menahan `plan` mendelegasikan
-          // pekerjaan tulis yang ia sendiri tidak boleh lakukan.
-          return input.permissionCeiling ? narrower(input.permissionCeiling, own) : own
+          const ceiling = input.permissionCeiling
+          // Tanpa induk, izin agent ini apa adanya di atas global.
+          if (!ceiling) return effectivePermission(config, agentID, agentDef)
+          /*
+           * Dengan induk, DUA hal terjadi berurutan dan keduanya perlu:
+           *
+           *   1. sumbu yang tidak dinyatakan anak diambil dari INDUK, bukan
+           *      dari global — kalau tidak, sub-agent di bawah `build-auto`
+           *      bertanya untuk `ls` (lihat `inheritedPermission`)
+           *   2. hasilnya dijepit `narrower`, jadi anak yang menyatakan lebih
+           *      longgar dari induknya tetap tidak bisa melampauinya
+           */
+          return narrower(ceiling, inheritedPermission(ceiling, agentID, agentDef))
         })(),
         isChild,
         allowlistSessionID,
