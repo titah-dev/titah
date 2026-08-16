@@ -60,6 +60,7 @@ import {
   editorRows,
   historyRows,
   RESERVED_ROWS,
+  turnAgent,
   viewport,
   type Expansion,
   type Line,
@@ -297,6 +298,19 @@ export function App({
   })
   const activeAgent = agentRing[agentIndex]
 
+  /*
+   * DUA nama agent di layar, dan bedanya disengaja.
+   *
+   * `activeAgent` menjawab "giliran berikutnya pakai apa" — ia berubah begitu
+   * Tab ditekan. `runningAgent` menjawab "yang sedang bekerja ini apa" — ia
+   * dibaca dari pesan yang sedang mengalir, jadi ia TIDAK ikut berubah, persis
+   * seperti izin giliran itu yang juga sudah dibekukan sejak awal.
+   *
+   * Tanpa yang kedua, menekan Tab di tengah giliran membuat seluruh layar
+   * mengaku sedang menjalankan agent yang sebenarnya belum menyentuh apa pun.
+   */
+  const runningAgent = turnAgent(state.messages)
+
   // Ukuran layar disimpan di state supaya resize terminal ikut merender ulang;
   // membaca stdout.rows saat render saja tidak memicu apa pun.
   //
@@ -371,19 +385,26 @@ export function App({
     if (state.status !== "working") return
     setStartedAt(Date.now())
     /*
-     * SATU detak per detik, bukan sebelas.
+     * EMPAT detak per detik: bukan sebelas, bukan satu.
      *
      * Di alternate screen seluruh layar adalah satu bingkai, jadi tiap detak
-     * menulis ulang semuanya — dan itulah kedipan yang dikeluhkan. Frekuensinya
-     * yang menjadikannya terlihat, bukan penulisan ulangnya sendiri: sebelas
-     * kali per detik terbaca sebagai getaran, sekali per detik terbaca sebagai
-     * detik yang berjalan.
+     * menulis ulang semuanya. Sebelas kali per detik terbaca sebagai getaran —
+     * itu keluhan yang membuat angka ini pernah dijatuhkan ke satu. Tapi satu
+     * kali per detik menukar keluhan itu dengan keluhan lain: pekerjaannya
+     * terlihat lamban, karena satu-satunya hal yang bergerak di layar bergerak
+     * selambat jarum detik.
      *
-     * Spinner-nya jadi berputar selambat itu juga, dan itu memang konsekuensinya
-     * — animasi yang halus di sini dibayar dengan layar yang bergetar, dan
-     * pertukaran itu jelas arahnya.
+     * Frekuensi bukan satu-satunya yang menentukan seberapa cepat animasi
+     * TERBACA. Yang juga menentukan: seberapa besar langkah tiap bingkai. Braille
+     * sepuluh bingkai butuh laju tinggi supaya pergeseran titiknya terbaca
+     * sebagai gerak; seperempat lingkaran empat bingkai melompat 90° tiap
+     * langkah, jadi ia terbaca brisk justru pada laju rendah — satu putaran
+     * penuh per detik di sini.
+     *
+     * Jadi laju dinaikkan seperlunya saja, dan sisa kecepatannya diambil dari
+     * bentuk bingkainya. Lihat `SPINNER` di components.tsx.
      */
-    const timer = setInterval(() => setTick((value) => value + 1), 1000)
+    const timer = setInterval(() => setTick((value) => value + 1), 250)
     return () => clearInterval(timer)
   }, [state.status])
 
@@ -1421,7 +1442,11 @@ export function App({
   ) : null
   const workingBox =
     state.status === "working" ? (
-      <Working tick={tick} elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))} />
+      <Working
+        tick={tick}
+        elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))}
+        {...(runningAgent ? { agent: runningAgent } : {})}
+      />
     ) : null
   // Didefinisikan SEKALI dan dipasang di kedua cabang render, seperti popupBox.
   // Layar pembuka punya `return` sendiri, dan sebuah overlay yang hanya dipasang
@@ -1429,7 +1454,7 @@ export function App({
   // Titah — justru saat `/login` paling mungkin diketik.
   const loginBox = loginProgress ? <LoginPanel progress={loginProgress} /> : null
 
-  const lines = allLines(state.messages, expandTools, textWidth)
+  const lines = allLines(state.messages, expandTools, textWidth, tick)
   const editorHeight = editorRows(draft, size.rows)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   // Pertanyaan memakan tinggi juga, kalau tidak riwayat digambar di atasnya.

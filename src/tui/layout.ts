@@ -21,6 +21,8 @@ export type LineKind =
   | "reasoning"
   | "error"
   | "blank"
+  /** Penanda agent di kaki jawaban. Redup, satu baris, tidak pernah berkedip. */
+  | "byline"
 
 export interface Line {
   kind: LineKind
@@ -76,7 +78,31 @@ export function wrappedHeight(text: string, columns: number): number {
  */
 const RUNNING_TAIL_LINES = 5
 
-function toolLines(part: Extract<Part, { type: "tool" }>, expansion: Expansion): Line[] {
+/**
+ * Bulatan yang berputar untuk langkah yang sedang berjalan.
+ *
+ * Bentuknya BULAT seperti glyph selesai (`✓`) dan gagal (`✗`) — sama-sama satu
+ * kolom, jadi judul di sebelahnya tidak bergeser saat langkahnya selesai.
+ * Bergeser satu kolom di tengah gulungan terbaca sebagai teks yang melompat,
+ * dan itu lebih mengganggu daripada tidak ada animasi sama sekali.
+ *
+ * Berputar, bukan berkedip. Berkedip berarti separuh waktu glyph-nya HILANG,
+ * dan baris yang kosong separuh waktu terlihat seperti langkah yang sudah
+ * dibatalkan.
+ */
+const RUNNING_FRAMES = ["◐", "◓", "◑", "◒"]
+
+export function runningFrame(tick: number): string {
+  // `tick` bisa negatif kalau pemanggil menghitungnya dari selisih waktu.
+  const index = ((tick % RUNNING_FRAMES.length) + RUNNING_FRAMES.length) % RUNNING_FRAMES.length
+  return RUNNING_FRAMES[index] as string
+}
+
+function toolLines(
+  part: Extract<Part, { type: "tool" }>,
+  expansion: Expansion,
+  tick: number,
+): Line[] {
   const state = part.state
   const base = part.callID
   const expanded = isOpen(expansion, base)
@@ -93,7 +119,7 @@ function toolLines(part: Extract<Part, { type: "tool" }>, expansion: Expansion):
     const detail = describeInput(state.input)
     const head: Line = {
       kind: "tool-run",
-      text: `  ◐ ${state.title ?? part.tool}…${!expanded && detail.length > 0 ? " ⋯" : ""}`,
+      text: `  ${runningFrame(tick)} ${state.title ?? part.tool}…${!expanded && detail.length > 0 ? " ⋯" : ""}`,
       key: `${base}:run`,
       toolID: base,
     }
@@ -316,7 +342,12 @@ function hardWrap(line: string, room: number): string[] {
   return out
 }
 
-export function messageLines(message: Message, expanded: Expansion, width = 0): Line[] {
+export function messageLines(
+  message: Message,
+  expanded: Expansion,
+  width = 0,
+  tick = 0,
+): Line[] {
   const lines: Line[] = []
 
   for (const [index, part] of message.parts.entries()) {
@@ -373,12 +404,32 @@ export function messageLines(message: Message, expanded: Expansion, width = 0): 
       )
       continue
     }
-    lines.push(...withGutter(toolLines(part, expanded)))
+    lines.push(...withGutter(toolLines(part, expanded, tick)))
   }
 
   if (message.error) {
     lines.push({ kind: "error", text: `  ⚠ ${message.error}`, key: `${message.id}:err` })
   }
+
+  /*
+   * Penanda agent di KAKI jawaban, bukan di kepalanya.
+   *
+   * Di kepala ia dibaca sekali lalu tergulir pergi; pertanyaan "ini tadi agent
+   * apa?" justru muncul setelah jawabannya selesai dibaca, dan saat itu mata
+   * ada di bawah. Di sana pula ia jadi jawaban atas kebingungan yang sudah kita
+   * temukan: footer bisa menyebut `build-auto` sementara giliran ini berjalan
+   * di `build`, dan baris ini yang tidak ikut berubah.
+   *
+   * Hanya untuk jawaban model. Prompt user tidak dikerjakan agent mana pun.
+   */
+  if (message.role === "assistant" && message.agent && lines.length > 0) {
+    lines.push({
+      kind: "byline",
+      text: `  ⌁ ${message.agent}`,
+      key: `${message.id}:by`,
+    })
+  }
+
   if (lines.length > 0) lines.push({ kind: "blank", text: "", key: `${message.id}:gap` })
 
   return lines
@@ -400,8 +451,29 @@ export function isBlank(line: Line | undefined): boolean {
   return (line.spans ?? []).every((span) => span.text.trim() === "")
 }
 
-export function allLines(messages: Message[], expanded: Expansion, width = 0): Line[] {
-  const lines = messages.flatMap((message) => messageLines(message, expanded, width))
+/**
+ * Agent yang menjalankan giliran TERAKHIR, dibaca dari pesannya sendiri.
+ *
+ * Sengaja tidak mengambil dari pilihan agent di layar. Keduanya berpisah persis
+ * saat penandanya paling dibutuhkan: user menekan Tab di tengah giliran, dan
+ * pilihan di layar langsung menyebut nama baru sementara yang bekerja — beserta
+ * izinnya, yang sudah dibekukan di awal giliran — masih yang lama.
+ */
+export function turnAgent(messages: Message[]): string | undefined {
+  for (let at = messages.length - 1; at >= 0; at -= 1) {
+    const message = messages[at]
+    if (message?.role === "assistant") return message.agent
+  }
+  return undefined
+}
+
+export function allLines(
+  messages: Message[],
+  expanded: Expansion,
+  width = 0,
+  tick = 0,
+): Line[] {
+  const lines = messages.flatMap((message) => messageLines(message, expanded, width, tick))
 
   /*
    * Baris kosong di ekor riwayat dibuang seluruhnya.

@@ -81,6 +81,20 @@ export interface Message {
   parts: Part[]
   model?: string
   /**
+   * Agent yang menjalankan giliran ini, direkam saat giliran DIMULAI.
+   *
+   * Ada di pesan, bukan dibaca dari pilihan agent di layar, karena keduanya
+   * berpisah persis pada saat yang paling membingungkan: user menekan Tab di
+   * tengah giliran, footer langsung menyebut nama baru, sementara yang sedang
+   * bekerja masih yang lama — izinnya sudah dibekukan di awal giliran dan tidak
+   * ikut berganti. Pilihan di layar menjawab "apa berikutnya"; ini menjawab
+   * "apa yang sedang berjalan", dan hanya yang kedua yang bisa dipercaya
+   * sebagai penanda.
+   *
+   * Ikut tersimpan tanpa migrasi: kolom `data` tabel `message` adalah JSON.
+   */
+  agent?: string
+  /**
    * `input` adalah total penagihan seluruh langkah; `context` adalah input
    * langkah TERAKHIR, yaitu ukuran konteks sesungguhnya. Dua besaran berbeda
    * yang tidak boleh berbagi satu field — menukarnya membuat ambang pemadatan

@@ -25,6 +25,10 @@ const COLOR: Record<LineKind, { color?: string; dim?: boolean; bold?: boolean }>
   reasoning: { dim: true },
   error: { color: "red" },
   blank: {},
+  // Redup, dan sengaja tanpa warna sendiri: ia keterangan tentang jawaban,
+  // bukan bagian dari jawaban. Warna apa pun akan membuatnya bersaing dengan
+  // isi yang justru ia terangkan.
+  byline: { dim: true },
 }
 
 function shorten(value: string, room: number): string {
@@ -471,7 +475,20 @@ export function Splash({
   )
 }
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+/*
+ * Seperempat lingkaran, bukan braille.
+ *
+ * Braille sepuluh bingkai hanya terbaca sebagai gerak pada laju tinggi — tiap
+ * bingkai menggeser satu titik, dan pada empat detak per detik pergeseran
+ * sekecil itu terbaca sebagai kedipan acak, bukan putaran. Empat bingkai yang
+ * masing-masing melompat 90° terbaca sebagai putaran penuh dalam satu detik
+ * pada laju yang sama.
+ *
+ * Bentuknya juga sama dengan bulatan langkah berjalan di `layout.ts`, jadi dua
+ * animasi yang muncul bersamaan di layar berputar dengan cara yang sama alih-
+ * alih bersaing.
+ */
+const SPINNER = ["◐", "◓", "◑", "◒"]
 
 /** Bingkai spinner, dipisah supaya bisa diuji tanpa merender apa pun. */
 export function spinnerFrame(tick: number): string {
@@ -484,10 +501,30 @@ export function spinnerFrame(tick: number): string {
  * Diletakkan di sini, bukan hanya di footer, karena mata user ada di kotak
  * ketik — indikator yang jauh dari titik perhatian sama saja dengan tidak ada.
  */
-export function Working({ tick, note, elapsed }: { tick: number; note?: string; elapsed: number }) {
+export function Working({
+  tick,
+  note,
+  elapsed,
+  agent,
+}: {
+  tick: number
+  note?: string
+  elapsed: number
+  agent?: string
+}) {
   return (
     <Box flexShrink={0}>
       <Text color="yellow">{spinnerFrame(tick)} </Text>
+      {/*
+       * Nama agent TIDAK diredupkan, sementara sisanya redup.
+       *
+       * Ini satu-satunya bagian baris yang bisa bertentangan dengan layar lain:
+       * footer menyebut agent yang akan dipakai BERIKUTNYA, baris ini menyebut
+       * yang sedang berjalan, dan keduanya berpisah persis saat user menekan
+       * Tab di tengah giliran. Yang bisa membantah bagian lain dari layar tidak
+       * boleh jadi bagian paling sulit dilihat.
+       */}
+      {agent ? <Text color="cyan">{agent} </Text> : undefined}
       <Text dimColor>
         {note ?? "working"} · {elapsed}s · esc to cancel
       </Text>
