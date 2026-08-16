@@ -180,7 +180,25 @@ test("ctrl+c BUKAN lagi app_exit — keluar lewatnya butuh dua tekanan", () => {
   assert.equal(resolve(keymap, { key: "c", ctrl: true }, false, ["app_exit"]), undefined)
   assert.equal(resolve(keymap, { key: "c", ctrl: true }, false, ["input_clear"]), "input_clear")
 
-  // ctrl+d dan <leader>q tetap keluar dalam satu tekanan.
+  // ctrl+d tetap keluar dalam satu tekanan.
   assert.equal(resolve(keymap, { key: "d", ctrl: true }, false, ["app_exit"]), "app_exit")
-  assert.equal(resolve(keymap, { key: "q" }, true, ["app_exit"]), "app_exit")
+})
+
+test("keluar punya SATU tombol, bukan empat jalan", () => {
+  /*
+   * Empat cara keluar — ctrl+c dua kali, ctrl+d, <leader>q, /exit — berarti
+   * tiga di antaranya harus diingat tanpa pernah dipakai, dan setiap satunya
+   * adalah tombol yang bisa tertekan tanpa sengaja.
+   *
+   * `<leader>q` yang paling mudah dilepas: ia satu-satunya yang menuntut dua
+   * tombol DAN tidak melindungi apa pun, karena leader-nya sendiri sudah
+   * dipakai untuk delapan aksi lain.
+   */
+  const keymap = buildKeymap()
+  assert.equal(resolve(keymap, { key: "q" }, true, ["app_exit"]), undefined)
+  assert.equal(
+    LEADER_ACTIONS.some((entry) => entry.action === "app_exit"),
+    false,
+    "menu leader tidak boleh menawarkan tombol yang sudah dilepas",
+  )
 })
