@@ -476,25 +476,96 @@ export function Splash({
 }
 
 /*
- * Braille, dan tepat SATU putaran penuh per detik.
+ * Titik yang tumbuh jadi `@`, lalu mengempis lagi.
  *
- * Sepuluh bingkai pada 100ms. Itu memang laju yang dulu dituduh membuat layar
- * bergetar, dan tuduhannya tidak sepenuhnya salah — di alternate screen tiap
- * detak menulis ulang bingkainya. Yang berubah bukan tuduhannya, melainkan
- * berapa banyak yang ikut dihitung ulang tiap detak: sejak `useMemo` di
- * `app.tsx`, riwayat TIDAK lagi ditata ulang sepuluh kali per detik. Yang
- * tersisa hanyalah satu karakter yang berganti.
+ * # Kenapa bukan braille lagi
  *
- * Braille sengaja dipertahankan meski butuh laju tinggi. Ia satu-satunya bentuk
- * yang gerakannya halus tanpa melebar melewati satu kolom, dan pada 100ms
- * pergeseran satu titik yang tadinya terbaca sebagai kedipan justru menjadi
- * kelebihannya: putarannya mengalir, bukan melompat.
+ * Braille menuntut laju tinggi supaya pergeseran satu titiknya terbaca sebagai
+ * putaran — dan pada laju itu layar bergetar. Dua putaran percobaan sudah
+ * membuktikan bahwa keduanya tidak bisa didamaikan: dilambatkan, ia terbaca
+ * sebagai kedipan acak; dicepatkan, layarnya bergetar.
+ *
+ * Bentuk ini tidak punya pertukaran itu. Ia tidak BERPUTAR, ia BERNAPAS —
+ * membesar lalu mengecil — dan napas memang lambat. Empat detak per detik sudah
+ * cukup, karena tiap bingkai berbeda jelas dari tetangganya.
+ *
+ * # Kenapa berbeda dari bulatan langkah
+ *
+ * `◐◓◑◒` di riwayat berputar; ini membesar-mengecil. Dua gerakan yang berbeda
+ * JENISNYA bisa dibedakan sekilas tanpa dibaca — dua spinner yang sama-sama
+ * berputar hanya berbeda kalau diperhatikan, dan yang perlu diperhatikan bukan
+ * lagi pembeda.
+ *
+ * Semua bingkainya satu kolom.
  */
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+const SPINNER = ["·", "o", "O", "@", "O", "o"]
 
 /** Bingkai spinner, dipisah supaya bisa diuji tanpa merender apa pun. */
 export function spinnerFrame(tick: number): string {
-  return SPINNER[tick % SPINNER.length] as string
+  return SPINNER[((tick % SPINNER.length) + SPINNER.length) % SPINNER.length] as string
+}
+
+/*
+ * Kata kerja yang berganti sesekali, bukan "working" yang sama selamanya.
+ *
+ * Gunanya bukan hiburan. Baris yang tidak pernah berubah berhenti dibaca, dan
+ * ketika ia akhirnya membawa kabar — nama agent, detik yang menumpuk — mata
+ * sudah terlatih melewatinya. Kata yang berganti membuat baris itu tetap hidup
+ * tanpa menambah satu pun informasi yang harus diproses.
+ *
+ * Bahasa Inggris, mengikuti aturan repo: seluruh teks antarmuka Inggris, hanya
+ * jawaban model yang mengikuti bahasa user.
+ */
+const WORKING_WORDS = [
+  "Pondering",
+  "Brewing",
+  "Noodling",
+  "Tinkering",
+  "Wrangling",
+  "Simmering",
+  "Untangling",
+  "Whittling",
+  "Percolating",
+  "Conjuring",
+  "Rummaging",
+  "Puzzling",
+]
+
+export function workingWord(seed: number): string {
+  const at = ((seed % WORKING_WORDS.length) + WORKING_WORDS.length) % WORKING_WORDS.length
+  return WORKING_WORDS[at] as string
+}
+
+/** Seberapa terang satu huruf: 0 redup, 1 biasa, 2 paling terang. */
+export interface Glow {
+  text: string
+  level: 0 | 1 | 2
+}
+
+/**
+ * Cahaya yang menyapu kata, bolak-balik.
+ *
+ * Segitiga, bukan gergaji: sesudah huruf terakhir ia BERBALIK alih-alih
+ * melompat kembali ke huruf pertama. Lompatan itu terbaca sebagai kedipan di
+ * ujung kata — satu bingkai yang tidak nyambung dengan tetangganya, persis
+ * cacat yang membuat animasi terasa murah.
+ *
+ * Puncaknya satu huruf, dengan tetangga kiri-kanan setengah terang. Tanpa
+ * gradasi itu yang terlihat cuma satu huruf berkedip sendirian, bukan cahaya
+ * yang bergerak.
+ */
+export function shimmer(text: string, tick: number): Glow[] {
+  const chars = [...text]
+  if (chars.length < 2) return chars.map((char) => ({ text: char, level: 1 as const }))
+
+  const span = chars.length - 1
+  const phase = ((tick % (span * 2)) + span * 2) % (span * 2)
+  const head = phase <= span ? phase : span * 2 - phase
+
+  return chars.map((char, at) => {
+    const distance = Math.abs(at - head)
+    return { text: char, level: distance === 0 ? 2 : distance === 1 ? 1 : 0 }
+  })
 }
 
 /**
@@ -508,11 +579,20 @@ export function Working({
   note,
   elapsed,
   agent,
+  word = 0,
 }: {
   tick: number
   note?: string
   elapsed: number
   agent?: string
+  /**
+   * Pemilih kata, dinaikkan pemanggil JAUH lebih jarang daripada `tick`.
+   *
+   * Dipisah dari `tick` dengan sengaja: kata yang berganti tiap bingkai tidak
+   * terbaca sebagai kata sama sekali, hanya sebagai kekacauan di tempat yang
+   * seharusnya menenangkan.
+   */
+  word?: number
 }) {
   return (
     <Box flexShrink={0}>
@@ -527,9 +607,23 @@ export function Working({
        * boleh jadi bagian paling sulit dilihat.
        */}
       {agent ? <Text color="cyan">{agent} </Text> : undefined}
-      <Text dimColor>
-        {note ?? "working"} · {elapsed}s · esc to cancel
-      </Text>
+      {/*
+       * Kata yang bercahaya, huruf per huruf.
+       *
+       * `note` — kalau pemanggil memberikannya — mengalahkan kata acak: ia
+       * kabar sungguhan tentang apa yang sedang terjadi, dan mengganti kabar
+       * dengan hiasan adalah pertukaran yang tidak pernah menguntungkan. Tapi
+       * ia tetap ikut bercahaya, supaya baris ini punya satu perilaku saja.
+       */}
+      {shimmer(note ?? workingWord(word), tick).map((glow, at) => (
+        <Text
+          key={at}
+          {...(glow.level === 2 ? { bold: true } : glow.level === 0 ? { dimColor: true } : {})}
+        >
+          {glow.text}
+        </Text>
+      ))}
+      <Text dimColor> · {elapsed}s · esc to cancel</Text>
     </Box>
   )
 }

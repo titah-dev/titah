@@ -396,19 +396,20 @@ export function App({
     if (state.status !== "working") return
     setStartedAt(Date.now())
     /*
-     * 100ms — sepuluh bingkai braille, tepat satu putaran penuh per detik.
+     * 250ms, dan kali ini angkanya tidak akan naik lagi.
      *
-     * Angka ini pernah dijatuhkan ke 1000ms karena layar bergetar: di alternate
-     * screen tiap detak menulis ulang bingkainya, dan sebelas kali per detik
-     * terbaca sebagai getaran. Yang membuatnya bisa dinaikkan lagi bukan
-     * keberanian, melainkan `useMemo` di bawah — riwayat tidak lagi ditata ulang
-     * tiap detak, jadi yang berganti sepuluh kali per detik tinggal satu
-     * karakter, bukan seluruh isi layar.
+     * Tiga percobaan sudah dipakai untuk menemukan bahwa masalahnya bukan di
+     * angka ini: 1000ms terbaca lamban, 250ms terbaca pas tapi braille-nya
+     * tersendat, 100ms membuat braille mengalir DAN layar bergetar. Di alternate
+     * screen tiap detak menulis ulang bingkainya, jadi laju punya batas atas
+     * yang tidak bisa ditawar berapa pun rapinya kode di sekitarnya.
      *
-     * Bulatan langkah berjalan sengaja TIDAK ikut secepat ini; lihat
-     * `bulletTick`.
+     * Jadi yang diganti bentuk animasinya, bukan lajunya. Titik yang bernapas
+     * jadi `@` dan cahaya yang menyapu kata sama-sama TIDAK butuh laju tinggi:
+     * keduanya gerakan lambat menurut sifatnya, bukan gerakan cepat yang
+     * dipaksa melambat. Lihat `SPINNER` dan `shimmer` di components.tsx.
      */
-    const timer = setInterval(() => setTick((value) => value + 1), 100)
+    const timer = setInterval(() => setTick((value) => value + 1), 250)
     return () => clearInterval(timer)
   }, [state.status])
 
@@ -1466,6 +1467,9 @@ export function App({
     state.status === "working" ? (
       <Working
         tick={tick}
+        // Ganti kata tiap ~8 detik. Cukup jarang untuk sempat dibaca sampai
+        // habis, cukup sering untuk barisnya tidak pernah jadi perabot.
+        word={Math.floor(tick / 32)}
         elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))}
         {...(runningAgent ? { agent: runningAgent } : {})}
       />
@@ -1500,10 +1504,22 @@ export function App({
     .filter(Boolean)
     .join(" · ")
 
-  const bulletTick = Math.floor(tick / 3)
+  /*
+   * Bulatan langkah ikut detak PENUH lagi.
+   *
+   * Ia sempat dibagi tiga ketika detaknya 100ms, supaya riwayat tidak ditata
+   * ulang sepuluh kali per detik. Pada 250ms pembagian itu justru merugikan:
+   * empat bingkai × 750ms adalah tiga detik per putaran, dan langkah yang
+   * berputar setiap tiga detik terlihat macet, bukan sibuk. Empat bingkai pada
+   * 250ms pas satu putaran per detik.
+   *
+   * `useMemo`-nya tetap berguna walau kuncinya kini `tick`: setiap ketikan,
+   * setiap resize, dan setiap event yang bukan detak tidak lagi mengurai ulang
+   * markdown seluruh riwayat.
+   */
   const lines = useMemo(
-    () => allLines(state.messages, expandTools, textWidth, bulletTick),
-    [state.messages, expandTools, textWidth, bulletTick],
+    () => allLines(state.messages, expandTools, textWidth, tick),
+    [state.messages, expandTools, textWidth, tick],
   )
   const editorHeight = editorRows(draft, size.rows)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
