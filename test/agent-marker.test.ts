@@ -6,7 +6,7 @@ import test, { after } from "node:test"
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider"
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 import type { Message } from "../src/core/message.ts"
-import { allLines, messageLines, runningFrame, turnAgent } from "../src/tui/layout.ts"
+import { allLines, messageLines, runningFrame, toolSteps, turnAgent } from "../src/tui/layout.ts"
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "titah-mark-")))
 process.env.XDG_DATA_HOME = path.join(root, "data")
@@ -237,4 +237,45 @@ test("giliran sungguhan merekam agent-nya ke pesan", async () => {
   } finally {
     restore()
   }
+})
+
+// ---------- penghitung langkah ----------
+
+test("toolSteps menghitung SELURUH sesi, bukan giliran terakhir", () => {
+  /*
+   * Kalau per giliran, setiap giliran dimulai dari kata yang sama dan "kata
+   * berganti tiap tool" berhenti berarti pada rentetan giliran pendek.
+   */
+  const dengan = (n: number, id: string): Message =>
+    pesan({
+      id,
+      parts: Array.from({ length: n }, (_, at) => ({
+        type: "tool" as const,
+        callID: `${id}-${at}`,
+        tool: "bash",
+        state: { status: "completed" as const, title: "bash", input: {}, output: "" },
+      })),
+    })
+
+  assert.equal(toolSteps([dengan(2, "a"), dengan(3, "b")]), 5)
+  assert.equal(toolSteps([]), 0)
+})
+
+test("toolSteps hanya naik, tidak pernah turun", () => {
+  // Angka yang bisa turun akan memutar kata mundur, dan itu terbaca seperti
+  // pekerjaan yang diulang.
+  const satu = pesan({
+    id: "a",
+    parts: [
+      { type: "tool", callID: "c1", tool: "bash", state: { status: "running", title: "x", input: {} } },
+    ],
+  })
+  const dua = pesan({
+    id: "a",
+    parts: [
+      { type: "tool", callID: "c1", tool: "bash", state: { status: "completed", title: "x", input: {}, output: "" } },
+      { type: "tool", callID: "c2", tool: "read", state: { status: "running", title: "y", input: {} } },
+    ],
+  })
+  assert.ok(toolSteps([dua]) > toolSteps([satu]), "tool selesai tetap dihitung")
 })

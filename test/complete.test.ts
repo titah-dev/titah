@@ -11,7 +11,7 @@ import {
   skillSuggestions,
   suggest,
 } from "../src/tui/complete.ts"
-import { shimmer, spinnerFrame, workingWord } from "../dist/tui/components.js"
+import { shimmer, spinnerFrame, workingLine, workingWord } from "../dist/tui/components.js"
 import { Config } from "../src/core/schema.ts"
 
 /** Jumlah kata di `WORKING_WORDS`, dipakai menguji indeks negatif. */
@@ -242,19 +242,19 @@ test("teks setelah kursor dipertahankan", () => {
 
 test("spinner berputar dan tidak pernah keluar dari bingkainya", () => {
   /*
-   * Titik yang bernapas jadi `@`, bukan braille yang berputar.
+   * Bintang yang BERKELIP, bukan bentuk yang berputar.
    *
-   * Braille menuntut laju tinggi supaya pergeseran satu titiknya terbaca
-   * sebagai gerak, dan pada laju itu layar bergetar — dua putaran percobaan
-   * membuktikan keduanya tidak bisa didamaikan. Napas tidak punya pertukaran
-   * itu: ia lambat menurut sifatnya, jadi 250ms sudah cukup.
+   * Bulatan langkah di riwayat sudah berputar. Dua gerakan yang berbeda
+   * jenisnya bisa dibedakan sekilas; dua yang sama-sama berputar hanya berbeda
+   * kalau diperhatikan — dan yang perlu diperhatikan bukan lagi pembeda.
    */
   const frames = new Set<string>()
   for (let i = 0; i < 40; i += 1) frames.add(spinnerFrame(i))
 
-  assert.deepEqual([0, 1, 2, 3].map(spinnerFrame), ["·", "o", "O", "@"], "membesar sampai @")
-  assert.equal(spinnerFrame(6), spinnerFrame(0), "berulang setelah satu napas")
-  assert.ok([...frames].every((frame) => frame.length === 1), "satu kolom, jadi tidak menggeser teks")
+  assert.equal(frames.size, 5, "enam bingkai, satu di antaranya dipakai dua kali")
+  assert.equal(spinnerFrame(6), spinnerFrame(0), "berulang setelah satu siklus")
+  assert.equal(spinnerFrame(2), spinnerFrame(4), "naik lalu turun, tidak melompat di ujung")
+  assert.ok([...frames].every((frame) => [...frame].length === 1), "satu kolom, tidak menggeser teks")
 })
 
 test("pemilih agent tidak lagi menawarkan \"(no agent)\"", () => {
@@ -285,19 +285,6 @@ test("jaring pengaman: entri kosong diberi label yang jujur", () => {
 })
 
 // ---------- kata yang bercahaya ----------
-
-test("napas spinner naik lalu TURUN, bukan melompat balik", () => {
-  /*
-   * Kalau ia melompat dari `@` langsung ke `·`, yang terlihat bukan napas
-   * melainkan kedipan — satu bingkai yang tidak nyambung dengan tetangganya.
-   */
-  const size = ["·", "o", "O", "@"]
-  const naik = [0, 1, 2, 3].map((t) => size.indexOf(spinnerFrame(t)))
-  const turun = [3, 4, 5].map((t) => size.indexOf(spinnerFrame(t)))
-
-  assert.deepEqual(naik, [0, 1, 2, 3])
-  assert.deepEqual(turun, [3, 2, 1], "sesudah puncak ia mengempis, bukan mengulang dari nol")
-})
 
 test("kata kerja berganti, dan selalu ada", () => {
   const kata = new Set<string>()
@@ -333,4 +320,87 @@ test("kata satu huruf tidak membagi nol", () => {
   // membuat seluruh kata redup tanpa satu pun error.
   assert.deepEqual(shimmer("x", 3), [{ text: "x", level: 1 }])
   assert.deepEqual(shimmer("", 3), [])
+})
+
+// ---------- kilatan warna sekali per LANGKAH ----------
+
+test("warnanya menyala saat langkah berganti, lalu PADAM sendiri", () => {
+  /*
+   * Satu kilatan per langkah, bukan warna yang menyala terus. Yang menyala
+   * terus berhenti diperhatikan dalam sepuluh detik — sama persis seperti kata
+   * yang tidak pernah berganti, yaitu masalah yang mau diobati.
+   */
+  assert.equal(workingLine(0, 0).fresh, true, "detak pertama sebuah langkah")
+
+  const kata = workingLine(0, 0).word
+  const pulang = ([...kata].length - 1) * 2
+
+  assert.equal(workingLine(0, pulang - 1).fresh, true, "masih menyala sebelum cahaya pulang")
+  assert.equal(workingLine(0, pulang).fresh, false, "padam TEPAT saat cahaya kembali ke huruf pertama")
+  assert.equal(workingLine(0, pulang + 99).fresh, false, "dan tetap padam selama langkahnya sama")
+})
+
+test("padamnya bertepatan dengan cahaya kembali ke huruf pertama", () => {
+  // Keduanya lahir dari argumen yang sama, jadi ini bukan kebetulan yang harus
+  // dijaga melainkan bentuk fungsinya. Test ini yang menahannya tetap begitu.
+  const line = workingLine(0, 0)
+  const pulang = ([...line.word].length - 1) * 2
+
+  assert.equal(workingLine(0, pulang).glow[0]?.level, 2, "cahaya memang di huruf pertama")
+  assert.equal(workingLine(0, pulang).fresh, false)
+})
+
+test("tool baru = kata baru, dan kilatannya mengulang", () => {
+  // Inilah pemicunya: `ls` lalu `cat` adalah dua langkah, jadi dua kata.
+  const ls = workingLine(3, 40)
+  const cat = workingLine(4, 0)
+
+  assert.notEqual(ls.word, cat.word)
+  assert.equal(ls.fresh, false, "langkah lama sudah lama padam")
+  assert.equal(cat.fresh, true, "langkah baru berkilat")
+})
+
+test("langkah yang MACET tidak pernah berganti kata", () => {
+  /*
+   * Yang membuat perubahan ini benar. Kata yang berganti sendiri sementara
+   * pekerjaannya diam memberi kesan ada kemajuan — kesan yang paling tidak
+   * boleh dipalsukan oleh indikator kerja.
+   */
+  const awal = workingLine(2, 0).word
+  for (const detak of [50, 500, 5000]) {
+    assert.equal(workingLine(2, detak).word, awal, `masih kata yang sama pada detak ${detak}`)
+  }
+})
+
+test("cahaya dihitung dari SEJAK langkahnya mulai, bukan dari detak absolut", () => {
+  /*
+   * Kalau dari detak absolut, posisi cahaya saat kata berganti adalah
+   * kebetulan — dan "kembali ke posisi awal" berhenti punya arti.
+   */
+  for (const step of [0, 1, 7]) {
+    assert.equal(workingLine(step, 0).glow[0]?.level, 2, `langkah ${step} mulai dari huruf pertama`)
+  }
+})
+
+test("setiap kata sempat padam dalam jendela yang wajar", () => {
+  // Kalau satu kata butuh lebih lama daripada langkah yang khas, kilatan
+  // "sekali" berubah jadi warna yang praktis selalu menyala.
+  for (let step = 0; step < 12; step += 1) {
+    const { word } = workingLine(step, 0)
+    const pulang = ([...word].length - 1) * 2
+    assert.ok(pulang <= 20, `"${word}" butuh ${pulang} detak — terlalu lama untuk satu kilatan`)
+  }
+})
+
+test("note mengalahkan kata pilihan, dan tidak pernah berkilat", () => {
+  // Ia kabar sungguhan, bukan pergantian yang perlu diumumkan.
+  const line = workingLine(0, 0, "compacting")
+  assert.equal(line.word, "compacting")
+  assert.equal(line.fresh, false)
+})
+
+test("detak negatif tidak merusak barisnya", () => {
+  const line = workingLine(0, -5)
+  assert.ok(line.word.length > 0)
+  assert.equal(line.glow.map((part) => part.text).join(""), line.word)
 })

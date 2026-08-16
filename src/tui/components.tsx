@@ -476,29 +476,32 @@ export function Splash({
 }
 
 /*
- * Titik yang tumbuh jadi `@`, lalu mengempis lagi.
+ * Bintang yang berkelip.
  *
- * # Kenapa bukan braille lagi
+ * # Kenapa ini yang dipilih
  *
- * Braille menuntut laju tinggi supaya pergeseran satu titiknya terbaca sebagai
- * putaran — dan pada laju itu layar bergetar. Dua putaran percobaan sudah
- * membuktikan bahwa keduanya tidak bisa didamaikan: dilambatkan, ia terbaca
- * sebagai kedipan acak; dicepatkan, layarnya bergetar.
+ * Syaratnya tiga, dan bentuk ini satu-satunya yang memenuhi ketiganya sekaligus.
  *
- * Bentuk ini tidak punya pertukaran itu. Ia tidak BERPUTAR, ia BERNAPAS —
- * membesar lalu mengecil — dan napas memang lambat. Empat detak per detik sudah
- * cukup, karena tiap bingkai berbeda jelas dari tetangganya.
+ * SATU KOLOM. Bingkai yang lebarnya berbeda menggeser seluruh baris tiap detak,
+ * dan geseran itu lebih mengganggu daripada spinner apa pun yang jelek.
+ * Diverifikasi dengan `widthOf` milik repo ini, bukan diasumsikan: kelima
+ * dingbat di bawah bernilai 1.
  *
- * # Kenapa berbeda dari bulatan langkah
+ * TIDAK BERPUTAR. Bulatan langkah di riwayat sudah berputar (`◐◓◑◒`). Dua
+ * gerakan yang berbeda JENISNYA bisa dibedakan sekilas tanpa dibaca; dua yang
+ * sama-sama berputar hanya berbeda kalau diperhatikan — dan yang perlu
+ * diperhatikan bukan lagi pembeda. Bintang ini berkelip: tiap bingkai mengubah
+ * jumlah sudutnya, bukan memutar sudut yang sama.
  *
- * `◐◓◑◒` di riwayat berputar; ini membesar-mengecil. Dua gerakan yang berbeda
- * JENISNYA bisa dibedakan sekilas tanpa dibaca — dua spinner yang sama-sama
- * berputar hanya berbeda kalau diperhatikan, dan yang perlu diperhatikan bukan
- * lagi pembeda.
+ * BAGUS PADA LAJU RENDAH. Ini yang menjatuhkan braille dua kali. Kelip tidak
+ * menuntut kesinambungan antar bingkai — justru sebaliknya, lompatannya yang
+ * membuatnya terbaca sebagai kelip. Empat detak per detik sudah cukup, dan
+ * empat detak per detik adalah laju yang tidak membuat layar bergetar.
  *
- * Semua bingkainya satu kolom.
+ * Enam bingkai, 1.5 detik satu siklus. `✹` muncul dua kali dengan sengaja: ia
+ * naik lalu turun, jadi tidak ada lompatan balik di ujung siklus.
  */
-const SPINNER = ["·", "o", "O", "@", "O", "o"]
+const SPINNER = ["✶", "✸", "✹", "✺", "✹", "✷"]
 
 /** Bingkai spinner, dipisah supaya bisa diuji tanpa merender apa pun. */
 export function spinnerFrame(tick: number): string {
@@ -568,6 +571,61 @@ export function shimmer(text: string, tick: number): Glow[] {
   })
 }
 
+export interface WorkingLine {
+  word: string
+  glow: Glow[]
+  /**
+   * Kata ini baru berganti dan cahayanya BELUM kembali ke huruf pertama.
+   *
+   * Inilah satu-satunya penanda "masih bekerja" yang tidak menuntut user
+   * membaca apa pun: warnanya menyala sekali tiap kata berganti, lalu padam
+   * sendiri. Warna yang menyala terus akan diabaikan dalam sepuluh detik, sama
+   * seperti kata yang tidak pernah berganti.
+   */
+  fresh: boolean
+}
+
+/**
+ * Seluruh baris kerja: kata, cahayanya, dan kilatannya.
+ *
+ * # Kata berganti per LANGKAH, bukan per detak
+ *
+ * `step` dinaikkan pemanggil setiap Titah memulai tool baru — `ls` lalu `cat`
+ * adalah dua kata yang berbeda. Versi sebelumnya menggantinya per delapan detik
+ * dan itu keliru dengan cara yang halus: kata yang berganti sendiri sementara
+ * pekerjaannya diam MEMBERI kesan ada kemajuan, dan itu kesan yang paling tidak
+ * boleh dipalsukan indikator kerja. Tool yang macet lima menit sekarang
+ * memegang satu kata selama lima menit — apa adanya.
+ *
+ * Yang tersisa dari detak hanyalah `sinceChange`, dan tugasnya cuma menganimasi
+ * apa yang sudah diputuskan `step`.
+ *
+ * # Kenapa satu fungsi
+ *
+ * Kata, fase cahaya, dan kilatan warna sebelumnya tiga hitungan terpisah yang
+ * harus SEPAKAT tentang kapan sebuah kata dimulai — dan tiga hitungan yang
+ * harus sepakat adalah tiga kesempatan untuk tidak sepakat. Di sini ketiganya
+ * lahir dari argumen yang sama, jadi "warnanya padam tepat saat cahaya kembali
+ * ke awal" bukan kebetulan yang harus dijaga, melainkan bentuk fungsinya.
+ *
+ * `note` mengalahkan kata pilihan kalau pemanggil memberikannya: ia kabar
+ * sungguhan, dan mengganti kabar dengan hiasan tidak pernah menguntungkan. Ia
+ * tetap bercahaya, tapi tidak pernah berkilat — tidak ada pergantian yang perlu
+ * diumumkan.
+ */
+export function workingLine(step: number, sinceChange: number, note?: string): WorkingLine {
+  const elapsed = Math.max(0, sinceChange)
+  const word = note ?? workingWord(step)
+
+  // Cahaya dihitung dari SEJAK LANGKAHNYA MULAI, bukan dari detak absolut.
+  // Kalau dari detak absolut, posisi cahaya saat kata berganti adalah
+  // kebetulan — dan "kembali ke posisi awal" berhenti punya arti.
+  const glow = shimmer(word, elapsed)
+  const roundTrip = Math.max(1, [...word].length - 1) * 2
+
+  return { word, glow, fresh: note === undefined && elapsed < roundTrip }
+}
+
 /**
  * Indikator kerja tepat di atas prompt.
  *
@@ -579,21 +637,20 @@ export function Working({
   note,
   elapsed,
   agent,
-  word = 0,
+  step = 0,
+  sinceStep = 0,
 }: {
   tick: number
   note?: string
   elapsed: number
   agent?: string
-  /**
-   * Pemilih kata, dinaikkan pemanggil JAUH lebih jarang daripada `tick`.
-   *
-   * Dipisah dari `tick` dengan sengaja: kata yang berganti tiap bingkai tidak
-   * terbaca sebagai kata sama sekali, hanya sebagai kekacauan di tempat yang
-   * seharusnya menenangkan.
-   */
-  word?: number
+  /** Berapa tool yang sudah dimulai. Naik satu = kata baru. */
+  step?: number
+  /** Detak sejak `step` terakhir berubah — hanya untuk menganimasi. */
+  sinceStep?: number
 }) {
+  const line = workingLine(step, sinceStep, note)
+
   return (
     <Box flexShrink={0}>
       <Text color="yellow">{spinnerFrame(tick)} </Text>
@@ -608,16 +665,22 @@ export function Working({
        */}
       {agent ? <Text color="cyan">{agent} </Text> : undefined}
       {/*
-       * Kata yang bercahaya, huruf per huruf.
+       * Kata yang bercahaya huruf per huruf, dan BERWARNA satu kali tiap ia
+       * berganti.
        *
-       * `note` — kalau pemanggil memberikannya — mengalahkan kata acak: ia
-       * kabar sungguhan tentang apa yang sedang terjadi, dan mengganti kabar
-       * dengan hiasan adalah pertukaran yang tidak pernah menguntungkan. Tapi
-       * ia tetap ikut bercahaya, supaya baris ini punya satu perilaku saja.
+       * Warnanya padam sendiri begitu cahaya kembali ke huruf pertama — satu
+       * kilatan per kata, bukan warna yang menyala terus. Yang menyala terus
+       * berhenti diperhatikan dalam sepuluh detik, sama seperti kata yang tidak
+       * pernah berganti; yang berkilat sesekali tetap menangkap mata tanpa
+       * pernah menuntut dibaca.
+       *
+       * Hijau, bukan kuning: kuning sudah dipakai bintangnya di baris yang sama,
+       * dan dua bagian sewarna terbaca sebagai satu bagian.
        */}
-      {shimmer(note ?? workingWord(word), tick).map((glow, at) => (
+      {line.glow.map((glow, at) => (
         <Text
           key={at}
+          {...(line.fresh ? { color: "green" } : {})}
           {...(glow.level === 2 ? { bold: true } : glow.level === 0 ? { dimColor: true } : {})}
         >
           {glow.text}
