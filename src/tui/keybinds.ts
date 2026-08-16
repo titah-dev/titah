@@ -14,13 +14,20 @@ export const DEFAULT_KEYBINDS = {
   leader: "ctrl+x",
 
   /*
-   * TANPA ctrl+c. Tombol itu milik `input_clear`, dan keluar lewatnya menuntut
+   * Satu tombol saja, dan itu disengaja.
+   *
+   * TANPA ctrl+c: tombol itu milik `input_clear`, dan keluar lewatnya menuntut
    * dua tekanan — perilaku yang tidak bisa diungkapkan sebagai binding, jadi
    * mencantumkannya di sini hanya membuat config berbohong tentang apa yang
-   * terjadi. ctrl+d dan <leader>q tetap keluar dalam satu tekanan: keduanya
-   * tidak punya arti lain, jadi tidak ada refleks yang bisa salah memicunya.
+   * terjadi.
+   *
+   * TANPA <leader>q: empat cara keluar (ctrl+c dua kali, ctrl+d, <leader>q,
+   * /exit) berarti tiga di antaranya harus diingat tanpa pernah dipakai, dan
+   * setiap satunya adalah tombol yang bisa tertekan tanpa sengaja. Yang
+   * tersisa: ctrl+d untuk jari, /exit untuk yang mengetik, ctrl+c dua kali
+   * untuk yang refleks.
    */
-  app_exit: "ctrl+d,<leader>q",
+  app_exit: "ctrl+d",
   app_help: "<leader>?",
 
   session_new: "<leader>n",
@@ -111,7 +118,6 @@ export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
   { action: "messages_last", describe: "Lompat ke pesan terbaru" },
   { action: "mouse_toggle", describe: "Matikan pelacakan mouse agar teks bisa diseleksi" },
   { action: "app_help", describe: "Bantuan singkat" },
-  { action: "app_exit", describe: "Keluar" },
 ]
 
 /**
