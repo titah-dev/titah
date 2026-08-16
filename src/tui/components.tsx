@@ -335,6 +335,7 @@ export function Footer({
   model,
   usage,
   leaderActive,
+  exitArmed = false,
   hint,
   mouseCapture = true,
 }: {
@@ -346,6 +347,8 @@ export function Footer({
     external: { input: number; output: number; cost: number; used: boolean }
   }
   leaderActive: boolean
+  /** ctrl+c sudah ditekan sekali pada prompt kosong. */
+  exitArmed?: boolean
   hint?: string
   /** Kalau mati, itu keadaan yang harus terlihat TERUS — bukan sekejap. */
   mouseCapture?: boolean
@@ -365,7 +368,14 @@ export function Footer({
   return (
     <Box justifyContent="space-between" flexShrink={0}>
       <Text dimColor>
-        {leaderActive ? (
+        {/* Konfirmasi keluar menang atas segalanya: ia berumur tiga detik, dan
+            baris yang tertutup pesan lain membuat tekanan kedua jadi kejutan. */}
+        {exitArmed ? (
+          <>
+            {workingMarker}
+            <Text color="yellow">ctrl+c again to quit · any other key cancels</Text>
+          </>
+        ) : leaderActive ? (
           <>
             {workingMarker}
             <Text color="green">ctrl+x …</Text>
@@ -378,7 +388,7 @@ export function Footer({
         ) : status === "working" ? (
           <Text color="yellow">● working — esc to cancel</Text>
         ) : (
-          "ctrl+x for commands · ctrl+c to quit"
+          "ctrl+x for commands · /exit or ctrl+c twice to quit"
         )}
         {mouseCapture ? null : (
           // Ditampilkan TERUS, bukan sebagai pesan sekejap: selama ini menyala,
@@ -455,7 +465,7 @@ export function Splash({
 
       <Box marginTop={1} flexDirection="column" alignItems="center">
         <Text dimColor>enter to send · ctrl+j newline · ↑↓ history · tab to switch agent</Text>
-        <Text dimColor>@claude to delegate · /consensus to compare · ctrl+c to quit</Text>
+        <Text dimColor>@claude to delegate · /consensus to compare · /exit to quit</Text>
       </Box>
     </Box>
   )

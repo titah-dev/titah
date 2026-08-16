@@ -13,7 +13,14 @@
 export const DEFAULT_KEYBINDS = {
   leader: "ctrl+x",
 
-  app_exit: "ctrl+c,ctrl+d,<leader>q",
+  /*
+   * TANPA ctrl+c. Tombol itu milik `input_clear`, dan keluar lewatnya menuntut
+   * dua tekanan — perilaku yang tidak bisa diungkapkan sebagai binding, jadi
+   * mencantumkannya di sini hanya membuat config berbohong tentang apa yang
+   * terjadi. ctrl+d dan <leader>q tetap keluar dalam satu tekanan: keduanya
+   * tidak punya arti lain, jadi tidak ada refleks yang bisa salah memicunya.
+   */
+  app_exit: "ctrl+d,<leader>q",
   app_help: "<leader>?",
 
   session_new: "<leader>n",
