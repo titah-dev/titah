@@ -1,6 +1,7 @@
 import http from "node:http"
 import type { AddressInfo } from "node:net"
 import { abort, isRunning, prompt, AgentError } from "../core/agent.ts"
+import { EFFORTS } from "../core/prompt.ts"
 import { bus, type Event } from "../core/event.ts"
 import { listPending, respond, type PermissionDecision } from "../core/permission.ts"
 import { answerQuestion, cancelQuestion, listPendingQuestions } from "../core/question.ts"
@@ -248,11 +249,19 @@ async function handle(
     const model = typeof body["model"] === "string" ? body["model"] : undefined
     const auto = body["auto"] === true
     const agent = typeof body["agent"] === "string" ? body["agent"] : undefined
+    /*
+     * Divalidasi di sini, bukan diteruskan apa adanya.
+     *
+     * Nilai asing akan lolos sampai ke `EFFORT_RULE[...]` dan menghasilkan
+     * `undefined` di tengah prompt — sebuah giliran yang berjalan dengan satu
+     * baris kosong di system prompt, tanpa satu pun error yang menyebutkannya.
+     */
+    const effort = EFFORTS.find((value) => value === body["effort"])
 
     const wantsStream = (req.headers.accept ?? "").includes("text/event-stream")
     if (!wantsStream) {
       try {
-        return json(res, 200, await prompt({ sessionID, text, auto, ...(model ? { model } : {}), ...(agent ? { agent } : {}) }))
+        return json(res, 200, await prompt({ sessionID, text, auto, ...(model ? { model } : {}), ...(agent ? { agent } : {}), ...(effort ? { effort } : {}) }))
       } catch (error) {
         if (error instanceof AgentError) throw new HttpError(409, error.message)
         throw error
@@ -272,6 +281,7 @@ async function handle(
       auto,
       ...(model ? { model } : {}),
       ...(agent ? { agent } : {}),
+      ...(effort ? { effort } : {}),
     }).catch(() => undefined)
 
     for await (const event of events) {

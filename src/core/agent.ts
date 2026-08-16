@@ -4,7 +4,7 @@ import { loadConfig } from "./config.ts"
 import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
-import { buildSystemPrompt } from "./prompt.ts"
+import { buildSystemPrompt, type Effort } from "./prompt.ts"
 import {
   contextWindowFor,
   resolveModel,
@@ -256,6 +256,14 @@ export interface PromptInput {
   model?: string
   /** Nama agent internal (Q21). Mengubah prompt, model, dan tool yang tersedia. */
   agent?: string
+  /**
+   * Panjang kesimpulan untuk giliran ini, dipilih user lewat ctrl+r.
+   *
+   * Mengalahkan `agent.effort` — yang ditekan barusan menang atas yang ditulis
+   * kemarin. `"default"` adalah pilihan yang sah, bukan ketiadaan pilihan: ia
+   * mengembalikan penakaran ke model walau config agent-nya menyetel sesuatu.
+   */
+  effort?: Effort | "default"
   /** Menyetujui otomatis izin yang tidak ditolak eksplisit oleh config. */
   auto?: boolean
   /**
@@ -441,7 +449,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
    */
   const turnModel = input.resolvedModel ?? turnModelFor(config, agentID, modelOverride)
   const model = resolver(config, turnModel)
-  const built = buildSystemPrompt(config, session.directory, agentID)
+  const built = buildSystemPrompt(config, session.directory, agentID, input.effort)
   const system = teamPrompt ? `${built.system}\n\n${teamPrompt}` : built.system
 
   const userMessage = createMessage(session.id, "user", [{ type: "text", text: input.text }])

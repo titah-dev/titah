@@ -38,6 +38,22 @@ export const DEFAULT_KEYBINDS = {
   agent_cycle: "tab",
   agent_cycle_reverse: "shift+tab",
 
+  /*
+   * Panjang kesimpulan: default → low → medium → high → default.
+   *
+   * `ctrl+r` karena ia satu tekanan, tidak bertabrakan dengan apa pun di
+   * editor (a/b/e/f/j/u sudah terpakai untuk gerak kursor), dan huruf `r`
+   * masih bisa dihubungkan ke "reason" oleh orang yang menyetelnya di config.
+   *
+   * Tab BUKAN pilihan meski ia tetangga paling logis: `tab` dan `shift+tab`
+   * sudah memutar agent, dan dua putaran di tombol yang sama berarti user harus
+   * ingat mana yang sedang ia putar sebelum menekan.
+   *
+   * `<leader>r` ikut supaya aksinya muncul di menu leader dan command palette —
+   * tombol yang tidak bisa ditemukan sama saja dengan tidak ada.
+   */
+  effort_cycle: "ctrl+r,<leader>r",
+
   command_list: "ctrl+p",
 
   // Panah POLOS menelusuri histori prompt, seperti opencode dan shell mana pun.
@@ -111,6 +127,7 @@ export type Action = keyof typeof DEFAULT_KEYBINDS
  */
 export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
   { action: "tool_details", describe: "Buka/tutup semua keluaran tool" },
+  { action: "effort_cycle", describe: "Panjang kesimpulan: default → low → medium → high" },
   { action: "subagents_panel", describe: "Panel sub-agent" },
   { action: "session_list", describe: "Pindah ke sesi lain" },
   { action: "session_new", describe: "Mulai sesi baru" },

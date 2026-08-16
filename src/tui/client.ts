@@ -65,11 +65,22 @@ export class Client {
    * stream /event yang sudah dibuka TUI. Promise-nya selesai saat giliran
    * berakhir, dan dipakai hanya untuk menangkap error.
    */
-  send(sessionID: string, text: string, model?: string, agent?: string): Promise<Message> {
+  send(
+    sessionID: string,
+    text: string,
+    model?: string,
+    agent?: string,
+    effort?: string,
+  ): Promise<Message> {
     return this.#json(`/session/${sessionID}/message`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, ...(model ? { model } : {}), ...(agent ? { agent } : {}) }),
+      body: JSON.stringify({
+        text,
+        ...(model ? { model } : {}),
+        ...(agent ? { agent } : {}),
+        ...(effort ? { effort } : {}),
+      }),
     })
   }
 

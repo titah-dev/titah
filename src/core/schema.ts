@@ -179,6 +179,27 @@ export const Agent = z
       .optional(),
     prompt: z.string().optional().describe("Appended to the system prompt"),
     model: z.string().optional().describe("Model override, in \"provider/model\" form"),
+    /*
+     * Seberapa jauh jawaban ditutup dengan analisa.
+     *
+     * DIBIARKAN KOSONG bukan sama dengan `"low"`. Kosong berarti Titah tidak
+     * menyebut panjang sama sekali dan modelnya yang memutuskan — itu perilaku
+     * sebelum sumbu ini ada, dan ia harus tetap bisa dipilih. Karena itu tidak
+     * ada `.default()` di sini: nilai bawaan apa pun akan diam-diam mengubah
+     * setiap agent yang sudah ada.
+     *
+     * Namanya `effort`, bukan `reasoningEffort`, dan itu disengaja. Ia TIDAK
+     * menyentuh anggaran penalaran model — kalau suatu hari Titah mengatur itu,
+     * nama yang sudah terpakai untuk hal lain akan jadi jebakan. Yang diatur di
+     * sini adalah seberapa banyak yang ditulis SESUDAH pekerjaan selesai.
+     */
+    effort: z
+      .enum(["low", "medium", "high"])
+      .optional()
+      .describe(
+        "How much closing analysis each answer ends with. Unset means no limit — the model " +
+          "decides. Cycle it live with ctrl+r.",
+      ),
     steps: z
       .number()
       .int()
