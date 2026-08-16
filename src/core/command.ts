@@ -78,6 +78,7 @@ export const IMMEDIATE_COMMANDS = new Set([
   "login",
   "logout",
   "account",
+  "exit",
 ])
 
 export type BuiltinCommand = (typeof BUILTIN_COMMANDS)[number]
@@ -116,6 +117,7 @@ export function listCommands(config: Config): { name: string; description: strin
     { name: "login", description: "Sign in to your Titah account in the browser" },
     { name: "logout", description: "Sign out this machine" },
     { name: "account", description: "Show which account this machine is signed in as" },
+    { name: "exit", description: "Quit Titah" },
   ]
   const custom = Object.entries(config.command).map(([name, command]) => ({
     name,

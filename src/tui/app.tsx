@@ -80,6 +80,15 @@ const LEADER_TIMEOUT = 2000
  */
 const LEADER_MENU_DELAY = 400
 
+/**
+ * Berapa lama ctrl+c kedua masih dihitung sebagai konfirmasi.
+ *
+ * Cukup lama untuk tekanan kedua yang disengaja, cukup pendek supaya senjata
+ * itu tidak menganggur — ctrl+c yang ditekan sepuluh menit lalu tidak boleh
+ * membuat tekanan hari ini langsung menutup sesi.
+ */
+const EXIT_CONFIRM_TIMEOUT = 3000
+
 /** Satu klik roda menggulir tiga baris — sama seperti kebanyakan pager. */
 const WHEEL_LINES = 3
 
@@ -179,6 +188,15 @@ export function App({
    * Yang hafal tombolnya tidak pernah melihat menu ini berkedip.
    */
   const [leaderMenu, setLeaderMenu] = useState(false)
+  /**
+   * ctrl+c sudah ditekan sekali pada prompt kosong, dan tekanan berikutnya
+   * akan menutup Titah.
+   *
+   * Berbatas waktu: senjata yang tidak pernah kedaluwarsa berarti ctrl+c yang
+   * ditekan sepuluh menit lalu masih bisa menutup sesi hari ini.
+   */
+  const [exitArmed, setExitArmed] = useState(false)
+  const exitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const leaderMenuTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // Dua lapis: `expandAll` dari ctrl+x d, dan himpunan tool yang dibuka satu per
   // satu lewat klik. Dipisah supaya menutup "semua" tidak ikut menutup blok yang
@@ -797,6 +815,7 @@ export function App({
         if (name === "login") return startLogin()
         if (name === "logout") return doLogout()
         if (name === "account") return showAccount()
+        if (name === "exit") return exit()
         if (IMMEDIATE_COMMANDS.has(name)) return send(`/${name}`)
         // Butuh argumen: sisipkan supaya user bisa mengetiknya.
         setDraft(item.value)
@@ -874,7 +893,7 @@ export function App({
 
     // Perintah yang mengubah keadaan KLIEN ditangani di sini, tidak dikirim ke
     // server — server tidak tahu model mana yang sedang kamu pilih di layar.
-    const local = /^\/(model|skill|agent|session|new|login|logout|account)\b\s*(.*)$/.exec(text)
+    const local = /^\/(model|skill|agent|session|new|login|logout|account|exit)\b\s*(.*)$/.exec(text)
     if (local) {
       // Ditangani di klien, tapi tetap sebuah prompt yang user ketik — ia harus
       // bisa dipanggil kembali lewat panah atas seperti yang lain.
@@ -888,13 +907,17 @@ export function App({
       if (local[1] === "login") return startLogin()
       if (local[1] === "logout") return doLogout()
       if (local[1] === "account") return showAccount()
+      // Diketik penuh, jadi maksudnya sudah jelas: tidak ada konfirmasi kedua
+      // seperti ctrl+c. Yang perlu dijaga dari tekanan tak sengaja adalah
+      // tombol, bukan perintah yang harus dieja lima huruf lalu Enter.
+      if (local[1] === "exit") return exit()
       return openSkillPicker(local[2] ?? "")
     }
 
     setDraft("")
     setCursor(0)
     send(text)
-  }, [doLogout, draft, openAgentPicker, openModelPicker, openSessionPicker, openSkillPicker, remember, send, showAccount, startLogin, startNewSession, state.status])
+  }, [doLogout, draft, exit, openAgentPicker, openModelPicker, openSessionPicker, openSkillPicker, remember, send, showAccount, startLogin, startNewSession, state.status])
 
   useEffect(() => {
     // Popup yang dibuka perintah (/model, /skill) tidak boleh ditimpa detektor.
@@ -934,6 +957,12 @@ export function App({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, cursor, config, cwd, historyIndex])
 
+  const armExit = useCallback(() => {
+    setExitArmed(true)
+    clearTimeout(exitTimer.current)
+    exitTimer.current = setTimeout(() => setExitArmed(false), EXIT_CONFIRM_TIMEOUT)
+  }, [])
+
   const armLeader = useCallback(() => {
     setLeaderActive(true)
     clearTimeout(leaderTimer.current)
@@ -960,6 +989,20 @@ export function App({
 
   useInput((input, key) => {
     const press = toKeyPress(input, key)
+
+    /*
+     * Senjata keluar dilucuti oleh tombol APA PUN selain ctrl+c.
+     *
+     * Dibaca lebih dulu ke variabel lokal karena `setExitArmed` tidak berlaku
+     * seketika: cabang ctrl+c di bawah masih akan melihat nilai state yang
+     * lama. Tanpa salinan ini, tekanan kedua tidak pernah terbaca sebagai
+     * konfirmasi dan Titah tidak bisa ditutup sama sekali.
+     */
+    const wasExitArmed = exitArmed
+    if (exitArmed && resolve(keymap, press, false, ["input_clear"]) !== "input_clear") {
+      setExitArmed(false)
+      clearTimeout(exitTimer.current)
+    }
 
     // Panel sub-agent memakan navigasi SEBELUM popup — kalau tidak, keduanya
     // berebut panah yang sama begitu keduanya sama-sama terbuka.
@@ -1053,7 +1096,9 @@ export function App({
        * tidak akan pernah menerima panah maupun Enter — pintu yang membuka
        * kotak yang tidak bisa dipakai lebih buruk daripada pintu yang terkunci.
        */
-      if (resolve(keymap, press, false, ["leader", "app_exit"]) === undefined) {
+      // `input_clear` ikut lolos: ctrl+c harus tetap bisa membersihkan prompt
+      // dan mempersenjatai keluar walau panel sedang memegang papan ketik.
+      if (resolve(keymap, press, false, ["leader", "app_exit", "input_clear"]) === undefined) {
         // Tombol yang ditelan diam-diam terasa seperti terminal yang mati.
         // Satu baris di footer memberi tahu KE MANA papan ketik pergi dan cara
         // mengambilnya kembali — pesan yang sama untuk tiap tombol, jadi tidak
@@ -1262,17 +1307,40 @@ export function App({
       return setCursor(text.length)
     }
 
-    // ctrl+c: bersihkan input kalau ada isinya, keluar kalau kosong (perilaku opencode).
+    /*
+     * ctrl+c: membersihkan prompt, dan HANYA itu. Keluar butuh dua kali.
+     *
+     * Sebelumnya satu tekanan pada prompt kosong langsung menutup Titah. Itu
+     * salah satu tombol yang paling sering ditekan karena refleks — untuk
+     * membatalkan ketikan, untuk menghentikan sesuatu — dan refleks yang
+     * menutup sesi berjam-jam adalah kerugian yang tidak sebanding dengan
+     * kemudahan yang ditawarkannya.
+     *
+     * Kalau ada teks, itu SATU-SATUNYA yang terjadi: prompt dibersihkan dan
+     * tidak ada yang dipersenjatai. Orang yang membatalkan ketikan tidak sedang
+     * setengah jalan menuju keluar, dan tekanan kedua untuk membersihkan sisa
+     * ketikan berikutnya tidak boleh menutup aplikasi.
+     */
     if (resolve(keymap, press, false, ["input_clear"]) === "input_clear") {
       if (draft !== "") {
         setDraft("")
         setCursor(0)
         setHistoryIndex(DRAFT)
+        setExitArmed(false)
         return
       }
-      return exit()
+      if (wasExitArmed) return exit()
+      armExit()
+      return
     }
 
+    /*
+     * ctrl+d dan `<leader>q` TIDAK ikut butuh dua kali.
+     *
+     * Keduanya tidak punya arti lain di sini — tidak ada yang menekan ctrl+d
+     * untuk membatalkan ketikan — jadi konfirmasi di sana hanya menambah satu
+     * tekanan tanpa mencegah apa pun.
+     */
     if (resolve(keymap, press, false, ["app_exit"]) === "app_exit") return exit()
 
     const editAction = resolve(keymap, press, false, [
@@ -1451,6 +1519,7 @@ export function App({
           model={activeAgent ? `${activeAgent} · ${model}` : model}
           usage={usage}
           leaderActive={leaderActive}
+          exitArmed={exitArmed}
           {...(notice ? { hint: notice } : {})}
           mouseCapture={mouseCapture}
         />
@@ -1503,6 +1572,7 @@ export function App({
         model={activeAgent ? `${activeAgent} · ${model}` : model}
         usage={usage}
         leaderActive={leaderActive}
+        exitArmed={exitArmed}
         {...(notice ? { hint: notice } : {})}
         mouseCapture={mouseCapture}
       />

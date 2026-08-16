@@ -98,8 +98,8 @@ test("override config menggantikan default, termasuk mematikannya", () => {
 })
 
 test("resolve mengembalikan kandidat pertama yang cocok", () => {
-  const keymap = buildKeymap()
-  // ctrl+c terikat ke input_clear DAN app_exit; urutan kandidat yang menentukan.
+  const keymap = buildKeymap({ app_exit: "ctrl+c,ctrl+d" })
+  // Satu tombol terikat ke dua aksi; urutan kandidat yang menentukan.
   assert.equal(
     resolve(keymap, { key: "c", ctrl: true }, false, ["input_clear", "app_exit"]),
     "input_clear",
@@ -167,4 +167,20 @@ test("aksi yang dipindah ke tombol polos juga hilang dari menu leader", () => {
   // di daftar yang seluruhnya tentang "apa setelah leader".
   const keymap = buildKeymap({ tool_details: "ctrl+t" })
   assert.equal(leaderKeyFor(keymap, "tool_details"), undefined)
+})
+
+test("ctrl+c BUKAN lagi app_exit — keluar lewatnya butuh dua tekanan", () => {
+  /*
+   * Perilaku dua-tekanan tidak bisa diungkapkan sebagai binding, jadi
+   * mencantumkan ctrl+c di `app_exit` hanya membuat config berbohong tentang
+   * apa yang terjadi. Tombolnya milik `input_clear`; yang memutuskan kapan
+   * keluar adalah penangannya.
+   */
+  const keymap = buildKeymap()
+  assert.equal(resolve(keymap, { key: "c", ctrl: true }, false, ["app_exit"]), undefined)
+  assert.equal(resolve(keymap, { key: "c", ctrl: true }, false, ["input_clear"]), "input_clear")
+
+  // ctrl+d dan <leader>q tetap keluar dalam satu tekanan.
+  assert.equal(resolve(keymap, { key: "d", ctrl: true }, false, ["app_exit"]), "app_exit")
+  assert.equal(resolve(keymap, { key: "q" }, true, ["app_exit"]), "app_exit")
 })

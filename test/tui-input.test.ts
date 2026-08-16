@@ -194,6 +194,14 @@ interface Harness {
   /** Urutan on/off yang diminta ke terminal. */
   captureLog: boolean[]
   recorded: Recorded
+  /**
+   * Apakah aplikasi sudah meminta keluar.
+   *
+   * Dibaca dari `waitUntilExit()` Ink, bukan dari efek samping yang ditebak —
+   * `exit()` yang tidak benar-benar mengakhiri aplikasi adalah bug yang tidak
+   * bisa dilihat dari bingkai layar.
+   */
+  readonly exited: boolean
   push: (event: Event) => void
   frame: () => string
   /** Buang output yang sudah terkumpul. Ink menulis bertambah, jadi tanpa ini
@@ -247,6 +255,7 @@ function mount(
     push = fn
   })
 
+  let exited = false
   const instance = render(
     createElement(App, {
       client,
@@ -280,11 +289,20 @@ function mount(
     },
   )
 
+  // `exit()` yang tidak benar-benar mengakhiri aplikasi adalah bug yang tidak
+  // bisa dilihat dari bingkai layar — jadi dibaca dari Ink, bukan ditebak.
+  void instance.waitUntilExit().then(() => {
+    exited = true
+  })
+
   return {
     stdin,
     mouse,
     captureLog,
     recorded,
+    get exited() {
+      return exited
+    },
     push: (event) => push(event),
     frame: () => output.replace(/\[[0-9;?]*[a-zA-Z]/g, ""),
     clear() {
@@ -2305,6 +2323,100 @@ test("ctrl+p memuat command DAN aksi leader dalam satu daftar", async () => {
     const frame = h.frame()
     assert.match(frame, /Commands/)
     assert.match(frame, /ctrl\+x/, "aksi leader ikut, lengkap dengan tombolnya")
+  } finally {
+    h.cleanup()
+  }
+})
+
+
+// ---------- keluar ----------
+
+test("ctrl+c pada prompt BERISI hanya membersihkan, tidak mempersenjatai apa pun", async () => {
+  /*
+   * Yang membatalkan ketikan tidak sedang setengah jalan menuju keluar.
+   * Kalau tekanan ini ikut mempersenjatai, membersihkan dua ketikan berturut-
+   * turut akan menutup Titah.
+   */
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("halo")
+    await tick(1)
+    // Ink menulis bertambah: tanpa `clear()`, bingkai lama yang masih memuat
+    // "halo" membuat `doesNotMatch` gagal walau prompt sudah bersih.
+    h.clear()
+    h.stdin.press("\u0003")
+    await tick()
+
+    assert.doesNotMatch(h.frame(), /halo/, "prompt dibersihkan")
+    assert.doesNotMatch(h.frame(), /again to quit/, "tidak ada konfirmasi yang menyala")
+
+    h.stdin.press("dunia")
+    await tick(1)
+    h.stdin.press("\u0003")
+    await tick()
+    assert.equal(h.exited, false, "dua kali membersihkan tidak boleh menutup aplikasi")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("ctrl+c pada prompt kosong meminta konfirmasi, tekanan kedua keluar", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0003")
+    await tick()
+
+    assert.match(h.frame(), /ctrl\+c again to quit/, "konfirmasinya terlihat")
+    assert.equal(h.exited, false, "belum keluar")
+
+    h.stdin.press("\u0003")
+    await tick()
+    assert.equal(h.exited, true, "tekanan kedua keluar")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("tombol lain membatalkan konfirmasi keluar", async () => {
+  // Footer menjanjikan "any other key cancels"; janji itu harus benar, atau
+  // ctrl+c berikutnya menutup sesi yang user kira sudah aman.
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0003")
+    await tick()
+    assert.match(h.frame(), /again to quit/)
+
+    h.clear()
+    h.stdin.press("x")
+    await tick()
+    assert.doesNotMatch(h.frame(), /again to quit/, "konfirmasinya dilucuti")
+
+    h.stdin.press("\u0003")
+    await tick()
+    assert.equal(h.exited, false, "prompt berisi 'x' — ini membersihkan, bukan keluar")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("/exit menutup Titah tanpa konfirmasi kedua", async () => {
+  /*
+   * Diketik penuh lalu Enter — maksudnya sudah jelas. Yang perlu dijaga dari
+   * tekanan tak sengaja adalah tombol, bukan perintah yang harus dieja.
+   */
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("/exit")
+    await tick(1)
+    h.stdin.press("\r")
+    await tick()
+
+    assert.equal(h.exited, true)
+    assert.deepEqual(h.recorded.sent, [], "/exit tidak boleh dikirim ke server")
   } finally {
     h.cleanup()
   }
