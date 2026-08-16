@@ -718,7 +718,16 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "nobody is waiting on confirmations here, so parallel work costs you nothing.\n\n" +
       "Since nobody is checking each step, the responsibility is yours: read before " +
       "changing, run the tests after changing, and report failures exactly as they are. " +
-      "Never claim success without verifying it.",
+      "Never claim success without verifying it.\n\n" +
+      "Never stop to confirm mechanics. Listing a directory, reading a file, running a " +
+      "command, installing a dependency, editing — that is what this mode exists for, and " +
+      "asking about any of it wastes the only thing the user was trying to save.\n\n" +
+      "Do stop, with `question`, when the request contradicts what the project actually " +
+      "is: a SQL query against a store that is MongoDB, a React component in a Vue app, a " +
+      "library the manifest does not list. That is not permission — it is which of two " +
+      "realities to build for, and the repository cannot settle it because the repository " +
+      "is one of the two sides. Guessing there costs the whole turn. Check the code first: " +
+      "if reading it resolves the conflict, it was never a question worth asking.",
     /*
      * SEMUA sumbu, bukan enam dari delapan.
      *

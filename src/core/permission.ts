@@ -263,6 +263,59 @@ export function narrower(parent: EffectivePermission, child: EffectivePermission
 }
 
 /**
+ * Izin sub-agent, dihitung dari INDUKNYA — bukan dari `config.permission`.
+ *
+ * # Kenapa
+ *
+ * `build-auto` membuka delapan sumbu supaya tidak pernah menyela. Agent yang
+ * user daftarkan — `explore`, `qc-developer` — hampir tidak pernah menulis blok
+ * `permission` sendiri, jadi sebelum ini mereka jatuh ke global. Global user
+ * pada umumnya `ask` seluruhnya, dan `narrower` mempertahankannya karena `ask`
+ * memang lebih ketat dari `allow`.
+ *
+ * Hasilnya: build-auto tidak pernah bertanya, tapi setiap sub-agent yang ia
+ * panggil bertanya untuk SEGALANYA — `ls`, `cat`, `grep`. Modenya menjanjikan
+ * "tanpa konfirmasi" dan menepatinya persis sampai ia mendelegasikan.
+ *
+ * # Kenapa ini tidak menambah kewenangan apa pun
+ *
+ * Anak tidak pernah bisa melakukan sesuatu yang induknya tidak bisa lakukan
+ * SENDIRI, langsung, tanpa bertanya siapa pun. `narrower` tetap dipasang di
+ * atas hasil ini, jadi batas atasnya tidak bergeser. Yang hilang cuma
+ * dialognya — dan dialog itu memang sudah dijanjikan tidak akan muncul.
+ *
+ * Ke arah sebaliknya jaminannya utuh: di bawah `plan` yang `write`-nya `deny`,
+ * anak yang tidak menyatakan apa-apa mewarisi `deny` itu, dan anak yang
+ * menyatakan `write: "allow"` tetap dijepit `narrower`.
+ *
+ * `rules` di sini SENGAJA hanya milik anak. Aturan induk ikut lewat `narrower`,
+ * yang menggabungkan keduanya; memasukkannya di sini juga berarti setiap aturan
+ * dinilai dua kali.
+ */
+export function inheritedPermission(
+  parent: EffectivePermission,
+  agentID?: string,
+  agent?: Agent,
+): EffectivePermission {
+  const override = agent?.permission
+  return {
+    edit: override?.edit ?? parent.edit,
+    write: override?.write ?? parent.write,
+    bash: override?.bash ?? parent.bash,
+    network: override?.network ?? parent.network,
+    delete: override?.delete ?? parent.delete,
+    mcp: override?.mcp ?? parent.mcp,
+    external_directory: override?.external_directory ?? parent.external_directory,
+    doom_loop: override?.doom_loop ?? parent.doom_loop,
+    rules: Object.entries(override?.rules ?? {}).map(([source, policy]) =>
+      parseRule(source, policy),
+    ),
+    allowlist: [...(override?.allowlist ?? [])],
+    ...(override && agentID ? { source: agentID } : {}),
+  }
+}
+
+/**
  * Apakah pemilik izin ini boleh menjalankan CLI eksternal atas namanya?
  *
  * Blok izin Titah TIDAK PERNAH sampai ke CLI eksternal — mesin itu punya
