@@ -455,6 +455,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
   const assistant = createMessage(session.id, "assistant", [])
   assistant.model = agentDef?.model ?? modelOverride ?? config.model
+  // Dipasang SEBELUM publish pertama, jadi penanda di layar sudah benar sejak
+  // giliran muncul — bukan menyusul setelah jawaban pertama mengalir.
+  if (agentID) assistant.agent = agentID
   bus.publish({ type: "message.updated", sessionID: session.id, message: assistant })
 
   const controller = new AbortController()

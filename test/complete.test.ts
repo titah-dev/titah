@@ -238,12 +238,21 @@ test("teks setelah kursor dipertahankan", () => {
 // ---------- spinner ----------
 
 test("spinner berputar dan tidak pernah keluar dari bingkainya", () => {
+  /*
+   * Empat bingkai, bukan sepuluh braille.
+   *
+   * Detaknya empat kali per detik — dinaikkan dari satu, tapi tidak sampai
+   * sebelas yang dulu membuat layar bergetar. Braille butuh laju tinggi supaya
+   * pergeseran satu titiknya terbaca sebagai gerak; pada laju ini ia terbaca
+   * sebagai kedipan acak. Seperempat lingkaran melompat 90° tiap bingkai, jadi
+   * satu putaran penuh selesai dalam satu detik pada laju yang sama.
+   */
   const frames = new Set<string>()
   for (let i = 0; i < 40; i += 1) frames.add(spinnerFrame(i))
 
-  assert.equal(frames.size, 10, "sepuluh bingkai unik")
-  assert.equal(spinnerFrame(0), spinnerFrame(10), "berulang setelah satu putaran")
-  assert.ok([...frames].every((frame) => frame.length === 1))
+  assert.equal(frames.size, 4, "empat bingkai unik")
+  assert.equal(spinnerFrame(0), spinnerFrame(4), "berulang setelah satu putaran")
+  assert.ok([...frames].every((frame) => frame.length === 1), "satu kolom, jadi tidak menggeser teks")
 })
 
 test("pemilih agent tidak lagi menawarkan \"(no agent)\"", () => {
