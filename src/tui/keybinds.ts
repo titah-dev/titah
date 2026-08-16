@@ -83,6 +83,57 @@ export const DEFAULT_KEYBINDS = {
 
 export type Action = keyof typeof DEFAULT_KEYBINDS
 
+/**
+ * Aksi yang bisa dicapai lewat tombol leader, beserta keterangannya.
+ *
+ * Satu daftar, dua pemakai: menu yang muncul setelah leader ditekan, dan
+ * command palette. Dua daftar untuk satu himpunan berarti yang kedua akan
+ * ketinggalan begitu aksi ditambah — dan menu yang menjanjikan tombol yang
+ * tidak ada lebih buruk daripada tidak ada menu.
+ *
+ * URUTANNYA disengaja: yang paling sering dipakai lebih dulu, bukan alfabetis.
+ * Menu ini dibaca sambil menahan satu tombol, dan mata berhenti di baris
+ * pertama yang masuk akal.
+ */
+export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
+  { action: "tool_details", describe: "Buka/tutup semua keluaran tool" },
+  { action: "subagents_panel", describe: "Panel sub-agent" },
+  { action: "session_list", describe: "Pindah ke sesi lain" },
+  { action: "session_new", describe: "Mulai sesi baru" },
+  { action: "session_undo", describe: "Batalkan perubahan giliran terakhir" },
+  { action: "messages_last", describe: "Lompat ke pesan terbaru" },
+  { action: "mouse_toggle", describe: "Matikan pelacakan mouse agar teks bisa diseleksi" },
+  { action: "app_help", describe: "Bantuan singkat" },
+  { action: "app_exit", describe: "Keluar" },
+]
+
+/**
+ * Tombol yang harus ditekan SETELAH leader untuk sebuah aksi, mis. `"d"`.
+ *
+ * `undefined` kalau aksi itu tidak punya chord ber-leader sama sekali — yang
+ * berarti ia tidak boleh muncul di menu leader, betapapun bergunanya.
+ */
+export function leaderKeyFor(keymap: Keymap, action: Action): string | undefined {
+  const chord = (keymap[action] ?? []).find((entry) => entry.leader)
+  if (!chord) return undefined
+  const mods = [chord.ctrl ? "ctrl" : "", chord.alt ? "alt" : ""].filter(Boolean)
+  return [...mods, chord.key].join("+")
+}
+
+/**
+ * Nama tombol leader itu sendiri, mis. `"ctrl+x"`.
+ *
+ * Dibaca dari keymap, bukan ditulis tetap: user boleh menggantinya lewat
+ * `keybinds.leader`, dan menu yang menyebut "ctrl+x" pada mesin yang memakai
+ * "ctrl+b" mengajari tombol yang salah.
+ */
+export function leaderName(keymap: Keymap): string {
+  const chord = (keymap["leader"] ?? [])[0]
+  if (!chord) return "ctrl+x"
+  const mods = [chord.ctrl ? "ctrl" : "", chord.alt ? "alt" : ""].filter(Boolean)
+  return [...mods, chord.key].join("+")
+}
+
 export interface Chord {
   key: string
   ctrl: boolean

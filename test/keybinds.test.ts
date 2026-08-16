@@ -8,6 +8,9 @@ import {
   parseBinding,
   parseChord,
   resolve,
+  LEADER_ACTIONS,
+  leaderKeyFor,
+  leaderName,
 } from "../src/tui/keybinds.ts"
 
 test("parseChord memahami modifier bertumpuk", () => {
@@ -110,4 +113,58 @@ test("resolve mengembalikan kandidat pertama yang cocok", () => {
 test("tombol yang tidak terikat apa pun mengembalikan undefined", () => {
   const keymap = buildKeymap()
   assert.equal(resolve(keymap, { key: "z", alt: true }, false, Object.keys(keymap)), undefined)
+})
+
+// ---------- menu leader ----------
+
+test("setiap aksi di menu leader benar-benar punya tombolnya", () => {
+  /*
+   * Menu yang menjanjikan tombol yang tidak ada lebih buruk daripada tidak ada
+   * menu: user menekannya, tidak terjadi apa-apa, dan ia berhenti mempercayai
+   * seluruh daftarnya.
+   */
+  const keymap = buildKeymap()
+  for (const entry of LEADER_ACTIONS) {
+    assert.ok(
+      leaderKeyFor(keymap, entry.action),
+      `${entry.action} ada di menu tapi tidak punya chord ber-leader`,
+    )
+    assert.ok(entry.describe.length > 0, `${entry.action} tanpa keterangan`)
+  }
+})
+
+test("tombol di menu adalah tombol yang SUNGGUH cocok saat ditekan", () => {
+  // Label dan pencocokan dihitung dari sumber yang berbeda; kalau keduanya
+  // menyimpang, menu memberi petunjuk yang salah tanpa satu pun test merah.
+  const keymap = buildKeymap()
+  for (const entry of LEADER_ACTIONS) {
+    const key = leaderKeyFor(keymap, entry.action) as string
+    const press = key.includes("+")
+      ? { key: key.split("+").at(-1) as string, ctrl: key.startsWith("ctrl") }
+      : { key }
+    assert.equal(
+      resolve(keymap, press, true, [entry.action]),
+      entry.action,
+      `menu bilang "${key}" untuk ${entry.action}, tapi tombol itu tidak cocok`,
+    )
+  }
+})
+
+test("nama leader dibaca dari keymap, bukan ditulis tetap", () => {
+  // User boleh menggantinya lewat `keybinds.leader`, dan menu yang menyebut
+  // "ctrl+x" pada mesin yang memakai "ctrl+b" mengajari tombol yang salah.
+  assert.equal(leaderName(buildKeymap()), "ctrl+x")
+  assert.equal(leaderName(buildKeymap({ leader: "ctrl+b" })), "ctrl+b")
+})
+
+test("aksi yang dilepas dari leader hilang dari menu, bukan jadi tombol hantu", () => {
+  const keymap = buildKeymap({ tool_details: "none" })
+  assert.equal(leaderKeyFor(keymap, "tool_details"), undefined)
+})
+
+test("aksi yang dipindah ke tombol polos juga hilang dari menu leader", () => {
+  // Ia masih bisa dipakai — hanya tidak lewat leader, jadi tidak boleh muncul
+  // di daftar yang seluruhnya tentang "apa setelah leader".
+  const keymap = buildKeymap({ tool_details: "ctrl+t" })
+  assert.equal(leaderKeyFor(keymap, "tool_details"), undefined)
 })

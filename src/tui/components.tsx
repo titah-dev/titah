@@ -495,6 +495,8 @@ const KIND_COLOR: Record<Suggestion["kind"], string> = {
   model: "yellow",
   "pick-agent": "cyan",
   session: "green",
+  // Kuning seperti model: keduanya mengubah keadaan aplikasi, bukan teks prompt.
+  action: "yellow",
 }
 
 /**

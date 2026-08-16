@@ -2215,3 +2215,97 @@ test("Esc membatalkan login yang menunggu, bukan giliran di baliknya", async () 
     }
   })
 })
+
+
+// ---------- menu leader ----------
+
+test("menekan ctrl+x lalu MENUNGGU memunculkan daftar tombolnya", async () => {
+  /*
+   * Masalah yang diperbaiki: tidak ada apa pun yang memberi tahu apa saja yang
+   * boleh ditekan setelah leader. Satu-satunya cara mengetahuinya adalah
+   * membaca kode atau menebak.
+   *
+   * Menunya muncul setelah JEDA, bukan seketika — lihat `LEADER_MENU_DELAY`.
+   * Yang hafal `ctrl+x d` menekan dua tombol dalam sepersekian detik dan tidak
+   * pernah melihatnya.
+   */
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0018")
+    /*
+     * Ditunggu lewat teks yang HANYA ada di menu.
+     *
+     * `ctrl+x …` juga dicetak footer sebagai penanda leader menyala, jadi
+     * menunggunya cocok seketika — dan assertion berikutnya berjalan sebelum
+     * menunya sempat muncul. Test yang lulus atau gagal karena pola yang
+     * kebetulan cocok di tempat lain tidak menguji apa pun.
+     */
+    await frameEventually(h, /↑↓ move/, "menu leader harus muncul setelah jeda")
+
+    const frame = h.frame()
+    assert.match(frame, /ctrl\+x d/, "tombolnya disebut")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("menekan tombolnya dengan cepat TIDAK memunculkan menu", async () => {
+  // Kalau menu muncul untuk semua orang, ia berhenti jadi bantuan dan mulai
+  // jadi kedipan di setiap penekanan leader.
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0018")
+    h.stdin.press("d")
+    await tick()
+
+    assert.doesNotMatch(h.frame(), /↑↓ move/, "menu tidak boleh sempat muncul")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("memilih dari menu leader menjalankan aksinya", async () => {
+  /*
+   * Menu dan tombol memakai SATU implementasi (`runLeaderAction`). Test ini
+   * yang membuktikannya dari luar: memilih baris pertama harus menghasilkan
+   * efek yang sama dengan menekan tombolnya.
+   */
+  const h = mount()
+  try {
+    await tick()
+    pushRunningTool(h)
+    await tick()
+
+    h.stdin.press("\u0018")
+    await frameEventually(h, /↑↓ move/, "menu terbuka")
+    h.stdin.press("\r")
+    await tick()
+
+    // Baris pertama menu adalah `tool_details` — blok tool jadi terbuka.
+    await frameEventually(h, /npm run build/, "aksi dari menu benar-benar jalan")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("ctrl+p memuat command DAN aksi leader dalam satu daftar", async () => {
+  /*
+   * Aksi leader tidak punya nama yang bisa diketik — satu-satunya cara
+   * menemukannya adalah menekan leader lalu menebak. Menaruhnya di sini membuat
+   * `ctrl+p` jadi satu tempat untuk "apa saja yang bisa saya lakukan".
+   */
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0010")
+    await tick()
+
+    const frame = h.frame()
+    assert.match(frame, /Commands/)
+    assert.match(frame, /ctrl\+x/, "aksi leader ikut, lengkap dengan tombolnya")
+  } finally {
+    h.cleanup()
+  }
+})
