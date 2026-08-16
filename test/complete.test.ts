@@ -11,8 +11,11 @@ import {
   skillSuggestions,
   suggest,
 } from "../src/tui/complete.ts"
-import { spinnerFrame } from "../dist/tui/components.js"
+import { shimmer, spinnerFrame, workingWord } from "../dist/tui/components.js"
 import { Config } from "../src/core/schema.ts"
+
+/** Jumlah kata di `WORKING_WORDS`, dipakai menguji indeks negatif. */
+const WORD_COUNT = 12
 
 const config = Config.parse({
   // `discover: []` wajib: suggest("/") sekarang ikut mendaftar skill, dan
@@ -239,19 +242,18 @@ test("teks setelah kursor dipertahankan", () => {
 
 test("spinner berputar dan tidak pernah keluar dari bingkainya", () => {
   /*
-   * Sepuluh bingkai braille, dan detaknya 100ms — jadi tepat SATU putaran
-   * penuh per detik.
+   * Titik yang bernapas jadi `@`, bukan braille yang berputar.
    *
-   * Jumlah bingkai dan laju detak adalah satu keputusan, bukan dua: sepuluh
-   * bingkai pada 100ms itulah yang menghasilkan satu putaran per detik. Kalau
-   * salah satunya berubah tanpa yang lain, putarannya berhenti sinkron dengan
-   * penghitung detik di sebelahnya.
+   * Braille menuntut laju tinggi supaya pergeseran satu titiknya terbaca
+   * sebagai gerak, dan pada laju itu layar bergetar — dua putaran percobaan
+   * membuktikan keduanya tidak bisa didamaikan. Napas tidak punya pertukaran
+   * itu: ia lambat menurut sifatnya, jadi 250ms sudah cukup.
    */
   const frames = new Set<string>()
   for (let i = 0; i < 40; i += 1) frames.add(spinnerFrame(i))
 
-  assert.equal(frames.size, 10, "sepuluh bingkai unik")
-  assert.equal(spinnerFrame(0), spinnerFrame(10), "berulang setelah satu putaran")
+  assert.deepEqual([0, 1, 2, 3].map(spinnerFrame), ["·", "o", "O", "@"], "membesar sampai @")
+  assert.equal(spinnerFrame(6), spinnerFrame(0), "berulang setelah satu napas")
   assert.ok([...frames].every((frame) => frame.length === 1), "satu kolom, jadi tidak menggeser teks")
 })
 
@@ -280,4 +282,55 @@ test("jaring pengaman: entri kosong diberi label yang jujur", () => {
   const items = agentPickerItems(Config.parse({}), [undefined])
   assert.equal(items[0]?.label, "(default)")
   assert.equal(items[0]?.value, "")
+})
+
+// ---------- kata yang bercahaya ----------
+
+test("napas spinner naik lalu TURUN, bukan melompat balik", () => {
+  /*
+   * Kalau ia melompat dari `@` langsung ke `·`, yang terlihat bukan napas
+   * melainkan kedipan — satu bingkai yang tidak nyambung dengan tetangganya.
+   */
+  const size = ["·", "o", "O", "@"]
+  const naik = [0, 1, 2, 3].map((t) => size.indexOf(spinnerFrame(t)))
+  const turun = [3, 4, 5].map((t) => size.indexOf(spinnerFrame(t)))
+
+  assert.deepEqual(naik, [0, 1, 2, 3])
+  assert.deepEqual(turun, [3, 2, 1], "sesudah puncak ia mengempis, bukan mengulang dari nol")
+})
+
+test("kata kerja berganti, dan selalu ada", () => {
+  const kata = new Set<string>()
+  for (let i = 0; i < 24; i += 1) kata.add(workingWord(i))
+
+  assert.ok(kata.size > 6, "satu-dua kata saja berhenti terasa berganti")
+  assert.ok([...kata].every((word) => /^[A-Z][a-z]+$/.test(word)), "Inggris, satu kata, kapital")
+  assert.equal(workingWord(-1), workingWord(WORD_COUNT - 1), "indeks negatif tidak menghasilkan undefined")
+})
+
+test("cahaya menyapu satu huruf, dengan tetangga setengah terang", () => {
+  const glow = shimmer("Pondering", 0)
+  assert.equal(glow.map((part) => part.text).join(""), "Pondering", "tidak boleh mengubah katanya")
+  assert.equal(glow[0]?.level, 2, "puncaknya di huruf pertama saat detak 0")
+  assert.equal(glow[1]?.level, 1, "tetangganya setengah")
+  assert.equal(glow[4]?.level, 0, "yang jauh redup")
+})
+
+test("cahaya BERBALIK di ujung, tidak melompat ke awal", () => {
+  /*
+   * Segitiga, bukan gergaji. Lompatan dari huruf terakhir kembali ke huruf
+   * pertama terbaca sebagai kedipan di ujung kata — persis cacat yang membuat
+   * animasi terasa murah.
+   */
+  const kata = "abcd"
+  const puncak = (tick: number) => shimmer(kata, tick).findIndex((part) => part.level === 2)
+
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6].map(puncak), [0, 1, 2, 3, 2, 1, 0])
+})
+
+test("kata satu huruf tidak membagi nol", () => {
+  // `span` jadi 0, dan sisa bagi terhadap nol menghasilkan NaN — indeks NaN
+  // membuat seluruh kata redup tanpa satu pun error.
+  assert.deepEqual(shimmer("x", 3), [{ text: "x", level: 1 }])
+  assert.deepEqual(shimmer("", 3), [])
 })
