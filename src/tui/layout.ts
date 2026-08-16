@@ -467,6 +467,25 @@ export function turnAgent(messages: Message[]): string | undefined {
   return undefined
 }
 
+/**
+ * Berapa tool yang sudah dipanggil sepanjang sesi.
+ *
+ * Dipakai indikator kerja untuk memutuskan kapan kata kerjanya berganti: satu
+ * tool baru, satu kata baru. Dihitung untuk SELURUH sesi, bukan giliran
+ * berjalan saja — kalau per giliran, setiap giliran dimulai dari kata yang sama
+ * dan "kata berganti" berhenti berarti pada giliran pendek beruntun.
+ *
+ * Monoton naik, dan itu syaratnya: angka yang bisa turun akan memutar kata
+ * mundur, yang terbaca seperti pekerjaan yang diulang.
+ */
+export function toolSteps(messages: Message[]): number {
+  let count = 0
+  for (const message of messages) {
+    for (const part of message.parts) if (part.type === "tool") count += 1
+  }
+  return count
+}
+
 export function allLines(
   messages: Message[],
   expanded: Expansion,

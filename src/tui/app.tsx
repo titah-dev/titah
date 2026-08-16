@@ -61,6 +61,7 @@ import {
   editorRows,
   historyRows,
   RESERVED_ROWS,
+  toolSteps,
   turnAgent,
   viewport,
   type Expansion,
@@ -311,6 +312,26 @@ export function App({
    * mengaku sedang menjalankan agent yang sebenarnya belum menyentuh apa pun.
    */
   const runningAgent = turnAgent(state.messages)
+
+  /*
+   * Kata kerja berganti tiap Titah memulai tool baru — `ls` lalu `cat` adalah
+   * dua kata yang berbeda.
+   *
+   * Dulu ia berganti tiap delapan detik, dan itu keliru dengan cara yang halus:
+   * kata yang berganti sendiri sementara pekerjaannya diam MEMBERI kesan ada
+   * kemajuan. Itu kesan yang paling tidak boleh dipalsukan oleh indikator
+   * kerja — tool yang macet lima menit sekarang memegang satu kata selama lima
+   * menit, apa adanya.
+   *
+   * Ref-nya ditulis SAAT RENDER, bukan di `useEffect`. Efek berjalan setelah
+   * bingkai tergambar, jadi bingkai pertama sebuah langkah akan memakai
+   * `sinceStep` milik langkah SEBELUMNYA — satu bingkai dengan cahaya di posisi
+   * yang salah, tepat pada bingkai yang paling diperhatikan. Penulisan ini
+   * idempoten untuk masukan render yang sama, jadi aman diulang.
+   */
+  const step = toolSteps(state.messages)
+  const stepStarted = useRef({ step, tick })
+  if (stepStarted.current.step !== step) stepStarted.current = { step, tick }
 
   /*
    * Panjang kesimpulan, disimpan di KLIEN seperti model dan agent.
@@ -1467,9 +1488,8 @@ export function App({
     state.status === "working" ? (
       <Working
         tick={tick}
-        // Ganti kata tiap ~8 detik. Cukup jarang untuk sempat dibaca sampai
-        // habis, cukup sering untuk barisnya tidak pernah jadi perabot.
-        word={Math.floor(tick / 32)}
+        step={step}
+        sinceStep={tick - stepStarted.current.tick}
         elapsed={Math.max(0, Math.round((Date.now() - startedAt) / 1000))}
         {...(runningAgent ? { agent: runningAgent } : {})}
       />
