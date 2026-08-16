@@ -586,6 +586,30 @@ export const Config = z.object({
    * "terpasang" tidak pernah berarti "dipercaya".
    */
   plugin: z.record(z.string(), PluginConfig).default({}),
+  /**
+   * Kapan pekerjaan diserahkan ke sub-agent.
+   *
+   * Ada karena tiga perbaikan sebelumnya semuanya berupa BUJUKAN — daftar tool
+   * yang lengkap, prompt yang tidak menyuruh sebaliknya, kriteria yang bisa
+   * dinilai. Bujukan menggeser peluang; ia tidak pernah memberi jaminan, dan
+   * dua model berbeda tetap bisa memutuskan berbeda untuk prompt yang sama.
+   * Sakelar ini yang memberi kepastian.
+   *
+   *   "ask"    — sesudah rencana ditulis, Titah menilai apakah pekerjaannya
+   *              layak dipecah; kalau ya, model MENANYAKANNYA kepada user.
+   *              Bawaan: keputusannya terlihat, bukan diam-diam.
+   *   "auto"   — model memutuskan sendiri, tanpa bertanya.
+   *   "always" — pekerjaan yang cocok SELALU diserahkan, tanpa bertanya.
+   *   "never"  — tidak pernah; roster bahkan tidak dikirim ke model, jadi
+   *              tidak ada token yang terbuang untuk daftar yang tak terpakai.
+   */
+  delegation: z
+    .enum(["ask", "auto", "always", "never"])
+    .default("ask")
+    .describe(
+      "When to hand work to sub-agents. ask: analyse after planning and ask you. " +
+        "auto: the model decides silently. always: hand over matching work. never: off.",
+    ),
   compaction: Compaction.default({ auto: true, reserved: 8192, tailTurns: 2, prune: true }),
   keybinds: z
     .record(z.string(), z.string())
@@ -671,17 +695,27 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
   },
   build: {
     description: "Build Manual — do the work, confirm every change",
+    /*
+     * Dulu berbunyi "Carry out the user's request DIRECTLY", dan satu kata itu
+     * meniadakan seluruh blok roster yang muncul beberapa baris di bawahnya:
+     * model membaca perintah tegas untuk mengerjakan sendiri, lalu saran
+     * bersyarat untuk mendelegasikan. Yang tegas menang.
+     */
     prompt:
-      "Carry out the user's request directly.\n\n" +
+      "Carry out the user's request.\n\n" +
       "Read files before changing them. Keep changes as small and targeted as possible. " +
       "Each change is confirmed by the user one at a time — that is deliberate, so do " +
-      "not batch many changes into one large step.",
+      "not batch many changes into one large step.\n\n" +
+      "Work that matches a sub-agent in your roster may be handed to it with `task`; " +
+      "the confirmations still reach you, one per change.",
     permission: { edit: "ask", write: "ask", bash: "ask", network: "ask", delete: "ask", mcp: "ask" },
   },
   "build-auto": {
     description: "Build Auto — work autonomously, no confirmations",
     prompt:
       "Carry the user's request through to completion without waiting for approval.\n\n" +
+      "Hand whole pieces of work to the sub-agents in your roster when one of them fits — " +
+      "nobody is waiting on confirmations here, so parallel work costs you nothing.\n\n" +
       "Since nobody is checking each step, the responsibility is yours: read before " +
       "changing, run the tests after changing, and report failures exactly as they are. " +
       "Never claim success without verifying it.",

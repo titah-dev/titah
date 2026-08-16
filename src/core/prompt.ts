@@ -36,6 +36,8 @@ Available tools:
 - Remembering: plan (this session), memory (this project, forever)
 - Asking: question
 - Web: webfetch, websearch
+- Delegating: task — hand a piece of work to a configured sub-agent
+- Other: skill, github
 
 About \`plan\`:
 - Your conversation is summarised automatically once it grows long, including
@@ -128,6 +130,10 @@ export interface BuiltPrompt {
  * tertinggal saat yang pertama diperbaiki.
  */
 export function rosterSection(config: Config): string | undefined {
+  // `never` tidak mengirim rosternya sama sekali: daftar yang tidak boleh
+  // dipakai tetap dibayar sebagai token di setiap permintaan.
+  if (config.delegation === "never") return undefined
+
   const ids = dispatchableAgents(config)
   if (ids.length === 0) return undefined
 
@@ -140,9 +146,27 @@ export function rosterSection(config: Config): string | undefined {
     "--- Sub-agents you may dispatch with `task` ---",
     ...lines,
     "",
-    "Hand work to one of them when it matches their description better than doing it",
-    "yourself. Several calls in one step run at the same time; the ones allowed to write",
-    "files are serialised for you. A sub-agent never gets more permission than you have.",
+    /*
+     * Kriteria yang BISA DINILAI, bukan ajakan bersyarat.
+     *
+     * Versi sebelumnya berbunyi "hand work to one of them when it matches their
+     * description better than doing it yourself" — dan untuk tugas kecil itu
+     * memang salah: membaca tiga berkas sendiri jelas lebih murah daripada
+     * memanggil sub-agent. Modelnya menalar dengan benar; kalimatnya yang tidak
+     * pernah memicu. Diukur pada `9router/ant`: satu delegasi dari lima
+     * percobaan pada tugas yang cocok.
+     */
+    "Hand work to one of them when any of these is true:",
+    "  - it needs reading many files, and you only need the conclusion",
+    "  - it matches one of the descriptions above more closely than your own job",
+    "  - two or more parts of the work do not depend on each other",
+    "",
+    "Several calls in one step run at the same time; the ones allowed to write files are",
+    "serialised for you. A sub-agent never gets more permission than you have, and it",
+    "cannot see this conversation — give it a self-contained brief.",
+    ...(config.delegation === "always"
+      ? ["", "This project delegates by default: if one of them fits, hand it over."]
+      : []),
   ].join("\n")
 }
 

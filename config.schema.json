@@ -719,6 +719,17 @@
         }
       }
     },
+    "delegation": {
+      "default": "ask",
+      "description": "When to hand work to sub-agents. ask: analyse after planning and ask you. auto: the model decides silently. always: hand over matching work. never: off.",
+      "type": "string",
+      "enum": [
+        "ask",
+        "auto",
+        "always",
+        "never"
+      ]
+    },
     "compaction": {
       "default": {
         "auto": true,
