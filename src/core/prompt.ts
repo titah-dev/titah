@@ -122,6 +122,100 @@ export interface BuiltPrompt {
   sources: string[]
 }
 
+export type Effort = "low" | "medium" | "high"
+
+/**
+ * Tingkat yang bisa dipilih, URUT dari yang paling ringkas.
+ *
+ * Satu daftar untuk tiga pemakai: putaran ctrl+r, validasi di server, dan
+ * keterangan di layar. Tiga daftar untuk satu himpunan berarti yang ketiga akan
+ * ketinggalan begitu tingkat keempat ditambahkan.
+ *
+ * `"default"` ikut di sini karena ia memang salah satu pilihan yang dilewati
+ * putaran — bukan keadaan di luar putaran.
+ */
+export const EFFORTS = ["default", "low", "medium", "high"] as const
+
+export type EffortChoice = (typeof EFFORTS)[number]
+
+/** Tingkat berikutnya dalam putaran, kembali ke awal setelah yang terakhir. */
+export function nextEffort(current: EffortChoice): EffortChoice {
+  const at = EFFORTS.indexOf(current)
+  return EFFORTS[(at + 1) % EFFORTS.length] as EffortChoice
+}
+
+/**
+ * Penutup jawaban: satu kesimpulan setelah pekerjaannya selesai.
+ *
+ * # Kenapa ini ada
+ *
+ * Giliran yang panjang berakhir dengan keluaran tool terakhir dan satu-dua
+ * kalimat. Yang hilang justru bagian yang paling mahal dihitung ulang: apa yang
+ * berubah, apa yang dibuktikan, dan apa yang masih menggantung. User yang
+ * membacanya besok pagi harus menyusun sendiri semua itu dari gulungan panjang.
+ *
+ * # Kenapa panjangnya bisa diatur, dan kenapa "kosong" bukan salah satu tingkat
+ *
+ * Kesimpulan yang selalu panjang berhenti dibaca; yang selalu pendek tidak
+ * cukup untuk giliran besar. Jadi panjangnya jadi sumbu — TAPI tanpa nilai
+ * bawaan. `undefined` berarti Titah tidak menyebut panjang sama sekali dan
+ * modelnya yang menakar, persis seperti sebelum sumbu ini ada.
+ *
+ * Itu bukan malas memilih. Ia satu-satunya tingkat yang tidak bisa dinyatakan
+ * sebagai angka: model yang menakar sendiri akan menulis dua kalimat untuk
+ * perbaikan satu baris dan setengah halaman untuk migrasi — dan itu memang yang
+ * benar. Angka apa pun yang kita pilih akan salah di salah satu ujungnya.
+ */
+const EFFORT_RULE: Record<Effort, string> = {
+  low: "Keep it to one or two sentences. Only what changed and whether it works.",
+  medium:
+    "A short paragraph: what changed, what you verified, and anything still open. " +
+    "No restating the steps — they are already on screen.",
+  high:
+    "Go through it properly: what changed and why this way, what you verified and how, " +
+    "what you deliberately left alone, and what could still bite. Say what you are unsure " +
+    "of — an analysis that only lists successes is not an analysis.",
+}
+
+export function conclusionSection(effort?: Effort): string {
+  /*
+   * Izin melewatkan kesimpulan HANYA berlaku di tingkat bawah.
+   *
+   * Diukur pada giliran sungguhan sebelum pembagian ini ada: `high` menghasilkan
+   * penutup yang sama pendeknya dengan `low` untuk suntingan satu baris — klausa
+   * "lewati kalau tidak ada yang disimpulkan" menang atas seluruh aturan
+   * panjangnya. Masuk akal bagi model, dan salah bagi user: ia baru saja MEMILIH
+   * analisa panjang, jadi Titah yang memutuskan pekerjaannya "tidak layak
+   * disimpulkan" mengambil kembali pilihan yang baru diberikan.
+   *
+   * Di tingkat bawah kebalikannya yang benar. `default` dan `low` justru dipilih
+   * supaya layar tidak penuh, dan di sana penutup wajib untuk "halo" adalah
+   * persis gangguan yang ingin dihindari.
+   */
+  const alwaysWrite = effort === "medium" || effort === "high"
+
+  return [
+    "--- Closing the answer ---",
+    "End every answer with a short conclusion, after the work is done. Not a summary of",
+    "the steps — the user watched those. What it changed, whether it is verified, and what",
+    "is still open.",
+    "",
+    effort
+      ? EFFORT_RULE[effort]
+      : // Tidak menyebut panjang sama sekali. Menulis "sepanjang yang perlu"
+        // terdengar netral tapi tetap sebuah instruksi, dan model membacanya
+        // sebagai izin untuk memanjang.
+        "Let its length follow the work: a one-line fix does not need a paragraph.",
+    "",
+    alwaysWrite
+      ? "Write it even when the change was small. The user asked for this depth; a one-line " +
+        "edit still has a reason, a check, and something it did not cover. Only a bare " +
+        "greeting gets nothing."
+      : "Skip it entirely when there is nothing to conclude — a greeting, or a question you " +
+        "answered in one line. A conclusion under a one-sentence answer is padding.",
+  ].join("\n")
+}
+
 /**
  * Bagian roster, atau `undefined` kalau tidak ada yang bisa dipanggil.
  *
@@ -170,7 +264,20 @@ export function rosterSection(config: Config): string | undefined {
   ].join("\n")
 }
 
-export function buildSystemPrompt(config: Config, cwd: string, agentID?: string): BuiltPrompt {
+export function buildSystemPrompt(
+  config: Config,
+  cwd: string,
+  agentID?: string,
+  /**
+   * Tingkat yang dipilih user LIVE lewat ctrl+r, mengalahkan `agent.effort`.
+   *
+   * `"default"` bukan sekadar ketiadaan nilai — ia pilihan yang bisa ditekan,
+   * dan artinya "kembalikan ke model yang menakar" walaupun config agent-nya
+   * menyetel sesuatu. Tanpa nilai itu, sekali user menyetel `effort` di config
+   * ia tidak akan pernah bisa kembali ke perilaku tanpa batas dari keyboard.
+   */
+  effortOverride?: Effort | "default",
+): BuiltPrompt {
   const files = discover(cwd)
 
   for (const extra of config.instructions) {
@@ -243,6 +350,19 @@ export function buildSystemPrompt(config: Config, cwd: string, agentID?: string)
   // adalah `renderSkillReport`, yang dibaca `/skills` dan `titah doctor`.
   // Menyusun prompt bukan tempat untuk mengeluh, dan dua penghitung untuk hal
   // yang sama berarti salah satunya pasti ketinggalan zaman.
+  /*
+   * Penutup jawaban, dan siapa yang menentukan panjangnya.
+   *
+   * Urutannya: pilihan LIVE user (ctrl+r) mengalahkan `agent.effort`. Yang
+   * ditekan barusan harus menang atas yang ditulis kemarin — kalau tidak,
+   * sakelarnya terasa rusak pada agent yang kebetulan punya `effort` di config.
+   *
+   * `"default"` dipetakan ke `undefined`, bukan dilewati: ia PILIHAN untuk
+   * kembali ke model yang menakar sendiri, bukan ketiadaan pilihan.
+   */
+  const effort = effortOverride === "default" ? undefined : (effortOverride ?? agent?.effort)
+  sections.push(conclusionSection(effort))
+
   const wanted = [...config.skills.always, ...(agent?.skills ?? [])]
   const full: Skill[] = []
 

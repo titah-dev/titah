@@ -476,19 +476,21 @@ export function Splash({
 }
 
 /*
- * Seperempat lingkaran, bukan braille.
+ * Braille, dan tepat SATU putaran penuh per detik.
  *
- * Braille sepuluh bingkai hanya terbaca sebagai gerak pada laju tinggi — tiap
- * bingkai menggeser satu titik, dan pada empat detak per detik pergeseran
- * sekecil itu terbaca sebagai kedipan acak, bukan putaran. Empat bingkai yang
- * masing-masing melompat 90° terbaca sebagai putaran penuh dalam satu detik
- * pada laju yang sama.
+ * Sepuluh bingkai pada 100ms. Itu memang laju yang dulu dituduh membuat layar
+ * bergetar, dan tuduhannya tidak sepenuhnya salah — di alternate screen tiap
+ * detak menulis ulang bingkainya. Yang berubah bukan tuduhannya, melainkan
+ * berapa banyak yang ikut dihitung ulang tiap detak: sejak `useMemo` di
+ * `app.tsx`, riwayat TIDAK lagi ditata ulang sepuluh kali per detik. Yang
+ * tersisa hanyalah satu karakter yang berganti.
  *
- * Bentuknya juga sama dengan bulatan langkah berjalan di `layout.ts`, jadi dua
- * animasi yang muncul bersamaan di layar berputar dengan cara yang sama alih-
- * alih bersaing.
+ * Braille sengaja dipertahankan meski butuh laju tinggi. Ia satu-satunya bentuk
+ * yang gerakannya halus tanpa melebar melewati satu kolom, dan pada 100ms
+ * pergeseran satu titik yang tadinya terbaca sebagai kedipan justru menjadi
+ * kelebihannya: putarannya mengalir, bukan melompat.
  */
-const SPINNER = ["◐", "◓", "◑", "◒"]
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 /** Bingkai spinner, dipisah supaya bisa diuji tanpa merender apa pun. */
 export function spinnerFrame(tick: number): string {

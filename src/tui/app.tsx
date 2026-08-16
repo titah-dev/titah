@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { Box, Text, useApp, useInput, useStdout } from "ink"
 import type { Key } from "ink"
 import type { Client } from "./client.ts"
@@ -55,6 +55,7 @@ import {
 } from "./complete.ts"
 import { IMMEDIATE_COMMANDS, listCommands } from "../core/command.ts"
 import type { Config } from "../core/schema.ts"
+import { nextEffort, type EffortChoice } from "../core/prompt.ts"
 import {
   allLines,
   editorRows,
@@ -311,6 +312,16 @@ export function App({
    */
   const runningAgent = turnAgent(state.messages)
 
+  /*
+   * Panjang kesimpulan, disimpan di KLIEN seperti model dan agent.
+   *
+   * Server tidak perlu mengingatnya: ia dikirim per giliran, jadi tidak ada
+   * keadaan yang bisa menyimpang antara apa yang tertulis di layar dan apa yang
+   * dipakai giliran berikutnya. Mulai dari `"default"` — sekali ditekan, ia
+   * mengalahkan `agent.effort` di config, dan itu memang maksudnya.
+   */
+  const [effort, setEffort] = useState<EffortChoice>("default")
+
   // Ukuran layar disimpan di state supaya resize terminal ikut merender ulang;
   // membaca stdout.rows saat render saja tidak memicu apa pun.
   //
@@ -385,26 +396,19 @@ export function App({
     if (state.status !== "working") return
     setStartedAt(Date.now())
     /*
-     * EMPAT detak per detik: bukan sebelas, bukan satu.
+     * 100ms — sepuluh bingkai braille, tepat satu putaran penuh per detik.
      *
-     * Di alternate screen seluruh layar adalah satu bingkai, jadi tiap detak
-     * menulis ulang semuanya. Sebelas kali per detik terbaca sebagai getaran —
-     * itu keluhan yang membuat angka ini pernah dijatuhkan ke satu. Tapi satu
-     * kali per detik menukar keluhan itu dengan keluhan lain: pekerjaannya
-     * terlihat lamban, karena satu-satunya hal yang bergerak di layar bergerak
-     * selambat jarum detik.
+     * Angka ini pernah dijatuhkan ke 1000ms karena layar bergetar: di alternate
+     * screen tiap detak menulis ulang bingkainya, dan sebelas kali per detik
+     * terbaca sebagai getaran. Yang membuatnya bisa dinaikkan lagi bukan
+     * keberanian, melainkan `useMemo` di bawah — riwayat tidak lagi ditata ulang
+     * tiap detak, jadi yang berganti sepuluh kali per detik tinggal satu
+     * karakter, bukan seluruh isi layar.
      *
-     * Frekuensi bukan satu-satunya yang menentukan seberapa cepat animasi
-     * TERBACA. Yang juga menentukan: seberapa besar langkah tiap bingkai. Braille
-     * sepuluh bingkai butuh laju tinggi supaya pergeseran titiknya terbaca
-     * sebagai gerak; seperempat lingkaran empat bingkai melompat 90° tiap
-     * langkah, jadi ia terbaca brisk justru pada laju rendah — satu putaran
-     * penuh per detik di sini.
-     *
-     * Jadi laju dinaikkan seperlunya saja, dan sisa kecepatannya diambil dari
-     * bentuk bingkainya. Lihat `SPINNER` di components.tsx.
+     * Bulatan langkah berjalan sengaja TIDAK ikut secepat ini; lihat
+     * `bulletTick`.
      */
-    const timer = setInterval(() => setTick((value) => value + 1), 250)
+    const timer = setInterval(() => setTick((value) => value + 1), 100)
     return () => clearInterval(timer)
   }, [state.status])
 
@@ -557,11 +561,11 @@ export function App({
   const send = useCallback(
     (text: string) => {
       remember(text)
-      client.send(session.id, text, model, activeAgent).catch((error: unknown) => {
+      client.send(session.id, text, model, activeAgent, effort).catch((error: unknown) => {
         flash(error instanceof Error ? error.message : String(error))
       })
     },
-    [activeAgent, client, flash, model, remember, session.id],
+    [activeAgent, client, effort, flash, model, remember, session.id],
   )
 
   // Menu yang dibuka perintah pun tidak boleh muncul kosong, dengan alasan yang
@@ -762,6 +766,15 @@ export function App({
           return startNewSession()
         case "session_list":
           return openSessionPicker()
+        case "effort_cycle": {
+          const next = nextEffort(effort)
+          setEffort(next)
+          return flash(
+            next === "default"
+              ? "conclusion: default — length is up to the model"
+              : `conclusion: ${next}`,
+          )
+        }
         case "app_help":
           return openLeaderMenu()
         default:
@@ -770,6 +783,7 @@ export function App({
     },
     [
       client,
+      effort,
       exit,
       flash,
       mouse,
@@ -1244,6 +1258,14 @@ export function App({
       return
     }
 
+    // Satu penangan, dua tombol: `ctrl+r` dan `<leader>r` sama-sama bermuara ke
+    // `runLeaderAction`, jadi tidak ada dua salinan logika putaran yang bisa
+    // menyimpang.
+    if (resolve(keymap, press, false, ["effort_cycle"]) === "effort_cycle") {
+      runLeaderAction("effort_cycle")
+      return
+    }
+
     if (resolve(keymap, press, false, ["session_interrupt"]) === "session_interrupt") {
       // Login yang menunggu persetujuan dibatalkan lebih dulu. Ia satu-satunya
       // hal di layar yang sedang menunggu, dan Esc di depan panel yang berkata
@@ -1454,7 +1476,35 @@ export function App({
   // Titah — justru saat `/login` paling mungkin diketik.
   const loginBox = loginProgress ? <LoginPanel progress={loginProgress} /> : null
 
-  const lines = allLines(state.messages, expandTools, textWidth, tick)
+  /*
+   * Riwayat ditata ulang jauh lebih jarang daripada spinner berputar.
+   *
+   * Bulatan langkah berjalan punya empat bingkai; pada tiap detak ketiga ia
+   * menyelesaikan satu putaran per ~1.2 detik — cukup untuk terbaca sebagai
+   * gerak, dan itu memang seluruh tugasnya. Mengikutkannya ke 100ms berarti
+   * menata ulang SELURUH riwayat sepuluh kali per detik demi glyph yang tidak
+   * akan terlihat lebih hidup.
+   *
+   * `useMemo`-nya yang membuat spinner cepat itu terjangkau: tanpa ini setiap
+   * detak melewati `allLines` lagi, termasuk mengurai markdown tiap jawaban.
+   */
+  /*
+   * Label status: agent · model · tingkat kesimpulan.
+   *
+   * Tingkatnya hanya muncul kalau BUKAN `default`. Mode yang tidak terlihat
+   * adalah mode berbahaya — tapi mode yang tidak pernah diubah siapa pun juga
+   * tidak layak memakan tempat di baris yang sudah padat. Yang ditampilkan
+   * adalah penyimpangan dari bawaan, bukan seluruh keadaan.
+   */
+  const statusLabel = [activeAgent, model, effort === "default" ? undefined : `⌁${effort}`]
+    .filter(Boolean)
+    .join(" · ")
+
+  const bulletTick = Math.floor(tick / 3)
+  const lines = useMemo(
+    () => allLines(state.messages, expandTools, textWidth, bulletTick),
+    [state.messages, expandTools, textWidth, bulletTick],
+  )
   const editorHeight = editorRows(draft, size.rows)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   // Pertanyaan memakan tinggi juga, kalau tidak riwayat digambar di atasnya.
@@ -1541,7 +1591,7 @@ export function App({
             mencoba keybinding. */}
         <Footer
           status={state.status}
-          model={activeAgent ? `${activeAgent} · ${model}` : model}
+          model={statusLabel}
           usage={usage}
           leaderActive={leaderActive}
           exitArmed={exitArmed}
@@ -1594,7 +1644,7 @@ export function App({
       {editorBox}
       <Footer
         status={state.status}
-        model={activeAgent ? `${activeAgent} · ${model}` : model}
+        model={statusLabel}
         usage={usage}
         leaderActive={leaderActive}
         exitArmed={exitArmed}
