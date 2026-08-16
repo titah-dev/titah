@@ -2,7 +2,17 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react"
 import { Box, Text, useApp, useInput, useStdout } from "ink"
 import type { Key } from "ink"
 import type { Client } from "./client.ts"
-import { buildKeymap, describeKey, resolve, type Keymap, type KeyPress } from "./keybinds.ts"
+import {
+  buildKeymap,
+  describeKey,
+  LEADER_ACTIONS,
+  leaderKeyFor,
+  leaderName,
+  resolve,
+  type Action,
+  type Keymap,
+  type KeyPress,
+} from "./keybinds.ts"
 import { initialState, promptHistory, reduce, totalUsage, type TuiState } from "./state.ts"
 import {
   browseHistory,
@@ -60,6 +70,15 @@ import { fitsWideHeader, headerLines } from "./header.ts"
 import type { Session } from "../core/message.ts"
 
 const LEADER_TIMEOUT = 2000
+
+/**
+ * Jeda sebelum menu leader muncul.
+ *
+ * Cukup lama supaya yang hafal tombolnya tidak pernah melihatnya, cukup pendek
+ * supaya yang lupa tidak merasa menunggu. Angka yang sama dipakai which-key di
+ * Emacs dan Vim karena alasan yang sama.
+ */
+const LEADER_MENU_DELAY = 400
 
 /** Satu klik roda menggulir tiga baris — sama seperti kebanyakan pager. */
 const WHEEL_LINES = 3
@@ -152,6 +171,15 @@ export function App({
   const [draft, setDraft] = useState("")
   const [cursor, setCursor] = useState(0)
   const [leaderActive, setLeaderActive] = useState(false)
+  /**
+   * Menu leader sedang terbuka.
+   *
+   * Terpisah dari `leaderActive` karena keduanya menyala pada waktu yang
+   * berbeda: leader menyala SEKETIKA, menunya menyusul setelah jeda pendek.
+   * Yang hafal tombolnya tidak pernah melihat menu ini berkedip.
+   */
+  const [leaderMenu, setLeaderMenu] = useState(false)
+  const leaderMenuTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // Dua lapis: `expandAll` dari ctrl+x d, dan himpunan tool yang dibuka satu per
   // satu lewat klik. Dipisah supaya menutup "semua" tidak ikut menutup blok yang
   // sengaja dibuka user, dan sebaliknya.
@@ -588,19 +616,131 @@ export function App({
       .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
   }, [client, cwd, flash, switchSession])
 
+  /**
+   * Daftar aksi leader, sebagai item menu.
+   *
+   * Aksi tanpa chord ber-leader DILEWATI: mencantumkannya berarti menawarkan
+   * tombol yang tidak ada. Itu bisa terjadi kalau user mengganti binding-nya
+   * jadi tombol polos lewat `keybinds`.
+   */
+  const leaderItems = useCallback((): Suggestion[] => {
+    const prefix = leaderName(keymap)
+    return LEADER_ACTIONS.flatMap((entry) => {
+      const key = leaderKeyFor(keymap, entry.action)
+      if (key === undefined) return []
+      return [
+        {
+          kind: "action" as const,
+          value: entry.action,
+          label: `${prefix} ${key}`,
+          detail: entry.describe,
+        },
+      ]
+    })
+  }, [keymap])
+
+  const openLeaderMenu = useCallback(() => {
+    setPopup({ title: `${leaderName(keymap)} …`, items: leaderItems(), selected: 0, fromMenu: true })
+  }, [keymap, leaderItems])
+
   const openCommandPalette = useCallback(() => {
     setPopup({
       title: "Commands",
-      items: listCommands(config).map((entry) => ({
-        kind: "command" as const,
-        value: `/${entry.name} `,
-        label: `/${entry.name}`,
-        detail: entry.description,
-      })),
+      /*
+       * Command DAN aksi leader dalam satu daftar.
+       *
+       * Aksi leader tidak punya nama yang bisa diketik — satu-satunya cara
+       * menemukannya adalah menekan leader lalu menebak. Menaruhnya di sini
+       * membuatnya bisa dicari seperti yang lain, lengkap dengan tombolnya,
+       * dan `ctrl+p` jadi satu tempat untuk "apa saja yang bisa saya lakukan".
+       */
+      items: [
+        ...listCommands(config).map((entry) => ({
+          kind: "command" as const,
+          value: `/${entry.name} `,
+          label: `/${entry.name}`,
+          detail: entry.description,
+        })),
+        ...leaderItems(),
+      ],
       selected: 0,
       fromMenu: true,
     })
-  }, [config])
+  }, [config, leaderItems])
+
+  /**
+   * Satu implementasi untuk setiap aksi leader.
+   *
+   * Dipakai DUA jalur: tombol yang ditekan setelah leader, dan pilihan dari
+   * menu. Dua salinan berarti menu yang perlahan menyimpang dari tombolnya —
+   * dan menu yang menjanjikan sesuatu yang berbeda dari yang terjadi lebih
+   * buruk daripada tidak ada menu.
+   */
+  const runLeaderAction = useCallback(
+    (action: Action): void => {
+      switch (action) {
+        case "app_exit":
+          return exit()
+        case "messages_last":
+          return setScroll(0)
+        case "mouse_toggle": {
+          const next = !mouseCapture
+          setMouseCapture(next)
+          mouse?.setCapture?.(next)
+          return flash(
+            next
+              ? "mouse on — click tool lines, wheel scrolls"
+              : "mouse off — drag to select and copy, ctrl+x m to switch back",
+          )
+        }
+        case "tool_details":
+          // Menutup "semua" juga membersihkan yang dibuka lewat klik, supaya
+          // satu tekanan benar-benar mengembalikan riwayat ke bentuk ringkas.
+          setExpandAll((value) => {
+            if (value) setOpenTools(new Set())
+            return !value
+          })
+          return
+        case "subagents_panel":
+          // TIDAK mereset `subagentSelected`: komentar di deklarasinya bilang
+          // pilihan sengaja dipertahankan lewat tutup/buka.
+          setSubagentPanelOpen((value) => !value)
+          return
+        case "session_undo":
+          void client
+            .undo(session.id)
+            .then((result) => flash(`undo: ${result.files.length} files restored`))
+            .catch((error: unknown) =>
+              flash(error instanceof Error ? error.message : String(error)),
+            )
+          return
+        // Keduanya sudah punya penanganannya sejak lama lewat `/new` dan
+        // `/session`; yang tidak ada hanyalah sambungan dari leader. Sebelum
+        // ini `session_new` menjawab "not available yet" dan `session_list`
+        // tidak menjawab apa pun — dua binding yang terdaftar tapi mati, dan
+        // menu yang mencantumkannya akan berbohong.
+        case "session_new":
+          return startNewSession()
+        case "session_list":
+          return openSessionPicker()
+        case "app_help":
+          return openLeaderMenu()
+        default:
+          return
+      }
+    },
+    [
+      client,
+      exit,
+      flash,
+      mouse,
+      mouseCapture,
+      openLeaderMenu,
+      openSessionPicker,
+      session.id,
+      startNewSession,
+    ],
+  )
 
   /**
    * Menjalankan pilihan dari menu.
@@ -611,6 +751,7 @@ export function App({
    */
   const runSuggestion = useCallback(
     (item: Suggestion): void => {
+      if (item.kind === "action") return runLeaderAction(item.value as Action)
       if (item.kind === "model") {
         setModel(item.value)
         return flash(`model: ${item.value}`)
@@ -796,8 +937,26 @@ export function App({
   const armLeader = useCallback(() => {
     setLeaderActive(true)
     clearTimeout(leaderTimer.current)
-    leaderTimer.current = setTimeout(() => setLeaderActive(false), LEADER_TIMEOUT)
-  }, [])
+    leaderTimer.current = setTimeout(() => {
+      setLeaderActive(false)
+      setLeaderMenu(false)
+    }, LEADER_TIMEOUT)
+
+    /*
+     * Menu muncul SETELAH JEDA, bukan seketika.
+     *
+     * Inilah yang membuatnya menolong tanpa mengganggu. Yang hafal `ctrl+x d`
+     * menekan dua tombol dalam sepersekian detik dan tidak pernah melihat menu
+     * ini sama sekali; yang lupa berhenti sejenak, dan justru di jeda itulah ia
+     * butuh daftarnya. Menampilkannya seketika membuat setiap penekanan leader
+     * berkedip untuk orang yang tidak membutuhkannya.
+     */
+    clearTimeout(leaderMenuTimer.current)
+    leaderMenuTimer.current = setTimeout(() => {
+      setLeaderMenu(true)
+      openLeaderMenu()
+    }, LEADER_MENU_DELAY)
+  }, [openLeaderMenu])
 
   useInput((input, key) => {
     const press = toKeyPress(input, key)
@@ -990,65 +1149,16 @@ export function App({
     }
 
     if (leaderActive) {
-      const action = resolve(keymap, press, true, [
-        "app_exit",
-        "session_new",
-        "session_undo",
-        "tool_details",
-        "subagents_panel",
-        "messages_last",
-        "mouse_toggle",
-        "app_help",
-      ])
+      const action = resolve(keymap, press, true, LEADER_ACTIONS.map((entry) => entry.action))
       setLeaderActive(false)
       clearTimeout(leaderTimer.current)
-
-      switch (action) {
-        case "app_exit":
-          return exit()
-        case "messages_last":
-          return setScroll(0)
-        case "mouse_toggle": {
-          const next = !mouseCapture
-          setMouseCapture(next)
-          mouse?.setCapture?.(next)
-          return flash(
-            next
-              ? "mouse on — click tool lines, wheel scrolls"
-              : "mouse off — drag to select and copy, ctrl+x m to switch back",
-          )
-        }
-        case "tool_details":
-          // Menutup "semua" juga membersihkan yang dibuka lewat klik, supaya
-          // satu tekanan benar-benar mengembalikan riwayat ke bentuk ringkas.
-          setExpandAll((value) => {
-            if (value) setOpenTools(new Set())
-            return !value
-          })
-          return
-        case "subagents_panel":
-          // TIDAK mereset `subagentSelected`: komentar di deklarasinya bilang
-          // pilihan sengaja dipertahankan lewat tutup/buka, jadi kodenya harus
-          // benar-benar begitu, bukan diam-diam melompat balik ke baris nol.
-          setSubagentPanelOpen((value) => !value)
-          return
-        case "session_undo":
-          void client
-            .undo(session.id)
-            .then((result) => flash(`undo: ${result.files.length} files restored`))
-            .catch((error: unknown) =>
-              flash(error instanceof Error ? error.message : String(error)),
-            )
-          return
-        case "session_new":
-          return flash("new session: not available yet")
-        case "app_help":
-          return flash(
-            "↑↓ history · end jump to bottom · ctrl+x m select text · ctrl+x d tool details · ctrl+c quit",
-          )
-        default:
-          return
-      }
+      clearTimeout(leaderMenuTimer.current)
+      // Menu ditutup lebih dulu: aksinya sendiri boleh membuka popup lain
+      // (mis. pemilih sesi), dan menutup sesudahnya akan menutup yang itu.
+      if (leaderMenu) setPopup(undefined)
+      setLeaderMenu(false)
+      if (action) runLeaderAction(action as Action)
+      return
     }
 
     // Ctrl+P: palette command, sama seperti opencode.

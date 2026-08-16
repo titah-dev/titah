@@ -23,6 +23,8 @@ export type SuggestionKind =
   | "model"
   | "pick-agent"
   | "session"
+  /** Aksi leader (ctrl+x …). `value` adalah nama aksinya, bukan teks prompt. */
+  | "action"
 
 export interface Suggestion {
   kind: SuggestionKind
