@@ -1617,6 +1617,64 @@ export function buildToolNames(options: { isChild: boolean }): string[] {
 /** Tool yang menulis berkas, dan field mana yang memuat path-nya. */
 const WRITES_FILE: Record<string, string> = { edit: "path", write: "path", patch: "path", move: "to" }
 
+/** Rencana sependek ini dikerjakan sendiri; menanyakannya hanya menambah dialog. */
+const PLAN_STEPS_WORTH_SPLITTING = 3
+
+/** Sesi yang sudah pernah ditanyai soal cara mengerjakan. */
+const delegationAsked = new Set<string>()
+
+/**
+ * Menghitung langkah dalam sebuah rencana.
+ *
+ * Dihitung dari BARIS yang terlihat seperti butir — bernomor atau berpoin —
+ * bukan dari jumlah baris. Rencana yang ditulis sebagai satu paragraf panjang
+ * memang bukan rencana bertahap, dan menghitungnya sebagai sepuluh langkah akan
+ * memicu pertanyaan pada pekerjaan yang sebetulnya tunggal.
+ */
+export function planSteps(text: string): number {
+  return text
+    .split("\n")
+    .filter((line) => /^\s*(?:[-*+]|\d+[.)])\s+\S/.test(line)).length
+}
+
+/**
+ * Catatan yang ditempelkan ke hasil `plan`, menyuruh model MENIMBANG delegasi.
+ *
+ * # Pembagian tugasnya
+ *
+ * Titah tidak bisa menilai apakah sebuah rencana cocok dipecah — itu butuh
+ * memahami isinya. Yang bisa ia nilai adalah apakah pertanyaannya LAYAK
+ * DIAJUKAN: ada sub-agent yang tersedia, rencananya cukup panjang, dan sesi ini
+ * belum pernah ditanyai. Sisanya — apakah pemisahan itu benar-benar menolong —
+ * diserahkan ke model, yang memang sedang memegang isinya.
+ *
+ * Sekali per sesi, dengan alasan yang sama seperti peringatan lain di berkas
+ * ini: pertanyaan yang berulang di setiap pembaruan rencana berhenti dibaca
+ * justru ketika ia mulai berarti.
+ */
+function delegationNote(config: Config, sessionID: string, planText: string): string {
+  if (config.delegation !== "ask") return ""
+  if (delegationAsked.has(sessionID)) return ""
+  if (dispatchableAgents(config).length === 0) return ""
+  if (planSteps(planText) < PLAN_STEPS_WORTH_SPLITTING) return ""
+
+  delegationAsked.add(sessionID)
+  return (
+    "\n\n--- before you start ---\n" +
+    "Look at the plan you just wrote against the sub-agents in your roster.\n\n" +
+    "If two or more steps could be carried out by them — independently of each other, or " +
+    "because they match a description more closely than your own job — call `question` " +
+    "with exactly these two options, in this order:\n" +
+    '  "Delegate: hand matching steps to the sub-agents"\n' +
+    '  "Inline: do all of it yourself"\n\n' +
+    "State in the question WHICH steps you would hand over and to whom, so the choice is " +
+    "made with the split in front of them.\n\n" +
+    "If the work does not divide — the steps depend on each other, or none of the agents " +
+    "fit — do NOT ask. Just carry on. An unnecessary question costs more than a delegation " +
+    "not made."
+  )
+}
+
 /**
  * Menempelkan diagnostics ke hasil tool, kalau ada language server yang
  * menangani berkasnya.
@@ -1874,6 +1932,25 @@ function buildTools(options: BuildToolsOptions): ToolSet {
                 sessionID: options.streamSessionID,
                 message: `plugin ${failure.spec}: ${failure.reason}`,
               })
+            }
+          }
+
+          /*
+           * Catatan delegasi ditempel ke hasil `plan`, bukan ke system prompt.
+           *
+           * Tempatnya menentukan. Di system prompt ia jadi satu paragraf lagi
+           * yang dibaca setiap giliran lalu tenggelam; di sini ia tiba tepat
+           * pada saat rencananya baru selesai ditulis dan model sedang
+           * memutuskan langkah berikutnya. Itu satu-satunya saat pertanyaannya
+           * masih bisa mengubah apa pun.
+           */
+          if (definition.name === "plan") {
+            // `text`, bukan `plan` — nama fieldnya diperiksa ke skema tool,
+            // karena salah nama di sini menghasilkan catatan yang tidak pernah
+            // muncul dan tidak pernah error.
+            const text = (input as { text?: unknown } | null)?.text
+            if (typeof text === "string") {
+              output += delegationNote(options.config, options.streamSessionID, text)
             }
           }
 

@@ -129,3 +129,86 @@ memanggil super agent mana pun yang terdaftar; sub-agent hanya ke
 `escalate.to`-nya sendiri. Batas kedalaman tetap utuh: super agent adalah CLI di
 luar Titah dan tidak punya `task` untuk memanggil balik, jadi rantainya berhenti
 di sana secara struktural.
+
+---
+
+# Delegasi ke agent internal
+
+Terpisah dari super agent di atas: ini tentang agent Titah sendiri yang
+didaftarkan di `agent`, dipanggil lewat tool `task`.
+
+## Kenapa dulu hampir tidak pernah terjadi
+
+Diukur pada `9router/ant` dengan tugas yang jelas cocok — satu delegasi dari
+lima percobaan. Empat sebab, dan tiga di antaranya ada di prompt:
+
+1. **Inventaris tool tidak memuat `task`.** `BASE_PROMPT` memberi daftar tegas
+   berjudul "Available tools:" yang tidak menyebut delegasi sama sekali. Model
+   membaca inventaris resmi yang mengatakan itu bukan kemampuannya, lalu jauh di
+   bawah menemukan roster yang menyebutnya.
+2. **Prompt `build` berbunyi "Carry out the user's request DIRECTLY."** Satu
+   kata yang meniadakan seluruh blok roster beberapa baris di bawahnya.
+3. **Ajakan roster bersyarat**: *"when it matches their description better than
+   doing it yourself"*. Untuk tugas kecil itu memang salah — membaca tiga berkas
+   sendiri lebih murah. Modelnya menalar benar; kalimatnya yang tidak memicu.
+4. **Tidak ada sakelar.** Semuanya bergantung pada bujukan, dan dua model
+   berbeda memutuskan berbeda untuk prompt yang sama.
+
+Ketiga yang pertama sudah diperbaiki. Yang keempat jadi `delegation`.
+
+## `delegation`
+
+```jsonc
+{ "delegation": "ask" }
+```
+
+| Nilai | Perilaku |
+|---|---|
+| `"ask"` | **bawaan** — sesudah rencana ditulis, Titah menilai apakah pekerjaannya layak dipecah; kalau ya, model menanyakannya |
+| `"auto"` | model memutuskan sendiri, tanpa bertanya |
+| `"always"` | pekerjaan yang cocok selalu diserahkan |
+| `"never"` | tidak pernah — roster tidak dikirim sama sekali, jadi tidak ada token terbuang |
+
+Diukur sesudah perbaikan, tugas dan model yang sama: `ask` 1 dari 3, `always`
+2 dari 2.
+
+## Bagaimana `ask` bekerja
+
+Pembagian tugasnya disengaja: **Titah menilai apakah pertanyaannya layak
+diajukan, model menilai apakah pemisahannya benar-benar menolong.**
+
+Titah memasang catatan pada hasil `plan` — bukan di system prompt — ketika
+semua ini benar:
+
+- `delegation` adalah `"ask"`
+- ada sub-agent yang bisa dibawahi
+- rencananya punya **≥ 3 butir** (dihitung dari baris bernomor atau berpoin,
+  bukan dari jumlah baris)
+- sesi ini belum pernah ditanyai
+
+Catatan itu tiba tepat ketika rencana baru selesai ditulis dan model sedang
+memutuskan langkah berikutnya — satu-satunya saat pertanyaannya masih bisa
+mengubah apa pun. Di system prompt ia hanya akan jadi satu paragraf lagi yang
+dibaca setiap giliran lalu tenggelam.
+
+Model lalu memutuskan sendiri:
+
+**Langkah saling bergantung → tidak bertanya, langsung kerjakan.** Terlihat pada
+percobaan nyata:
+
+> *"Langkah 1 & 2 saling bergantung (hasil telusuri → diagnostics → ringkasan),
+> jadi saya kerjakan sendiri. Mulai."*
+
+**Langkah saling bebas → bertanya, dengan dua pilihan:**
+
+```
+[1] Delegate: hand matching steps to the sub-agents
+[2] Inline: do all of it yourself
+```
+
+Pertanyaannya wajib menyebut langkah mana yang akan diserahkan dan kepada siapa,
+supaya pilihan dibuat dengan pemisahannya di depan mata.
+
+Sekali per sesi. Rencana diperbarui berkali-kali dalam satu giliran panjang —
+itu memang gunanya — dan pertanyaan yang ikut muncul di setiap pembaruan
+berhenti dibaca justru ketika ia mulai berarti.
