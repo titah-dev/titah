@@ -1072,6 +1072,22 @@ async function cmdRun(
         respond(event.request.id, await askPermission(event.request))
         break
       }
+      /*
+       * Notice ikut dicetak, sama seperti di TUI.
+       *
+       * Sebelum ini `titah run` diam-diam membuangnya — tidak ada `case`, jadi
+       * ia jatuh ke `default`. Akibatnya setiap kabar sekali-per-sesi hilang
+       * dari CLI: peringatan contextWindow, laporan berkas yang dibuat, deteksi
+       * perulangan, dan yang paling merugikan — kabar bahwa giliran berhenti
+       * karena kehabisan langkah atau anggaran. Persis kegagalan diam yang baru
+       * saja diperbaiki, masih diam di separuh antarmuka.
+       *
+       * Ke stderr, bukan stdout: stdout milik jawaban model, dan `titah run`
+       * dipakai dalam pipa.
+       */
+      case "session.notice":
+        process.stderr.write(`\n  · ${event.message}\n`)
+        break
       case "session.error":
         process.stderr.write(`\ntitah: ${event.message}\n`)
         break
