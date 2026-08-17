@@ -2,6 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
+import { instructionPaths } from "./scaffold.ts"
 import { dispatchableAgents } from "./subagent.ts"
 import { buildSkillIndex, skillById, skillCatalog, type Skill } from "./skill.ts"
 
@@ -280,12 +281,21 @@ export function buildSystemPrompt(
 ): BuiltPrompt {
   const files = discover(cwd)
 
-  for (const extra of config.instructions) {
-    const file = path.resolve(cwd, extra)
+  /*
+   * Resolusinya dipinjam dari `scaffold.ts`, bukan diulang di sini.
+   *
+   * Dua tempat yang meresolusi path yang sama adalah dua tempat yang bisa
+   * berbeda pendapat — dan kalau berbeda, `ensureDeclared` membuat berkas di
+   * satu tempat sementara bagian ini mencarinya di tempat lain. Gejalanya:
+   * berkas yang muncul di disk tapi instruksinya tetap tidak pernah berlaku,
+   * yaitu persis kegagalan yang ingin ditutup fitur itu.
+   */
+  for (const file of instructionPaths(config, cwd)) {
     try {
       files.push({ path: file, content: fs.readFileSync(file, "utf8") })
     } catch {
-      // Path instruksi yang salah tidak boleh menggagalkan sesi.
+      // Path instruksi yang salah tidak boleh menggagalkan sesi. `ensureDeclared`
+      // yang membuatnya ada; ini yang tetap jalan kalau pembuatannya gagal.
     }
   }
 
