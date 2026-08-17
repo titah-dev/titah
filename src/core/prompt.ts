@@ -2,18 +2,9 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
-import { instructionPaths } from "./scaffold.ts"
+import { findInstructionFiles, instructionPaths } from "./scaffold.ts"
 import { dispatchableAgents } from "./subagent.ts"
 import { buildSkillIndex, skillById, skillCatalog, type Skill } from "./skill.ts"
-
-/**
- * Urutan file instruksi (Q13): AGENTS.md → CLAUDE.md → TITAH.md.
- *
- * AGENTS.md sebagai utama karena itu konvensi lintas-tool, CLAUDE.md sebagai
- * kompatibilitas, TITAH.md sebagai override khusus Titah. Biayanya nyaris nol
- * dan langsung membuat Titah berguna di repo yang sudah ada.
- */
-const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "TITAH.md"] as const
 
 const BASE_PROMPT = `You are Titah, a coding agent running in the user's terminal.
 
@@ -85,38 +76,6 @@ About the changing tools:
 - Use \`edit\` for small changes, \`write\` only for new files or full rewrites.
 - Every change asks the user for permission. If permission is refused, do not
   route around it with another tool — report that the change was not made.`
-
-interface InstructionFile {
-  path: string
-  content: string
-}
-
-/** Mencari file instruksi dari cwd ke atas, berhenti di root git atau home. */
-function discover(cwd: string): InstructionFile[] {
-  const found: InstructionFile[] = []
-  const home = os.homedir()
-  let dir = path.resolve(cwd)
-
-  for (;;) {
-    for (const name of INSTRUCTION_FILES) {
-      const file = path.join(dir, name)
-      try {
-        if (fs.statSync(file).isFile()) {
-          found.push({ path: file, content: fs.readFileSync(file, "utf8") })
-        }
-      } catch {
-        // tidak ada — lanjut
-      }
-    }
-    if (fs.existsSync(path.join(dir, ".git"))) break
-    const parent = path.dirname(dir)
-    if (parent === dir || dir === home) break
-    dir = parent
-  }
-
-  // Yang paling dekat dengan cwd harus dibaca terakhir supaya menang.
-  return found.reverse()
-}
 
 export interface BuiltPrompt {
   system: string
@@ -279,7 +238,7 @@ export function buildSystemPrompt(
    */
   effortOverride?: Effort | "default",
 ): BuiltPrompt {
-  const files = discover(cwd)
+  const files = findInstructionFiles(cwd)
 
   /*
    * Resolusinya dipinjam dari `scaffold.ts`, bukan diulang di sini.
