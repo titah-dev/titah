@@ -1,5 +1,13 @@
 import crypto from "node:crypto"
-import { stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from "ai"
+import {
+  stepCountIs,
+  streamText,
+  tool,
+  type LanguageModel,
+  type LanguageModelUsage,
+  type ModelMessage,
+  type ToolSet,
+} from "ai"
 import { loadConfig } from "./config.ts"
 import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
@@ -80,6 +88,32 @@ import { dispatchableAgents, teamAgents, teamSkipped } from "./subagent.ts"
 
 /** Batas langkah bawaan, dipakai agent yang tidak menyatakan `steps` sendiri. */
 const MAX_STEPS = 20
+
+/**
+ * Batas langkah ketika `limits.turnTokens` disetel.
+ *
+ * Tinggi dengan sengaja: begitu ada anggaran token, langkah berhenti jadi
+ * kebijakan dan tinggal jadi jaring patologi. 200 cukup jauh untuk tidak pernah
+ * tersentuh oleh pekerjaan yang wajar, dan cukup dekat untuk menghentikan
+ * sesuatu yang benar-benar rusak sebelum ia berputar semalaman.
+ */
+const STEP_BACKSTOP = 200
+
+/** Token yang sudah dibayar giliran ini: input + output, lintas semua langkah. */
+function tokensSpent(steps: readonly { usage: LanguageModelUsage }[]): number {
+  let total = 0
+  for (const step of steps) {
+    total += (step.usage.inputTokens ?? 0) + (step.usage.outputTokens ?? 0)
+  }
+  return total
+}
+
+/** Ongkos langkah TERAKHIR, dipakai memperkirakan apakah satu langkah lagi muat. */
+function lastStepCost(steps: readonly { usage: LanguageModelUsage }[]): number {
+  const last = steps.at(-1)
+  if (!last) return 0
+  return (last.usage.inputTokens ?? 0) + (last.usage.outputTokens ?? 0)
+}
 
 /**
  * Yang dikatakan ke model pada langkah terakhir.
@@ -669,7 +703,19 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
     // Per-agent, karena satu angka global tidak bisa pas untuk scout (butuh
     // sedikit iterasi) maupun refactor (butuh banyak) sekaligus.
-    const maxSteps = agentDef?.steps ?? MAX_STEPS
+    /*
+     * Anggaran token milik giliran ini, dan batas langkah yang menyertainya.
+     *
+     * Urutannya disengaja: `agent.<id>.steps` yang ditulis user selalu menang.
+     * Kalau tidak, menyetel anggaran token akan diam-diam membuang batas langkah
+     * yang sengaja dipasang seseorang untuk agent tertentu.
+     *
+     * Tanpa `steps` eksplisit, adanya anggaran token menaikkan plafon langkah
+     * ke `STEP_BACKSTOP`. Itu bukan bonus tersembunyi — itu maksudnya: user baru
+     * saja memilih batas yang benar, jadi batas yang arbitrer minggir.
+     */
+    const turnBudget = config.limits.turnTokens
+    const maxSteps = agentDef?.steps ?? (turnBudget === undefined ? MAX_STEPS : STEP_BACKSTOP)
 
     /*
      * Asker dipasang PER GILIRAN, tepat sebelum tool dibangun.
@@ -811,7 +857,28 @@ export async function prompt(input: PromptInput): Promise<Message> {
         // "try a different model" — padahal modelnya baik-baik saja, cuma
         // kehabisan langkah. Dihitung DI LUAR try/catch di bawah: harus tetap
         // berlaku baik pemadatan berhasil, dilewati, MAUPUN melempar error.
-        const lastStep = stepNumber >= maxSteps - 1
+        /*
+         * DUA sebab sebuah langkah jadi yang terakhir, dan keduanya harus
+         * memberi penutupan yang sama.
+         *
+         * Yang kedua diperkirakan, bukan diketahui. `stopWhen` baru menilai
+         * SESUDAH sebuah langkah selesai, jadi kalau anggaran ditunggu sampai
+         * benar-benar terlampaui, `prepareStep` tidak akan pernah dipanggil lagi
+         * — dan gilirannya berakhir persis seperti dulu: terpotong di tengah
+         * kalimat, tanpa satu kata pun penutup.
+         *
+         * Perkiraannya memakai ongkos langkah TERAKHIR, bukan rata-rata:
+         * langkah yang baru saja terjadi adalah tebakan terbaik untuk langkah
+         * berikutnya, dan rata-rata sepanjang giliran justru meremehkan biaya
+         * setelah konteksnya membengkak.
+         */
+        const spent = tokensSpent(steps)
+        const budgetNearlyGone =
+          turnBudget !== undefined &&
+          steps.length > 0 &&
+          spent + lastStepCost(steps) >= turnBudget
+
+        const lastStep = stepNumber >= maxSteps - 1 || budgetNearlyGone
 
         /*
          * Pada langkah terakhir, model DIBERI TAHU — bukan cuma dicabuti
@@ -947,7 +1014,20 @@ export async function prompt(input: PromptInput): Promise<Message> {
           return closing({})
         }
       },
-      stopWhen: stepCountIs(maxSteps),
+      /*
+       * Dua kondisi berhenti, dan yang mana pun lebih dulu tercapai menang.
+       *
+       * `stepCountIs` tinggal jaring patologi; anggaran token yang jadi
+       * kebijakan sesungguhnya — lihat `limits.turnTokens` di schema.
+       */
+      stopWhen:
+        turnBudget === undefined
+          ? stepCountIs(maxSteps)
+          : [
+              stepCountIs(maxSteps),
+              ({ steps }: { steps: readonly { usage: LanguageModelUsage }[] }) =>
+                tokensSpent(steps) >= turnBudget,
+            ],
       abortSignal: controller.signal,
     })
 
@@ -1081,7 +1161,26 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * yang tahu pasti — sementara `finishReason` datang dari provider dan
      * bentuknya berbeda-beda antar endpoint.
      */
-    if (steps.length >= maxSteps) {
+    /*
+     * Anggaran diperiksa LEBIH DULU dari batas langkah.
+     *
+     * Keduanya bisa tercapai di langkah yang sama, dan yang perlu diperbaiki
+     * user berbeda: menaikkan `steps` tidak menolong sedikit pun kalau yang
+     * habis adalah tokennya. Kabar yang menyuruh memutar tombol yang salah
+     * lebih buruk daripada tidak ada kabar.
+     */
+    const spentTokens = tokensSpent(steps)
+    if (turnBudget !== undefined && spentTokens >= turnBudget) {
+      bus.publish({
+        type: "session.notice",
+        sessionID: streamSessionID,
+        message:
+          `Stopped at this turn's token budget — ${spentTokens.toLocaleString()} of ` +
+          `${turnBudget.toLocaleString()} spent across ${steps.length} steps. The work may ` +
+          'not be finished. Raise it with "limits.turnTokens", or send another prompt to ' +
+          "continue from where it stopped.",
+      })
+    } else if (steps.length >= maxSteps) {
       bus.publish({
         type: "session.notice",
         sessionID: streamSessionID,

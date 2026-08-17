@@ -229,3 +229,117 @@ test("giliran yang selesai WAJAR tidak diberi kabar apa pun", async () => {
 
   assert.deepEqual(seen.messages.filter((message) => message.includes("step limit")), [])
 })
+
+// ---------- anggaran token ----------
+
+/**
+ * Config dengan anggaran token, TANPA `steps` per-agent.
+ *
+ * Keduanya sengaja tidak dipasang bersamaan di sini: yang diuji justru bahwa
+ * anggaran token sendirian sudah cukup menghentikan giliran, dan bahwa plafon
+ * langkah minggir begitu ada batas yang benar.
+ */
+function withBudget(turnTokens: number): void {
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow", edit: "allow", write: "allow", delete: "allow" },
+      limits: { turnTokens },
+    }),
+  )
+}
+
+test("anggaran token menghentikan giliran, bukan hitungan langkah", async () => {
+  /*
+   * Tiap langkah palsu memakai 10 token (5 in + 5 out). Anggaran 25 berarti
+   * giliran berhenti sekitar langkah ketiga — jauh sebelum plafon langkah mana
+   * pun, yang memang intinya.
+   */
+  withBudget(25)
+  const seen = neverStops()
+  const session = createSession(project)
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
+
+  assert.ok(seen.calls >= 3 && seen.calls <= 5, `berhenti di ${seen.calls} langkah`)
+  assert.ok(seen.calls < 20, "dan jauh sebelum MAX_STEPS")
+})
+
+test("model tetap diberi tahu saat yang habis anggarannya", async () => {
+  /*
+   * `stopWhen` baru menilai SESUDAH sebuah langkah selesai. Kalau anggaran
+   * ditunggu sampai benar-benar terlampaui, `prepareStep` tidak pernah dipanggil
+   * lagi dan gilirannya berakhir terpotong — persis kegagalan yang blok A
+   * perbaiki untuk jalur langkah.
+   */
+  withBudget(25)
+  const seen = neverStops()
+  const session = createSession(project)
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
+  assert.match(seen.instructions.at(-1) ?? "", /last step/)
+})
+
+test("kabarnya menyebut tombol yang BENAR", async () => {
+  /*
+   * Batas langkah dan anggaran bisa tercapai di langkah yang sama, dan yang
+   * perlu diperbaiki user berbeda. Menyuruh menaikkan `steps` padahal yang habis
+   * tokennya adalah kabar yang memutar tombol salah — lebih buruk daripada
+   * tidak ada kabar.
+   */
+  withBudget(25)
+  neverStops()
+  const session = createSession(project)
+  const seen = await collectNotices(session.id)
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  seen.stop()
+
+  const kabar = seen.messages.find((message) => message.includes("token budget")) ?? ""
+  assert.match(kabar, /limits\.turnTokens/)
+  assert.doesNotMatch(kabar, /step limit/, "tidak menyuruh menaikkan steps")
+  assert.match(kabar, /of 25 spent/, "menyebut berapa yang terpakai dari berapa")
+})
+
+test("tanpa anggaran, perilakunya persis seperti sebelumnya", async () => {
+  /*
+   * `limits.turnTokens` tidak punya nilai bawaan, dan ini yang menjaganya:
+   * angka bawaan apa pun akan menghentikan pekerjaan seseorang di tengah jalan
+   * karena tebakan kita tentang harga model dan kantongnya.
+   */
+  const seen = neverStops()
+  const session = createSession(project)
+  const kabar = await collectNotices(session.id)
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  kabar.stop()
+
+  assert.equal(seen.calls, 3, "batas langkah agent yang berlaku")
+  assert.deepEqual(kabar.messages.filter((m) => m.includes("token budget")), [])
+})
+
+test("`steps` per-agent MENANG atas plafon yang dinaikkan anggaran", async () => {
+  /*
+   * Kalau tidak, menyetel anggaran token diam-diam membuang batas langkah yang
+   * sengaja dipasang seseorang untuk satu agent.
+   */
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow" },
+      limits: { turnTokens: 1_000_000 },
+      agent: { pendek: { mode: "primary", steps: 3 } },
+    }),
+  )
+  const seen = neverStops()
+  const session = createSession(project)
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+  assert.equal(seen.calls, 3, "anggaran besar tidak boleh membatalkan steps: 3")
+})
