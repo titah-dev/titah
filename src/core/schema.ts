@@ -663,6 +663,47 @@ export const Config = z.object({
         "first turn of a session.",
     ),
   /*
+   * Batas satu giliran, dalam satuan yang benar-benar dibayar.
+   *
+   * # Kenapa token, bukan langkah
+   *
+   * Satu langkah adalah satuan PERCAKAPAN, bukan satuan PEKERJAAN. Dua puluh
+   * langkah membaca berkas kecil itu murah; dua puluh langkah yang tiap
+   * langkahnya melepas tiga sub-agent itu mahal sekali. Menghitung keduanya
+   * dengan angka yang sama berarti angkanya tidak pernah bisa benar untuk
+   * keduanya — dan keberadaan override `agent.<id>.steps` sejak awal sudah jadi
+   * pengakuan bahwa angka globalnya arbitrer.
+   *
+   * # Kenapa TIDAK ada nilai bawaan
+   *
+   * Anggaran yang benar bergantung pada harga model dan kantong user, dan Titah
+   * tidak tahu keduanya. Angka bawaan apa pun akan menghentikan pekerjaan
+   * seseorang di tengah jalan karena tebakan kita. Tanpa `turnTokens`,
+   * perilakunya persis seperti sebelum sumbu ini ada.
+   *
+   * # Yang dihitung
+   *
+   * Input + output, DIJUMLAHKAN LINTAS LANGKAH. Input memang dikirim ulang tiap
+   * langkah dan karena itu terhitung berkali-kali — itu bukan kesalahan
+   * hitungan, itu memang yang ditagihkan. Diskon cache membuat angka
+   * sesungguhnya lebih rendah, jadi anggaran ini konservatif: ia berhenti lebih
+   * awal daripada perlu, tidak pernah lebih lambat.
+   */
+  limits: z
+    .object({
+      turnTokens: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Token budget for one turn (input + output, summed across steps). Unset means no " +
+            "budget. Setting it also lifts the step ceiling to 200, since steps stop being " +
+            "the thing that bounds the turn.",
+        ),
+    })
+    .default({}),
+  /*
    * Sakelar untuk SELURUH pembuatan berkas otomatis.
    *
    * Ada karena Titah bisa dibuka di repo milik orang lain, dan berkas yang
