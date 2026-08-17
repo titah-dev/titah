@@ -573,8 +573,19 @@ export async function prompt(input: PromptInput): Promise<Message> {
   if (agentID) assistant.agent = agentID
   bus.publish({ type: "message.updated", sessionID: session.id, message: assistant })
 
-  /** Diisi sesudah stream: apakah giliran ini berhenti karena batas, bukan karena selesai. */
+  /**
+   * Apakah giliran ini berhenti karena batas, bukan karena selesai.
+   *
+   * Diisi dari DUA tempat, dan itu disengaja — tapi keduanya harus jadi
+   * pemakai dari satu keputusan, bukan dua perhitungan yang kebetulan sepakat.
+   * Lihat `budgetNearlyGone`: anggaran menghentikan giliran lewat PERKIRAAN
+   * (satu langkah lagi tidak muat), sementara perbandingan telanjang
+   * `spent >= budget` tidak pernah benar dalam kasus itu — 118.900 dari 120.000
+   * bukan pelampauan, tapi gilirannya sudah berakhir karena ia.
+   */
   let stoppedAtLimit = false
+  /** Diputuskan di `finally`, dipakai dua kali: menahan `idle`, lalu melanjutkan. */
+  let willContinue = false
 
   const controller = new AbortController()
   running.set(session.id, controller)
@@ -892,6 +903,22 @@ export async function prompt(input: PromptInput): Promise<Message> {
           steps.length > 0 &&
           spent + lastStepCost(steps) >= turnBudget
 
+        /*
+         * Ditandai DI SINI, di tempat keputusannya diambil.
+         *
+         * Versi pertama menghitungnya lagi sesudah stream sebagai
+         * `spent >= turnBudget` — dan itu salah dengan cara yang hanya terlihat
+         * pada giliran sungguhan: anggaran 120.000, terpakai 118.900, giliran
+         * berhenti karena perkiraan, tapi perbandingan telanjangnya menjawab
+         * "belum lewat". Akibatnya tidak ada notice dan tidak ada lanjutan,
+         * padahal rencananya masih menyisakan dua butir.
+         *
+         * Kelas bug yang sama yang berulang di repo ini, dan yang ditulis di
+         * AGENTS.md: yang diukur bukan yang dikirim. Obatnya juga sama — satu
+         * keputusan, dua pemakai.
+         */
+        if (budgetNearlyGone) stoppedAtLimit = true
+
         const lastStep = stepNumber >= maxSteps - 1 || budgetNearlyGone
 
         /*
@@ -1184,9 +1211,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * lebih buruk daripada tidak ada kabar.
      */
     const spentTokens = tokensSpent(steps)
-    stoppedAtLimit =
-      (turnBudget !== undefined && spentTokens >= turnBudget) || steps.length >= maxSteps
-    if (turnBudget !== undefined && spentTokens >= turnBudget) {
+    const outOfBudget = stoppedAtLimit || (turnBudget !== undefined && spentTokens >= turnBudget)
+    if (steps.length >= maxSteps) stoppedAtLimit = true
+
+    if (turnBudget !== undefined && outOfBudget) {
       bus.publish({
         type: "session.notice",
         sessionID: streamSessionID,
@@ -1232,7 +1260,34 @@ export async function prompt(input: PromptInput): Promise<Message> {
     if (!isChild) clearTurn(session.id)
     const updated = touchSession(session.id)
     if (updated) bus.publish({ type: "session.updated", sessionID: session.id, session: updated })
-    bus.publish({ type: "session.idle", sessionID: session.id })
+
+    /*
+     * `session.idle` DITAHAN kalau giliran berikutnya sudah pasti menyusul.
+     *
+     * Bukan kosmetik. Klien memakai idle sebagai tanda "sudah selesai, berhenti
+     * mendengarkan": `titah run` memutus streamnya di situ, dan TUI
+     * mengembalikan statusnya ke diam. Menerbitkannya di antara dua giliran
+     * yang sebenarnya satu pekerjaan membuat lanjutannya berjalan TANPA
+     * PENONTON — tool-nya tidak muncul, izinnya tidak bisa dijawab, dan
+     * layarnya bilang selesai sementara Titah masih menulis berkas.
+     *
+     * Dihitung di sini, bukan sesudah `finally`, karena di sinilah urutannya
+     * masih bisa diatur: keputusannya butuh `assistant.error` dan
+     * `stoppedAtLimit` yang keduanya sudah terisi, dan idle harus tahu
+     * jawabannya sebelum memutuskan terbit atau tidak.
+     */
+    const allowed = config.limits.continueTurns
+    const done = input.continuation ?? 0
+    willContinue =
+      allowed > 0 &&
+      done < allowed &&
+      stoppedAtLimit &&
+      !isChild &&
+      !controller.signal.aborted &&
+      assistant.error === undefined &&
+      hasOpenWork(readPlan(session.id)?.text)
+
+    if (!willContinue) bus.publish({ type: "session.idle", sessionID: session.id })
   }
 
 
@@ -1260,28 +1315,19 @@ export async function prompt(input: PromptInput): Promise<Message> {
    *   - rencananya punya sisa     — satu-satunya definisi "belum selesai" yang bisa dinilai mesin
    *   - jatah lanjutan masih ada  — batas keras, supaya "sampai selesai" tetap punya ujung
    */
-  const allowed = config.limits.continueTurns
-  const done = input.continuation ?? 0
-  if (
-    allowed > 0 &&
-    done < allowed &&
-    stoppedAtLimit &&
-    !isChild &&
-    !controller.signal.aborted &&
-    assistant.error === undefined &&
-    hasOpenWork(readPlan(session.id)?.text)
-  ) {
+  if (willContinue) {
     bus.publish({
       type: "session.notice",
       sessionID: streamSessionID,
       message:
-        `Continuing on its own (${done + 1} of ${allowed}) — the plan still has unfinished ` +
-        "items. Press Esc to stop.",
+        `Continuing on its own (${(input.continuation ?? 0) + 1} of ` +
+        `${config.limits.continueTurns}) — the plan still has unfinished items. ` +
+        "Press Esc to stop.",
     })
 
     return prompt({
       ...input,
-      continuation: done + 1,
+      continuation: (input.continuation ?? 0) + 1,
       /*
        * Prompt lanjutan menunjuk ke RENCANA, bukan mengulang permintaan asli.
        *

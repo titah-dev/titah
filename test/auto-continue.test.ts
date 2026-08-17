@@ -327,3 +327,88 @@ test("sub-agent tidak melanjutkan dirinya sendiri", async () => {
   const { listChildSessions } = await import("../src/core/storage/session.ts")
   assert.equal(listChildSessions(session.id).length, 1, "satu task = satu sesi anak")
 })
+
+test("`session.idle` DITAHAN selama masih ada lanjutan", async () => {
+  /*
+   * Klien memakai idle sebagai tanda "berhenti mendengarkan": `titah run`
+   * memutus streamnya di situ, dan TUI mengembalikan statusnya ke diam.
+   * Menerbitkannya di antara dua giliran yang sebenarnya satu pekerjaan membuat
+   * lanjutannya berjalan TANPA PENONTON — tool-nya tidak muncul, izinnya tidak
+   * bisa dijawab, dan layarnya bilang selesai sementara Titah masih menulis
+   * berkas.
+   *
+   * Ditemukan saat menguji fiturnya pada model sungguhan, bukan saat menulisnya.
+   */
+  configWith({ limits: { continueTurns: 2 } })
+  neverStops()
+
+  const { bus } = await import("../src/core/event.ts")
+  const session = createSession(project)
+  savePlan(session.id, "- [ ] satu")
+
+  const controller = new AbortController()
+  let idle = 0
+  void (async () => {
+    for await (const event of bus.subscribe({ sessionID: session.id, signal: controller.signal })) {
+      if (event.type === "session.idle") idle += 1
+    }
+  })()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  controller.abort()
+
+  assert.equal(idle, 1, "tepat satu idle, di ujung seluruh rantai — bukan satu per giliran")
+})
+
+test("giliran yang TIDAK dilanjutkan tetap menerbitkan idle", async () => {
+  // Jaring pengaman ke arah sebaliknya: menahan idle yang seharusnya terbit
+  // membuat klien menunggu selamanya pada giliran yang sudah selesai.
+  configWith({})
+  neverStops()
+
+  const { bus } = await import("../src/core/event.ts")
+  const session = createSession(project)
+
+  const controller = new AbortController()
+  let idle = 0
+  void (async () => {
+    for await (const event of bus.subscribe({ sessionID: session.id, signal: controller.signal })) {
+      if (event.type === "session.idle") idle += 1
+    }
+  })()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  controller.abort()
+
+  assert.equal(idle, 1)
+})
+
+test("giliran yang berhenti karena PERKIRAAN anggaran juga dilanjutkan", async () => {
+  /*
+   * Ditemukan pada model sungguhan, bukan saat menulis kodenya.
+   *
+   * Anggaran 120.000, terpakai 118.900. Gilirannya BERHENTI — `lastStep` menyala
+   * karena satu langkah lagi tidak akan muat — tapi flag "berhenti karena batas"
+   * dihitung ulang sebagai `spent >= budget`, yang menjawab "belum lewat".
+   * Akibatnya tidak ada notice dan tidak ada lanjutan, padahal rencananya masih
+   * menyisakan dua butir.
+   *
+   * Dua tempat menghitung hal yang sama dari ekspresi berbeda. Sekarang
+   * penandanya diambil dari tempat keputusannya dibuat.
+   */
+  const perLangkah = 10 // 5 in + 5 out di model palsu
+  // Cukup untuk dua langkah, tapi langkah ketiga tidak akan muat: perkiraan
+  // menyala tanpa `spent` pernah benar-benar melewati anggarannya.
+  configWith({ limits: { turnTokens: perLangkah * 2 + 5, continueTurns: 1 } })
+  neverStops()
+
+  const session = createSession(project)
+  savePlan(session.id, "- [ ] masih ada")
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
+
+  assert.equal(turns(session.id), 2, "perkiraan yang menghentikan giliran juga memicu lanjutan")
+})
