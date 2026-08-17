@@ -5,6 +5,7 @@ import type { Config } from "./schema.ts"
 import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt, type Effort } from "./prompt.ts"
+import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
 import {
   contextWindowFor,
   resolveModel,
@@ -171,6 +172,14 @@ const running = new Map<string, AbortController>()
  * informasi menjadi gangguan yang orang latih diri untuk abaikan.
  */
 const noticed = new Set<string>()
+
+/**
+ * Sesi yang sudah diperiksa kelengkapan berkasnya.
+ *
+ * Sekali per sesi, bukan sekali per giliran: config tidak berubah di tengah
+ * sesi, dan menyentuh disk tiap giliran adalah ongkos tanpa imbalan.
+ */
+const scaffolded = new Set<string>()
 
 /**
  * Peringatan sekali-per-sesi bahwa jendela konteks model belum dideklarasikan.
@@ -449,6 +458,34 @@ export async function prompt(input: PromptInput): Promise<Message> {
    */
   const turnModel = input.resolvedModel ?? turnModelFor(config, agentID, modelOverride)
   const model = resolver(config, turnModel)
+
+  /*
+   * Apa yang config JANJIKAN ada, dibuat sebelum prompt pertama dirakit.
+   *
+   * Letaknya di sini, bukan saat config dimuat, dan bukan di `titah init`.
+   *
+   * Bukan saat config dimuat: config dibaca puluhan kali per sesi — oleh
+   * `/config`, oleh setiap sub-agent, oleh setiap pengecekan izin. Menulis ke
+   * disk dari jalur yang dianggap murni akan mengejutkan setiap pemanggilnya.
+   *
+   * Bukan di `titah init`: config berubah sesudah init, dan sumbu yang hanya
+   * disiapkan sekali seumur hidup akan berhenti berlaku persis saat user
+   * menambah instruksi baru — momen yang paling ingin ditangkap.
+   *
+   * Jadi di sini: sekali, pada giliran PERTAMA sebuah sesi, tepat sebelum
+   * `buildSystemPrompt` membaca berkas-berkas itu. Giliran kedua dan seterusnya
+   * melewatinya, karena config tidak berubah di tengah sesi dan menyentuh disk
+   * tiap giliran adalah ongkos tanpa imbalan.
+   */
+  if (!scaffolded.has(session.id)) {
+    scaffolded.add(session.id)
+    const made = ensureDeclared(config, session.directory)
+    const notice = scaffoldNotice(made, session.directory)
+    // Menulis ke disk tidak boleh terjadi diam-diam, sekalipun yang ditulis
+    // persis yang diminta config.
+    if (notice) bus.publish({ type: "session.notice", sessionID: session.id, message: notice })
+  }
+
   const built = buildSystemPrompt(config, session.directory, agentID, input.effort)
   const system = teamPrompt ? `${built.system}\n\n${teamPrompt}` : built.system
 

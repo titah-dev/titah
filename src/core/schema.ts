@@ -639,10 +639,29 @@ export const Config = z.object({
       'TUI keybinding overrides, e.g. {"session_interrupt": "ctrl+g"}. ' +
         'Defaults follow opencode; "none" disables an action.',
     ),
+  /*
+   * Tiga bentuk, satu arti.
+   *
+   *   "instructions": "titah-instruction.md"
+   *   "instructions": { "path": "titah-instruction.md" }
+   *   "instructions": ["a.md", { "path": "b.md" }]
+   *
+   * Bentuk tunggal diterima karena itu yang orang tulis lebih dulu, dan menolak
+   * config yang maksudnya sudah jelas hanya memindahkan pekerjaan ke user.
+   * Bentuk objek mengikuti `skills.paths`, yang sudah menerima
+   * `string | { path }` — dua sumbu yang sama-sama menunjuk berkas sebaiknya
+   * ditulis dengan cara yang sama.
+   */
   instructions: z
-    .array(z.string())
-    .default([])
-    .describe("Extra instruction file paths, beyond AGENTS.md/CLAUDE.md/TITAH.md"),
+    .preprocess(
+      (value) => (value === undefined || Array.isArray(value) ? value : [value]),
+      z.array(z.union([z.string(), z.object({ path: z.string() })])).default([]),
+    )
+    .describe(
+      "Extra instruction files, beyond AGENTS.md/CLAUDE.md/TITAH.md. " +
+        'A string, {"path": "..."}, or an array of either. Missing files are created on the ' +
+        "first turn of a session.",
+    ),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 
