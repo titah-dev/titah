@@ -42,6 +42,9 @@ About \`plan\`:
   redo work; one missing a pending step makes you skip it silently.
 - It is a whole document, replaced on every call — send all of it, not a diff.
   Keep it short enough that rewriting it is cheap.
+- Write the steps as checkboxes: \`- [ ]\` pending, \`- [x]\` done. Titah reads those
+  boxes to tell whether work remains when a turn runs out of room, so a plan
+  written as prose leaves it unable to tell finished from abandoned.
 
 About the web tools:
 - Your training data has an expiry date; the web does not. When a library's

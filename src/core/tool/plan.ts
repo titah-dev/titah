@@ -85,7 +85,10 @@ export const planTool: TitahTool<typeof inputSchema> = {
     "Record your working plan for this session. It is carried across context compaction, " +
     "so it is the one place a multi-step plan survives a long turn. Replaces the plan " +
     "entirely on every call; send an empty string to clear it. Update it as steps " +
-    "complete — a stale plan is worse than no plan.",
+    "complete — a stale plan is worse than no plan.\n\n" +
+    "Write the steps as markdown checkboxes — `- [ ]` for pending, `- [x]` for done. " +
+    "That is not decoration: it is the only part of the plan Titah itself can read, and it " +
+    "is what tells it whether work remains when a turn runs out of room.",
   inputSchema,
   // Tidak ada `permission`, dan tidak ada `mutates`. Menulis rencana tidak
   // menyentuh filesystem maupun shell — ia menulis ke database Titah sendiri,
