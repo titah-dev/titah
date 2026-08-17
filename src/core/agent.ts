@@ -14,6 +14,7 @@ import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt, type Effort } from "./prompt.ts"
 import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
+import { hasOpenWork } from "./plan-progress.ts"
 import {
   contextWindowFor,
   resolveModel,
@@ -78,6 +79,7 @@ import {
   createMessage,
   getSession,
   listModelMessages,
+  readPlan,
   splitModelRequest,
   saveMessage,
   touchSession,
@@ -341,6 +343,15 @@ export interface PromptInput {
    */
   permissionCeiling?: EffectivePermission
   /**
+   * Sudah berapa kali giliran ini dilanjutkan Titah sendiri.
+   *
+   * Diisi HANYA oleh `prompt()` saat ia memanggil dirinya sendiri. Ia bagian
+   * dari keadaan loop, bukan sesuatu yang pantas diminta pemanggil luar —
+   * server dan TUI tidak punya cara tahu berapa nilai yang benar, dan menebaknya
+   * berarti batas lanjutan bisa dilewati dari luar.
+   */
+  continuation?: number
+  /**
    * Model yang SUDAH diputuskan pemanggil, melewati `turnModelFor`.
    *
    * Dibutuhkan karena `turnModelFor` membuat `agent.<id>.model` menang atas
@@ -561,6 +572,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // giliran muncul — bukan menyusul setelah jawaban pertama mengalir.
   if (agentID) assistant.agent = agentID
   bus.publish({ type: "message.updated", sessionID: session.id, message: assistant })
+
+  /** Diisi sesudah stream: apakah giliran ini berhenti karena batas, bukan karena selesai. */
+  let stoppedAtLimit = false
 
   const controller = new AbortController()
   running.set(session.id, controller)
@@ -1170,6 +1184,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * lebih buruk daripada tidak ada kabar.
      */
     const spentTokens = tokensSpent(steps)
+    stoppedAtLimit =
+      (turnBudget !== undefined && spentTokens >= turnBudget) || steps.length >= maxSteps
     if (turnBudget !== undefined && spentTokens >= turnBudget) {
       bus.publish({
         type: "session.notice",
@@ -1217,6 +1233,67 @@ export async function prompt(input: PromptInput): Promise<Message> {
     const updated = touchSession(session.id)
     if (updated) bus.publish({ type: "session.updated", sessionID: session.id, session: updated })
     bus.publish({ type: "session.idle", sessionID: session.id })
+  }
+
+
+  /*
+   * LANJUT SENDIRI, kalau rencananya masih punya pekerjaan.
+   *
+   * Inilah "jalan sampai semua task selesai" — dan bentuknya sengaja LOOP DARI
+   * GILIRAN, bukan satu giliran tanpa batas.
+   *
+   * Giliran seribu langkah akan dipadatkan berkali-kali; di langkah ke-400
+   * model bekerja dari ringkasan atas ringkasan, terus jalan sambil pelan-pelan
+   * lupa. Giliran BARU mulai dengan transkrip bersih dan membaca ulang rencana
+   * utuh dari tabel `plan`, satu-satunya tabel yang tidak disentuh pemadatan.
+   * Jadi loop ini memperbaiki masalah lupa, sementara langkah tanpa batas
+   * memperburuknya.
+   *
+   * SEMUA syarat di bawah harus benar, dan tiap satunya menutup satu cara loop
+   * ini bisa berubah jadi pemborosan:
+   *
+   *   - dinyalakan user           — ia membelanjakan uang tanpa bertanya
+   *   - berhenti karena BATAS     — giliran yang selesai wajar memang sudah selesai
+   *   - bukan sub-agent           — anak tidak mengatur nasibnya sendiri; induknya yang mengatur
+   *   - tidak dibatalkan          — Esc berarti berhenti, bukan berhenti lalu mulai lagi
+   *   - tidak error               — mengulang kegagalan yang sama tidak membuatnya berhasil
+   *   - rencananya punya sisa     — satu-satunya definisi "belum selesai" yang bisa dinilai mesin
+   *   - jatah lanjutan masih ada  — batas keras, supaya "sampai selesai" tetap punya ujung
+   */
+  const allowed = config.limits.continueTurns
+  const done = input.continuation ?? 0
+  if (
+    allowed > 0 &&
+    done < allowed &&
+    stoppedAtLimit &&
+    !isChild &&
+    !controller.signal.aborted &&
+    assistant.error === undefined &&
+    hasOpenWork(readPlan(session.id)?.text)
+  ) {
+    bus.publish({
+      type: "session.notice",
+      sessionID: streamSessionID,
+      message:
+        `Continuing on its own (${done + 1} of ${allowed}) — the plan still has unfinished ` +
+        "items. Press Esc to stop.",
+    })
+
+    return prompt({
+      ...input,
+      continuation: done + 1,
+      /*
+       * Prompt lanjutan menunjuk ke RENCANA, bukan mengulang permintaan asli.
+       *
+       * Mengulang teks aslinya membuat model memulai dari nol — membaca ulang
+       * berkas yang sudah dibaca, merencanakan ulang yang sudah direncanakan.
+       * Rencananya sudah memuat apa yang tersisa, dan ia satu-satunya bagian
+       * yang dijamin utuh menyeberangi batas giliran.
+       */
+      text:
+        "Continue the unfinished items in your plan. Do not restart work that is already " +
+        "checked off. Update the plan as you complete each item.",
+    })
   }
 
   return assistant

@@ -701,8 +701,40 @@ export const Config = z.object({
             "budget. Setting it also lifts the step ceiling to 200, since steps stop being " +
             "the thing that bounds the turn.",
         ),
+      /*
+       * Berapa kali Titah boleh melanjutkan SENDIRI setelah giliran mentok.
+       *
+       * # Kenapa ini yang menjawab "jalan sampai semua task selesai"
+       *
+       * Bukan dengan satu giliran tanpa batas. Giliran seribu langkah akan
+       * dipadatkan berkali-kali; di langkah ke-400 model bekerja dari ringkasan
+       * atas ringkasan, terus jalan sambil pelan-pelan lupa — kegagalan yang
+       * jauh lebih buruk daripada berhenti, karena tidak terlihat.
+       *
+       * Giliran BARU mulai dengan transkrip bersih dan membaca ulang rencana
+       * utuh dari tabel `plan`, satu-satunya tabel yang tidak disentuh
+       * pemadatan. Jadi loop ini bukan sekadar menghindari masalah lupa — ia
+       * memperbaikinya, sementara langkah tanpa batas memperburuknya.
+       *
+       * # Kenapa bawaannya NOL
+       *
+       * Ia membelanjakan uang tanpa bertanya. Syaratnya memang ketat — harus
+       * mentok DAN rencananya masih punya butir belum dicentang — tapi "ketat"
+       * bukan "gratis". User yang menyalakannya tahu ia sedang menukar
+       * pengawasan dengan kelanjutan; user yang tidak pernah memintanya tidak
+       * boleh menemukan itu sudah terjadi.
+       */
+      continueTurns: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe(
+          "How many times Titah may continue on its own after a turn stops at a limit, " +
+            "while the plan still has unchecked items. 0 disables it.",
+        ),
     })
-    .default({}),
+    .default({ continueTurns: 0 }),
   /*
    * Sakelar untuk SELURUH pembuatan berkas otomatis.
    *
