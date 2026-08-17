@@ -82,6 +82,29 @@ import { dispatchableAgents, teamAgents, teamSkipped } from "./subagent.ts"
 const MAX_STEPS = 20
 
 /**
+ * Yang dikatakan ke model pada langkah terakhir.
+ *
+ * Ditulis sebagai kabar, bukan perintah kerja: yang diminta bukan "selesaikan
+ * sekarang" — itu mustahil dan hanya menghasilkan klaim palsu — melainkan
+ * berhenti dengan JUJUR. Giliran yang berakhir dengan "sisanya: X, Y" bisa
+ * dilanjutkan; yang berakhir terpotong di tengah kalimat harus ditebak dulu
+ * sampai mana ia sempat.
+ */
+const LAST_STEP_NOTE = [
+  "--- last step ---",
+  "You have reached this turn's step limit. No tools are available now, so this",
+  "is your final message.",
+  "",
+  "Do not pretend the work is finished. Close by stating, in this order:",
+  "  1. what you actually completed and verified",
+  "  2. what you had started but did not finish",
+  "  3. the exact next step, specific enough to resume from",
+  "",
+  "If you wrote a plan, update your account of it here — the next turn reads the",
+  "plan, not this transcript.",
+].join("\n")
+
+/**
  * Ditambahkan ke system prompt HANYA untuk /tim. Sengaja tidak menyebut nama
  * agent satu per satu di sini — daftarnya berubah per config, dan menaruhnya
  * di prompt statis berarti dua sumber kebenaran yang bisa saling menyimpang.
@@ -789,6 +812,31 @@ export async function prompt(input: PromptInput): Promise<Message> {
         // kehabisan langkah. Dihitung DI LUAR try/catch di bawah: harus tetap
         // berlaku baik pemadatan berhasil, dilewati, MAUPUN melempar error.
         const lastStep = stepNumber >= maxSteps - 1
+
+        /*
+         * Pada langkah terakhir, model DIBERI TAHU — bukan cuma dicabuti
+         * toolnya.
+         *
+         * Mencabut tool saja sudah memaksanya menjawab teks, dan itu memang
+         * niat aslinya. Tapi ia tidak tahu kenapa toolnya hilang: ia sedang
+         * menarasikan pekerjaan ("Step 12: Run tests"), mendapati tidak ada
+         * yang bisa dipanggil, lalu menulis apa pun yang ada di ujung
+         * kalimatnya. Empat giliran di database sesi ini berakhir persis
+         * begitu — terpotong di tengah kalimat, tepat sebelum tool berikutnya.
+         *
+         * Lewat `instructions`, bukan pesan baru di riwayat: ini keadaan
+         * giliran ini, bukan sesuatu yang pernah dikatakan siapa pun. Menaruhnya
+         * sebagai pesan berarti ia ikut tersimpan dan terbaca lagi di giliran
+         * berikutnya, sebagai perintah yang sudah kedaluwarsa.
+         */
+        const closing = (base: Record<string, unknown>): Record<string, unknown> =>
+          lastStep
+            ? {
+                ...base,
+                activeTools: [],
+                instructions: `${system}\n\n${LAST_STEP_NOTE}`,
+              }
+            : base
         try {
           // Pesan langkah yang BARU selesai ditakar sekali di sini, untuk dua
           // besaran yang BEDA dan sempat tertukar:
@@ -824,7 +872,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
               largestToolResult,
             )
           ) {
-            return lastStep ? { activeTools: [] } : {}
+            return closing({})
           }
 
           const soFar: ModelMessage[] = [
@@ -863,7 +911,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
           // `changed`, bukan `ran`: pemadatan yang menyala tanpa membebaskan
           // apa pun tidak punya riwayat baru untuk dikirim, dan menyusunnya
           // ulang cuma menyamarkan kegagalan itu sebagai keberhasilan.
-          if (!compacted.changed) return lastStep ? { activeTools: [] } : {}
+          if (!compacted.changed) return closing({})
 
           /*
            * Dirakit ulang lewat jalur CAG yang SAMA, bukan lewat
@@ -886,7 +934,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             }),
           }).messages
 
-          return lastStep ? { activeTools: [], messages: rebuilt } : { messages: rebuilt }
+          return closing({ messages: rebuilt })
         } catch {
           // Gagal memadatkan DI TENGAH giliran berarti "lewati pemadatan
           // langkah ini", bukan "jatuhkan seluruh giliran yang sudah
@@ -896,7 +944,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
           // — pasangan persis `catch {}` di jalur antar-giliran di atas.
           // `lastStep` tetap dihormati: kegagalan memadatkan tidak boleh
           // membiarkan giliran berakhir pada tool call lagi.
-          return lastStep ? { activeTools: [] } : {}
+          return closing({})
         }
       },
       stopWhen: stepCountIs(maxSteps),
@@ -1015,6 +1063,35 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     const steps = await result.steps
+
+    /*
+     * Giliran yang berhenti karena kehabisan langkah MENGATAKANNYA.
+     *
+     * Diukur dari 68 giliran nyata: sebarannya meluruh mulus dari 1 sampai 16
+     * langkah, lalu menumpuk sembilan giliran di 19–20. Itu bukan sebaran
+     * alami, itu tembok — 13% giliran berhenti bukan karena selesai.
+     *
+     * Sebelum ini tidak ada satu pun tanda. Model menutup dengan kalimat
+     * terpotong, dan dari layar itu terlihat persis seperti Titah menyerah di
+     * tengah jalan tanpa sebab. Kegagalan yang tidak bisa dibedakan dari
+     * keberhasilan adalah kegagalan yang paling mahal, karena langkah
+     * berikutnya dibangun di atas pekerjaan yang tidak pernah terjadi.
+     *
+     * `>= maxSteps`, bukan `finishReason`: batasnya milik Titah, jadi Titah
+     * yang tahu pasti — sementara `finishReason` datang dari provider dan
+     * bentuknya berbeda-beda antar endpoint.
+     */
+    if (steps.length >= maxSteps) {
+      bus.publish({
+        type: "session.notice",
+        sessionID: streamSessionID,
+        message:
+          `Stopped at the ${maxSteps}-step limit for this turn — the work may not be ` +
+          `finished. Raise it with "agent.${agentID ?? "build"}.steps" in the config, or ` +
+          "send another prompt to continue from where it stopped.",
+      })
+    }
+
     const all: ModelMessage[] = [userTurn, ...steps.flatMap((step) => step.response.messages)]
     appendModelMessages(session.id, all.slice(flushed))
     flushed = all.length
