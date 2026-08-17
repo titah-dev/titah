@@ -35,6 +35,110 @@ import { configSources } from "./skill-sources.ts"
  * membaca config adalah hal yang harus terlihat.
  */
 
+/**
+ * Urutan file instruksi (Q13): AGENTS.md → CLAUDE.md → TITAH.md.
+ *
+ * AGENTS.md sebagai utama karena itu konvensi lintas-tool, CLAUDE.md sebagai
+ * kompatibilitas, TITAH.md sebagai override khusus Titah. Biayanya nyaris nol
+ * dan langsung membuat Titah berguna di repo yang sudah ada.
+ */
+export const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "TITAH.md"] as const
+
+export interface InstructionFile {
+  path: string
+  content: string
+}
+
+/**
+ * Mencari file instruksi dari cwd ke atas, berhenti di root git atau home.
+ *
+ * Tinggal di sini, bukan di `prompt.ts`, karena SATU pencarian ini menjawab dua
+ * pertanyaan yang harus sepakat: "apa yang dibaca ke system prompt" dan "apakah
+ * proyek ini sudah punya instruksi sama sekali". Kalau yang kedua dijawab
+ * pencarian terpisah, Titah bisa membuat AGENTS.md di repo yang sebenarnya
+ * sudah punya CLAUDE.md — dua berkas instruksi yang bisa saling bertentangan,
+ * dibuat oleh alat yang seharusnya membacanya.
+ */
+export function findInstructionFiles(cwd: string): InstructionFile[] {
+  /*
+   * Dikumpulkan PER DIREKTORI, lalu urutan direktorinya yang dibalik.
+   *
+   * Versi sebelumnya membalik daftar datarnya, dan itu ikut membalik urutan
+   * di DALAM satu direktori: AGENTS → CLAUDE → TITAH keluar sebagai TITAH →
+   * CLAUDE → AGENTS. Karena yang dibaca terakhir yang menang, TITAH.md — yang
+   * seluruh alasan keberadaannya adalah menjadi override khusus Titah —
+   * justru kalah oleh AGENTS.md di direktori yang sama.
+   *
+   * Gejalanya nyaris mustahil dikenali: aturan yang ditulis khusus untuk Titah
+   * diam-diam tidak berlaku, dan yang berlaku adalah aturan bersama yang tampak
+   * masuk akal.
+   */
+  const levels: InstructionFile[][] = []
+  const home = os.homedir()
+  let dir = path.resolve(cwd)
+
+  for (;;) {
+    const here: InstructionFile[] = []
+    for (const name of INSTRUCTION_FILES) {
+      const file = path.join(dir, name)
+      try {
+        if (fs.statSync(file).isFile()) {
+          here.push({ path: file, content: fs.readFileSync(file, "utf8") })
+        }
+      } catch {
+        // tidak ada — lanjut
+      }
+    }
+    levels.push(here)
+
+    if (fs.existsSync(path.join(dir, ".git"))) break
+    const parent = path.dirname(dir)
+    if (parent === dir || dir === home) break
+    dir = parent
+  }
+
+  // Yang paling dekat dengan cwd harus dibaca terakhir supaya menang.
+  return levels.reverse().flat()
+}
+
+/**
+ * Isi awal AGENTS.md, ditulis sebagai PERTANYAAN yang harus dijawab.
+ *
+ * Template yang sudah berisi aturan contoh punya nasib yang bisa ditebak: ia
+ * dibiarkan apa adanya, dan Titah lalu bekerja menurut aturan yang tidak pernah
+ * dipilih siapa pun. Pertanyaan tidak punya nasib itu — ia jelas belum dijawab
+ * selama masih berbentuk pertanyaan.
+ */
+const AGENTS_TEMPLATE = [
+  "# AGENTS.md",
+  "",
+  "Read by Titah, Claude Code, and other agent CLIs at the start of every turn.",
+  "Keep it short: everything here is paid for on every request.",
+  "",
+  "## What this project is",
+  "",
+  "<!-- One or two sentences. What it does, and what it is built with. -->",
+  "",
+  "## Commands",
+  "",
+  "<!-- The ones an agent needs before it can verify its own work. -->",
+  "",
+  "- Build:",
+  "- Test:",
+  "- Lint / typecheck:",
+  "",
+  "## Conventions",
+  "",
+  "<!-- Only what is NOT obvious from reading the code. Naming, layout, and",
+  "     style are already visible there; the reasons behind them are not. -->",
+  "",
+  "## Rules",
+  "",
+  "<!-- Things that must always or never happen. Be specific enough to obey.",
+  '     "Write good code" cannot be followed; "never commit to main" can. -->',
+  "",
+].join("\n")
+
 /** Isi awal berkas instruksi, dengan contoh yang bisa langsung diganti. */
 const INSTRUCTION_TEMPLATE = [
   "# Titah instructions",
@@ -81,6 +185,31 @@ export function scaffoldedAnything(result: Scaffolded): boolean {
 export function ensureDeclared(config: Config, cwd: string): Scaffolded {
   const files: string[] = []
   const dirs: string[] = []
+
+  if (config.scaffold === false) return { files, dirs }
+
+  /*
+   * AGENTS.md hanya kalau proyeknya belum punya instruksi SAMA SEKALI.
+   *
+   * Bukan "kalau AGENTS.md belum ada". Repo yang sudah punya CLAUDE.md sudah
+   * menjawab pertanyaan yang sama, dan menambahkan AGENTS.md di sebelahnya
+   * menghasilkan dua berkas instruksi yang bisa saling bertentangan — dibuat
+   * oleh alat yang seharusnya membacanya, bukan menambahinya.
+   *
+   * Pencarian yang dipakai sama persis dengan yang membacanya ke system prompt,
+   * jadi "sudah punya" di sini berarti "benar-benar ikut terbaca", bukan
+   * sekadar "ada berkas dengan nama itu di suatu tempat".
+   */
+  if (findInstructionFiles(cwd).length === 0) {
+    const file = path.join(path.resolve(cwd), "AGENTS.md")
+    try {
+      fs.writeFileSync(file, AGENTS_TEMPLATE, { flag: "wx" })
+      files.push(file)
+    } catch {
+      // `wx` gagal kalau berkasnya muncul di antara pengecekan dan penulisan.
+      // Itu hasil yang benar: yang sudah ada tidak pernah ditimpa.
+    }
+  }
 
   for (const file of instructionPaths(config, cwd)) {
     if (fs.existsSync(file)) continue

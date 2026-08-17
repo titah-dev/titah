@@ -6,7 +6,12 @@ import test, { afterEach, beforeEach, after } from "node:test"
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider"
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 import { Config } from "../src/core/schema.ts"
-import { ensureDeclared, instructionPaths, scaffoldNotice } from "../src/core/scaffold.ts"
+import {
+  ensureDeclared,
+  findInstructionFiles,
+  instructionPaths,
+  scaffoldNotice,
+} from "../src/core/scaffold.ts"
 import { buildSystemPrompt } from "../src/core/prompt.ts"
 
 /**
@@ -84,7 +89,7 @@ test("berkas instruksi yang belum ada DIBUAT, dengan isi yang bisa dibaca", () =
   const hasil = ensureDeclared(parsed, project)
 
   const file = path.join(project, "titah-instruction.md")
-  assert.deepEqual(hasil.files, [file])
+  assert.ok(hasil.files.includes(file))
   assert.equal(fs.existsSync(file), true)
 
   const isi = fs.readFileSync(file, "utf8")
@@ -105,7 +110,7 @@ test("berkas yang SUDAH ada tidak pernah ditimpa", () => {
 
   const hasil = ensureDeclared(config({ instructions: "punyaku.md" }), project)
 
-  assert.deepEqual(hasil.files, [], "tidak dilaporkan sebagai dibuat")
+  assert.equal(hasil.files.includes(file), false, "tidak dilaporkan sebagai dibuat")
   assert.equal(fs.readFileSync(file, "utf8"), "aturan saya sendiri\n")
 })
 
@@ -145,11 +150,16 @@ test("folder skill hasil AUTO-DETEKSI tidak pernah dibuat", () => {
   assert.equal(fs.existsSync(path.join(os.homedir(), ".claude")), false)
 })
 
-test("tidak menebak: berkas yang tidak didaftarkan tidak dibuat", () => {
-  // Berkas yang muncul tanpa pernah diminta lebih buruk daripada berkas yang
-  // hilang — user tidak punya cara menghubungkannya dengan apa pun.
+test("tidak menebak: hanya AGENTS.md, tidak ada berkas lain yang mengarang", () => {
+  /*
+   * AGENTS.md satu-satunya yang dibuat tanpa disebut config, dan itu keputusan
+   * eksplisit — nama yang sama dipakai lintas alat, jadi ia bukan tebakan
+   * tentang apa yang user inginkan. Selain itu tidak ada: berkas yang muncul
+   * tanpa pernah diminta lebih buruk daripada berkas yang hilang, karena user
+   * tidak punya cara menghubungkannya dengan apa pun yang ia lakukan.
+   */
   ensureDeclared(config({}), project)
-  assert.deepEqual(fs.readdirSync(project), [])
+  assert.deepEqual(fs.readdirSync(project), ["AGENTS.md"])
 })
 
 // ---------- kabarnya ----------
@@ -252,4 +262,121 @@ test("berkas yang user HAPUS di tengah sesi tidak dibuat ulang tiap giliran", as
     false,
     "giliran kedua tidak boleh menyentuh disk lagi",
   )
+})
+
+// ---------- AGENTS.md ----------
+
+test("proyek TANPA instruksi apa pun dapat AGENTS.md", () => {
+  const hasil = ensureDeclared(config({}), project)
+
+  const file = path.join(project, "AGENTS.md")
+  assert.deepEqual(hasil.files, [file])
+  assert.match(fs.readFileSync(file, "utf8"), /# AGENTS\.md/)
+})
+
+test("templatenya berisi PERTANYAAN, bukan aturan contoh", () => {
+  /*
+   * Template yang sudah berisi aturan punya nasib yang bisa ditebak: ia
+   * dibiarkan apa adanya, dan Titah lalu bekerja menurut aturan yang tidak
+   * pernah dipilih siapa pun. Pertanyaan tidak punya nasib itu — ia jelas belum
+   * dijawab selama masih berbentuk pertanyaan.
+   */
+  ensureDeclared(config({}), project)
+  const isi = fs.readFileSync(path.join(project, "AGENTS.md"), "utf8")
+
+  assert.match(isi, /## Commands/)
+  assert.match(isi, /<!--/, "keterangannya komentar, jadi tidak ikut terbaca sebagai aturan")
+  assert.match(isi, /Build:\n/, "kolom kosong yang menunggu diisi")
+})
+
+test("repo yang sudah punya CLAUDE.md TIDAK ditambahi AGENTS.md", () => {
+  /*
+   * Bukan "kalau AGENTS.md belum ada". Repo yang punya CLAUDE.md sudah menjawab
+   * pertanyaan yang sama, dan menaruh AGENTS.md di sebelahnya menghasilkan dua
+   * berkas instruksi yang bisa saling bertentangan — dibuat oleh alat yang
+   * seharusnya membacanya, bukan menambahinya.
+   */
+  fs.writeFileSync(path.join(project, "CLAUDE.md"), "aturan lama\n")
+  const hasil = ensureDeclared(config({}), project)
+
+  assert.deepEqual(hasil.files, [])
+  assert.equal(fs.existsSync(path.join(project, "AGENTS.md")), false)
+})
+
+test("AGENTS.md yang sudah ada tidak pernah ditimpa", () => {
+  fs.writeFileSync(path.join(project, "AGENTS.md"), "punyaku\n")
+  ensureDeclared(config({}), project)
+  assert.equal(fs.readFileSync(path.join(project, "AGENTS.md"), "utf8"), "punyaku\n")
+})
+
+test("instruksi dari direktori INDUK juga dihitung sudah punya", () => {
+  // Monorepo: aturan tinggal di root, dan tiap paket di bawahnya tidak butuh
+  // salinannya sendiri. Pencariannya sama dengan yang membacanya ke prompt.
+  fs.writeFileSync(path.join(project, "AGENTS.md"), "aturan root\n")
+  const paket = path.join(project, "packages", "web")
+  fs.mkdirSync(paket, { recursive: true })
+
+  ensureDeclared(config({}), paket)
+  assert.equal(fs.existsSync(path.join(paket, "AGENTS.md")), false)
+})
+
+test("AGENTS.md yang dibuat langsung IKUT terbaca", () => {
+  // Sambungan yang paling mudah putus: dibuat oleh satu pencarian, dibaca oleh
+  // pencarian lain. Keduanya `findInstructionFiles` yang sama.
+  ensureDeclared(config({}), project)
+  fs.writeFileSync(path.join(project, "AGENTS.md"), "# AGENTS.md\n\nWAJIB pakai bahasa Indonesia.\n")
+
+  assert.match(buildSystemPrompt(config({}), project).system, /WAJIB pakai bahasa Indonesia/)
+})
+
+// ---------- sakelarnya ----------
+
+test('scaffold: false tidak menulis APA PUN', () => {
+  const parsed = Config.parse({
+    scaffold: false,
+    skills: { discover: [], paths: ["skills"] },
+    instructions: "aturan.md",
+  })
+  const hasil = ensureDeclared(parsed, project)
+
+  assert.deepEqual(hasil, { files: [], dirs: [] })
+  assert.deepEqual(fs.readdirSync(project), [], "termasuk AGENTS.md")
+})
+
+test("bawaannya menyala", () => {
+  // Titah dibuka di repo sendiri jauh lebih sering daripada di repo orang lain,
+  // dan berkas yang hilang diam-diam lebih merugikan daripada berkas yang
+  // muncul dan bisa dihapus.
+  assert.equal(Config.parse({}).scaffold, true)
+})
+
+// ---------- pembacanya ----------
+
+test("findInstructionFiles membaca ketiga nama, urut menang-terakhir", () => {
+  fs.writeFileSync(path.join(project, "AGENTS.md"), "a")
+  fs.writeFileSync(path.join(project, "CLAUDE.md"), "c")
+  fs.writeFileSync(path.join(project, "TITAH.md"), "t")
+
+  const found = findInstructionFiles(project).map((file) => path.basename(file.path))
+  assert.deepEqual(found, ["AGENTS.md", "CLAUDE.md", "TITAH.md"])
+})
+
+test("berhenti di root git, tidak merayap sampai home", () => {
+  /*
+   * Tanpa batas ini, membuka Titah di sebuah repo akan menyeret AGENTS.md milik
+   * setiap direktori di atasnya — termasuk milik proyek lain yang kebetulan
+   * satu induk.
+   */
+  fs.writeFileSync(path.join(project, "AGENTS.md"), "root")
+  fs.mkdirSync(path.join(project, ".git"), { recursive: true })
+  const dalam = path.join(project, "src", "core")
+  fs.mkdirSync(dalam, { recursive: true })
+  fs.writeFileSync(path.join(dalam, "AGENTS.md"), "dalam")
+
+  const found = findInstructionFiles(dalam).map((file) => file.content)
+  assert.deepEqual(found, ["root", "dalam"], "yang terdekat dibaca terakhir supaya menang")
+})
+
+test("direktori tanpa instruksi menghasilkan daftar kosong", () => {
+  assert.deepEqual(findInstructionFiles(project), [])
 })

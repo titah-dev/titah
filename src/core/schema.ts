@@ -662,6 +662,22 @@ export const Config = z.object({
         'A string, {"path": "..."}, or an array of either. Missing files are created on the ' +
         "first turn of a session.",
     ),
+  /*
+   * Sakelar untuk SELURUH pembuatan berkas otomatis.
+   *
+   * Ada karena Titah bisa dibuka di repo milik orang lain, dan berkas yang
+   * muncul di sana bisa ikut ter-commit oleh orang yang tidak pernah memintanya.
+   * Bawaannya menyala — kebanyakan orang membuka Titah di reponya sendiri, dan
+   * berkas yang hilang diam-diam lebih sering merugikan daripada berkas yang
+   * muncul dan bisa dihapus.
+   */
+  scaffold: z
+    .boolean()
+    .default(true)
+    .describe(
+      "Create declared instruction files, skill folders, and a starter AGENTS.md on the " +
+        "first turn of a session. Set false to never write anything you did not ask for.",
+    ),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 

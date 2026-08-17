@@ -1891,7 +1891,21 @@ test("model tanpa contextWindow mengabarkannya SEKALI per sesi, lewat kanal yang
   await prompt({ sessionID: session.id, text: "giliran dua" })
   seen.stop()
 
-  const notices = seen.events.filter((event) => event.type === "session.notice")
+  /*
+   * Disaring per ISI, bukan dihitung semua.
+   *
+   * Versi sebelumnya menghitung setiap `session.notice` dan menuntut tepat
+   * satu — yang benar selama contextWindow satu-satunya yang pernah berkabar.
+   * Begitu scaffolding ikut berkabar (AGENTS.md dibuat di direktori uji yang
+   * memang kosong), test ini merah tanpa ada yang rusak pada hal yang ia jaga.
+   *
+   * Test yang mengukur "berapa banyak kabar" padahal memaksudkan "berapa kali
+   * kabar INI" akan patah setiap kali kabar lain ditambahkan, dan setiap kali
+   * itu orang harus memutuskan ulang apakah kemerahannya berarti.
+   */
+  const notices = seen.events.filter(
+    (event) => event.type === "session.notice" && event.message.includes("contextWindow"),
+  )
   assert.equal(notices.length, 1, "sekali per SESI, bukan sekali per giliran")
   assert.match(notices[0]?.type === "session.notice" ? notices[0].message : "", /contextWindow/)
   assert.match(notices[0]?.type === "session.notice" ? notices[0].message : "", /compaction is off/)
@@ -1904,7 +1918,15 @@ test("model tanpa contextWindow mengabarkannya SEKALI per sesi, lewat kanal yang
   recordingModel([textChunk("jawaban", usageWith(10))])
   await prompt({ sessionID: declared.id, text: "giliran satu" })
   quiet.stop()
-  assert.equal(quiet.events.filter((event) => event.type === "session.notice").length, 0)
+  // Disaring per isi dengan alasan yang sama seperti di atas: yang dijaga test
+  // ini adalah kabar contextWindow, dan direktori uji yang kosong sekarang
+  // memang mendapat AGENTS.md beserta kabarnya sendiri.
+  assert.equal(
+    quiet.events.filter(
+      (event) => event.type === "session.notice" && event.message.includes("contextWindow"),
+    ).length,
+    0,
+  )
 })
 
 test("steps agent membatasi jumlah langkah giliran", async () => {
