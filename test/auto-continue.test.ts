@@ -146,8 +146,15 @@ function neverStops(): { prompts: string[]; calls: number } {
   return seen
 }
 
+/**
+ * Giliran dihitung dari pesan ASSISTANT, bukan user.
+ *
+ * Sejak lanjutan berhenti menulis pesan user, menghitung dari sisi user hanya
+ * pernah mengembalikan satu — dan test yang memakainya akan lulus untuk alasan
+ * yang salah, yaitu karena fiturnya dianggap tidak pernah jalan.
+ */
 function turns(sessionID: string): number {
-  return listMessages(sessionID).filter((message) => message.role === "user").length
+  return listMessages(sessionID).filter((message) => message.role === "assistant").length
 }
 
 test("giliran yang mentok DILANJUTKAN selama rencananya masih punya sisa", async () => {
@@ -175,9 +182,10 @@ test("prompt lanjutan menunjuk ke RENCANA, bukan mengulang permintaan asli", asy
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const lanjutan = seen.prompts.filter((text) => text !== "bangun fitur X")
-  assert.ok(lanjutan.length > 0)
+  assert.ok(lanjutan.length > 0, "model tetap menerima giliran user di PERMINTAAN")
   assert.match(lanjutan[0] ?? "", /Continue the unfinished items in your plan/)
   assert.match(lanjutan[0] ?? "", /Do not restart work that is already checked off/)
+  assert.match(lanjutan[0] ?? "", /^\[titah\]/, "dan tahu bahwa itu bukan ketikan user")
 })
 
 test("rencana yang SUDAH habis menghentikan loopnya", async () => {
@@ -411,4 +419,68 @@ test("giliran yang berhenti karena PERKIRAAN anggaran juga dilanjutkan", async (
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
 
   assert.equal(turns(session.id), 2, "perkiraan yang menghentikan giliran juga memicu lanjutan")
+})
+
+// ---------- lanjutan tidak menyentuh riwayat user ----------
+
+test("lanjutan TIDAK menulis pesan user ke riwayat", async () => {
+  /*
+   * Tabel `message` dibaca layar DAN `promptHistory`. Versi pertama fitur ini
+   * menulis kalimat karangan Titah ke sana, jadi ia muncul di riwayat seolah
+   * user yang mengetiknya — termasuk saat user menekan panah atas untuk
+   * memanggil promptnya sendiri.
+   */
+  configWith({ limits: { continueTurns: 2 } })
+  neverStops()
+
+  const session = createSession(project)
+  savePlan(session.id, "- [ ] satu")
+  await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
+
+  const dariUser = listMessages(session.id)
+    .filter((message) => message.role === "user")
+    .map((message) =>
+      message.parts
+        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join(""),
+    )
+
+  assert.deepEqual(dariUser, ["bangun fitur X"], "hanya yang benar-benar diketik user")
+  assert.equal(turns(session.id), 3, "tapi gilirannya memang berlanjut")
+})
+
+test("panah atas tidak pernah memunculkan kalimat karangan Titah", async () => {
+  // `promptHistory` adalah pemakai kedua tabel yang sama, dan yang paling
+  // mengganggu: user menekan ↑ lalu menemukan kalimat yang tidak pernah ia tulis.
+  configWith({ limits: { continueTurns: 2 } })
+  neverStops()
+
+  const session = createSession(project)
+  savePlan(session.id, "- [ ] satu")
+  await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
+
+  const { promptHistory } = await import("../src/tui/state.ts")
+  assert.deepEqual(promptHistory(listMessages(session.id)), ["bangun fitur X"])
+})
+
+test("model TETAP menerima giliran user di permintaannya", async () => {
+  /*
+   * Batas yang disengaja: yang dihapus adalah barisnya di tabel `message`,
+   * bukan giliran usernya di permintaan. Permintaan yang berakhir pada pesan
+   * assistant tidak diperlakukan sama oleh setiap endpoint openai-compatible,
+   * dan menukar cacat kosmetik dengan risiko kompatibilitas bukan pertukaran
+   * yang baik.
+   */
+  configWith({ limits: { continueTurns: 1 } })
+  const seen = neverStops()
+
+  const session = createSession(project)
+  savePlan(session.id, "- [ ] satu")
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+
+  assert.ok(
+    seen.prompts.some((text) => text.startsWith("[titah]")),
+    "instruksi lanjutan sampai ke model",
+  )
 })
