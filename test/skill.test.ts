@@ -299,3 +299,63 @@ test("skills.paths yang tidak menghasilkan skill apa pun dilaporkan dengan path-
   assert.match(laporan, /sources with no skills/)
   assert.ok(laporan.includes(typo), "path yang nihil harus disebut apa adanya")
 })
+
+// ---------- ongkos katalog ----------
+
+test("deskripsi panjang DIPOTONG di katalog, tapi skillnya tetap terdaftar", () => {
+  /*
+   * Katalog dikirim UTUH di setiap permintaan. Diukur dengan penemuan bawaan
+   * (`claude` + `opencode`): 2.241 token — lebih banyak daripada seluruh sisa
+   * system prompt yang 1.909. Lima puluh empat persen anggaran awal habis untuk
+   * mengatalogkan skill milik alat lain, yang mungkin tidak pernah dipanggil.
+   *
+   * Yang dipotong deskripsinya, BUKAN daftarnya: katalog dipakai model untuk
+   * MEMILIH, dan menghapus skill dari daftar membuatnya tidak bisa dipilih sama
+   * sekali. Memotong deskripsi hanya membuat pemilihannya sedikit lebih kasar.
+   */
+  const panjang = "x".repeat(400)
+  const out = skillCatalog([
+    { id: "ns:a", namespace: "ns", name: "a", description: panjang, body: "", file: "a" },
+  ])
+
+  assert.match(out, /^- ns:a: /, "idnya utuh — itu yang dipakai memanggil")
+  assert.ok(out.length < 220, `katalognya ${out.length} karakter, seharusnya terpotong`)
+  assert.match(out, /…$/, "dan potongannya ditandai")
+})
+
+test("deskripsi pendek dibiarkan apa adanya", () => {
+  const out = skillCatalog([
+    {
+      id: "ns:b",
+      namespace: "ns",
+      name: "b",
+      description: "Use when reviewing a PR",
+      body: "",
+      file: "b",
+    },
+  ])
+  assert.equal(out, "- ns:b: Use when reviewing a PR")
+})
+
+test("potongannya jatuh di batas KATA, bukan di tengahnya", () => {
+  /*
+   * Kata yang terpenggal ("Use when reviewi") terbaca sebagai berkas rusak, dan
+   * model yang membacanya sebagai data rusak akan meragukan seluruh daftarnya.
+   */
+  const description = `${"kata ".repeat(60)}akhir`
+  const out = skillCatalog([
+    { id: "ns:c", namespace: "ns", name: "c", description, body: "", file: "c" },
+  ])
+  assert.doesNotMatch(out, /kat…$/, "tidak memotong di tengah kata")
+  assert.match(out, /kata…$/)
+})
+
+test("baris baru di deskripsi diratakan, tidak merusak daftar", () => {
+  // Satu skill = satu baris. Deskripsi multi-baris akan memecah daftarnya jadi
+  // entri palsu yang tidak menunjuk skill mana pun.
+  const out = skillCatalog([
+    { id: "ns:d", namespace: "ns", name: "d", description: "satu\n\ndua", body: "", file: "d" },
+  ])
+  assert.equal(out.split("\n").length, 1)
+  assert.equal(out, "- ns:d: satu dua")
+})

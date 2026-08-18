@@ -1948,7 +1948,15 @@ test("steps agent membatasi jumlah langkah giliran", async () => {
   assert.equal(model.doStreamCalls.length, 2)
 })
 
-test("agent tanpa steps tetap memakai batas bawaan", async () => {
+test("agent tanpa steps memakai plafon 200 kalau jendelanya dinyatakan", async () => {
+  /*
+   * Dulu 20 untuk semua orang. Diukur pada 68 giliran nyata, angka itu memotong
+   * 13,2% giliran — sebarannya meluruh mulus sampai 16 langkah lalu MENUMPUK di
+   * 19–20, yang berarti tembok, bukan sebaran alami.
+   *
+   * Sekarang jendela yang dinyatakan menurunkan anggaran token, dan begitu ada
+   * anggaran, hitungan langkah mundur jadi jaring patologi.
+   */
   const model = recordingModel([
     [
       { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
@@ -1960,7 +1968,35 @@ test("agent tanpa steps tetap memakai batas bawaan", async () => {
   const session = createSession(dir)
   await prompt({ sessionID: session.id, text: "baca terus", agent: "plain" })
 
-  assert.equal(model.doStreamCalls.length, 20)
+  assert.equal(model.doStreamCalls.length, 200)
+})
+
+test("tanpa contextWindow, plafonnya 40 — bukan 200", async () => {
+  /*
+   * Tidak ada yang bisa diturunkan dari jendela yang tidak dinyatakan, dan
+   * menebaknya persis kesalahan yang `contextWindow` sendiri menolak lakukan.
+   *
+   * 40, bukan lebih: tanpa jendela yang dinyatakan, pemadatan otomatis juga
+   * mati. Giliran dua ratus langkah di sana akan MELUAPKAN jendela model dan
+   * gagal dengan error provider yang jauh lebih sulit dibaca daripada "berhenti
+   * di batas".
+   */
+  const model = recordingModel([
+    [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(10) },
+    ],
+  ])
+
+  const dir = projectWith({
+    model: "mock/m",
+    provider: { mock: { models: { m: {} } } },
+    agent: { plain: {} },
+  })
+  const session = createSession(dir)
+  await prompt({ sessionID: session.id, text: "baca terus", agent: "plain" })
+
+  assert.equal(model.doStreamCalls.length, 40)
 })
 
 test("langkah terakhir dijalankan tanpa tool, sehingga model WAJIB menjawab teks", async () => {

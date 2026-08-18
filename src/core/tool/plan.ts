@@ -26,11 +26,21 @@ import { ToolError, type TitahTool } from "./types.ts"
  * Batas keras, dalam byte.
  *
  * Rencana ikut dikirim di SETIAP request, jadi ia bersaing dengan percakapan
- * yang sedang berjalan. 4 KB cukup untuk rencana dua puluh langkah beserta
- * catatannya, dan terlalu kecil untuk menampung potongan kode — yang memang
- * bukan tempatnya.
+ * yang sedang berjalan. Terlalu kecil untuk menampung potongan kode — yang
+ * memang bukan tempatnya.
+ *
+ * Dinaikkan dari 4 KB. Angka itu dipilih ketika satu giliran dianggap selesai
+ * dalam dua puluh langkah; sejak ada lanjutan antar-giliran, rencana adalah
+ * SATU-SATUNYA yang menyeberangi batas giliran utuh, dan pekerjaan berjam-jam
+ * tidak muat dalam empat kilobyte. Yang terjadi kalau ia sempit: model
+ * memadatkan rencananya sendiri, butir lama hilang, dan ia melanjutkan rencana
+ * yang sudah kehilangan sebagian maksud aslinya.
+ *
+ * Model kecil tidak ikut menanggung kenaikan ini: `planBudgetBytes` menjepitnya
+ * ke pecahan jendela, jadi batas ini hanya menggigit pada jendela besar — di
+ * 131k ia 12 KB, sekitar 1% jendela.
  */
-export const MAX_PLAN_BYTES = 4096
+export const MAX_PLAN_BYTES = 12288
 
 /**
  * Batas kedua, relatif jendela — dan ini yang sebenarnya menggigit pada model
