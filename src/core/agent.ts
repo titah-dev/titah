@@ -101,6 +101,26 @@ const MAX_STEPS = 20
  */
 const STEP_BACKSTOP = 200
 
+/**
+ * Yang dikirim ke model pada giliran lanjutan.
+ *
+ * Menunjuk ke RENCANA, bukan mengulang permintaan asli. Mengulang teks aslinya
+ * membuat model memulai dari nol — membaca ulang berkas yang sudah dibaca,
+ * merencanakan ulang yang sudah direncanakan. Rencananya sudah memuat apa yang
+ * tersisa, dan ia satu-satunya bagian yang dijamin utuh menyeberangi batas
+ * giliran.
+ *
+ * Diawali penyebutan Titah dengan sengaja. Kalimat ini masuk ke `model_message`
+ * dan akan terbaca lagi di giliran-giliran berikutnya; tanpa penanda, model
+ * membacanya sebagai perintah yang pernah diketik user — dan itu tidak benar.
+ * Bentuknya mengikuti `planPair`, yang juga menjelaskan asal-usulnya sendiri di
+ * dalam teksnya.
+ */
+const CONTINUE_TEXT =
+  "[titah] Your previous turn stopped at a limit, not because the work was done. " +
+  "Continue the unfinished items in your plan. Do not restart work that is already " +
+  "checked off. Update the plan as you complete each item."
+
 /** Token yang sudah dibayar giliran ini: input + output, lintas semua langkah. */
 function tokensSpent(steps: readonly { usage: LanguageModelUsage }[]): number {
   let total = 0
@@ -557,8 +577,32 @@ export async function prompt(input: PromptInput): Promise<Message> {
   const built = buildSystemPrompt(config, session.directory, agentID, input.effort)
   const system = teamPrompt ? `${built.system}\n\n${teamPrompt}` : built.system
 
-  const userMessage = createMessage(session.id, "user", [{ type: "text", text: input.text }])
-  bus.publish({ type: "message.updated", sessionID: session.id, message: userMessage })
+  /*
+   * Giliran lanjutan TIDAK menulis pesan user.
+   *
+   * Ia tetap butuh giliran user di PERMINTAAN — model harus menerima sesuatu
+   * untuk dijawab, dan permintaan yang berakhir pada pesan assistant tidak
+   * diperlakukan sama oleh setiap endpoint openai-compatible. Yang tidak ia
+   * butuhkan adalah barisnya masuk tabel `message`.
+   *
+   * Bedanya bukan kerapian. Tabel itu yang dibaca layar DAN `promptHistory`,
+   * jadi versi pertama fitur ini membuat kalimat karangan Titah muncul di
+   * riwayat sebagai kalimat yang seolah user ketik — termasuk saat ia menekan
+   * panah atas untuk memanggil promptnya sendiri.
+   *
+   * Polanya sudah ada di repo ini dan dipakai tiga kali: `planPair`,
+   * `summaryPair`, dan memori semuanya mengirim pasangan user+assistant yang
+   * hanya pernah dilihat model. Ini pemakai keempat, dan seharusnya sejak awal.
+   *
+   * Alasan lanjutannya tetap terlihat: `session.notice` yang berbunyi
+   * "Continuing on its own (1 of 3)". Itu Titah berbicara sebagai Titah, bukan
+   * pesan yang berpura-pura datang dari user.
+   */
+  const isContinuation = (input.continuation ?? 0) > 0
+  if (!isContinuation) {
+    const userMessage = createMessage(session.id, "user", [{ type: "text", text: input.text }])
+    bus.publish({ type: "message.updated", sessionID: session.id, message: userMessage })
+  }
 
   if (session.title === "") {
     const title = input.text.replace(/\s+/g, " ").slice(0, 80)
@@ -1328,17 +1372,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
     return prompt({
       ...input,
       continuation: (input.continuation ?? 0) + 1,
-      /*
-       * Prompt lanjutan menunjuk ke RENCANA, bukan mengulang permintaan asli.
-       *
-       * Mengulang teks aslinya membuat model memulai dari nol — membaca ulang
-       * berkas yang sudah dibaca, merencanakan ulang yang sudah direncanakan.
-       * Rencananya sudah memuat apa yang tersisa, dan ia satu-satunya bagian
-       * yang dijamin utuh menyeberangi batas giliran.
-       */
-      text:
-        "Continue the unfinished items in your plan. Do not restart work that is already " +
-        "checked off. Update the plan as you complete each item.",
+      text: CONTINUE_TEXT,
     })
   }
 
