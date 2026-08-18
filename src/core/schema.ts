@@ -774,6 +774,69 @@ export type LspServerConfig = z.infer<typeof LspServerConfig>
  * Config user menang per-id, jadi menimpa salah satunya cukup dengan
  * mendefinisikan ulang id yang sama.
  */
+/**
+ * Keputusan yang membentuk seluruh pekerjaan sesudahnya.
+ *
+ * # Kategori KETIGA, dan kenapa ia perlu namanya sendiri
+ *
+ * Sebelum ini `build-auto` hanya mengenal dua keadaan: MEKANIK (jangan tanya —
+ * `ls`, membaca, memasang dependency) dan KONTRADIKSI (tanya — repo bilang
+ * MongoDB, permintaannya SQL). Yang ini bukan keduanya: repo tidak mengatakan
+ * apa-apa, karena keputusannya memang belum pernah dibuat siapa pun.
+ *
+ * Diukur sebelum klausa ini ada: proyek React kosong, diminta "buatkan halaman
+ * admin dashboard". Model membaca, lalu langsung menulis dashboard lengkap
+ * dengan sidebar dan enam menu — layoutnya diputuskan sendiri, tanpa satu pun
+ * pertanyaan, dan `App.jsx` ditimpa. Bukan salah modelnya: layout tidak
+ * bertentangan dengan apa pun, jadi satu-satunya syarat berhenti yang ia punya
+ * tidak pernah terpenuhi.
+ *
+ * # Urutan contohnya DISENGAJA berat-dulu
+ *
+ * Model membaca contoh sebagai definisi kategorinya. Versi pertama draf ini
+ * membuka dengan "layout, bentuk skema, struktur folder" — dan pemilihan
+ * datastore, anggota paling berat kategori ini, justru terasa di luar cakupan
+ * karena tidak disebut. Layout adalah anggota paling RINGAN, bukan wajahnya.
+ *
+ * # Dua uji, dan yang kedua yang memisahkan penting dari sekadar belum diputuskan
+ *
+ * Ongkos salahnya tumbuh seiring waktu. Layout bisa diulang dalam sejam di hari
+ * pertama; datastore tidak bisa diulang dalam sebulan di hari kesembilan puluh.
+ * Itu yang membuat "tanya di awal" jadi wajib, bukan sekadar sopan.
+ *
+ * # Kenapa pilihannya harus membawa REKOMENDASI
+ *
+ * Menu netral memindahkan seluruh beban riset ke user — ia harus menimbang
+ * trade-off yang model sudah punya bahannya. Dan syarat "sebutkan alasan dari
+ * kode yang baru kamu baca" adalah penjaganya: kalau model tidak sanggup
+ * menyebut alasan yang bersandar pada apa yang ia lihat, pertanyaannya memang
+ * belum layak diajukan.
+ *
+ * # Kenapa TIDAK di BASE_PROMPT
+ *
+ * `BASE_PROMPT` dibaca semua agent, termasuk sub-agent — dan sub-agent bisa
+ * bertanya, karena pertanyaannya disiarkan ke stream induk. Sub-agent yang
+ * bertanya soal datastore adalah sub-agent yang mempertanyakan brief
+ * koordinatornya. Klausa ini hanya milik dua agent primary, dan satu test
+ * memaku `BASE_PROMPT` tetap bersih darinya.
+ */
+const SHAPING_DECISIONS =
+  "--- Decisions that shape everything after ---\n\n" +
+  "Some work forks on a choice the repository cannot settle — not because it contradicts " +
+  "anything, but because nobody has made it yet. Ask once, before you start building.\n\n" +
+  "Two tests, and both must hold: getting it wrong means the work is thrown away rather than " +
+  "edited, and undoing it gets more expensive the longer the work runs. A datastore can be " +
+  "swapped in an afternoon on day one, not in a month on day ninety.\n\n" +
+  "Qualifying, heaviest first: which datastore, how authentication works, REST or GraphQL, " +
+  "server- or client-rendered, one package or a monorepo, where it deploys — then lighter " +
+  "ones like page layout and folder structure.\n\n" +
+  "Not qualifying: naming, formatting, where a file sits, a library's minor version. Anything " +
+  "a later edit undoes cheaply is yours to decide.\n\n" +
+  "Offer concrete options, each with a recommendation and the reason you drew from the code " +
+  "you just read — not a neutral menu. If you cannot name a reason grounded in what you saw, " +
+  "the question is not ready to ask. If nobody answers, take the most conventional option and " +
+  "say which one you took."
+
 export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
   plan: {
     description: "Plan — explore, analyse, and draft; no file edits",
@@ -836,7 +899,16 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "Each change is confirmed by the user one at a time — that is deliberate, so do " +
       "not batch many changes into one large step.\n\n" +
       "Work that matches a sub-agent in your roster may be handed to it with `task`; " +
-      "the confirmations still reach you, one per change.",
+      "the confirmations still reach you, one per change.\n\n" +
+      /*
+       * Juga di `build`, bukan hanya `build-auto`.
+       *
+       * `build` mengonfirmasi tiap perubahan, jadi sekilas ia sudah aman. Tidak:
+       * waktu dialog izin memunculkan berkas dua ratus baris, layoutnya SUDAH
+       * terlanjur dipilih. User mengonfirmasi hasil, bukan keputusan — dan
+       * pertanyaannya harus datang sebelum pekerjaannya ada.
+       */
+      SHAPING_DECISIONS,
     permission: { edit: "ask", write: "ask", bash: "ask", network: "ask", delete: "ask", mcp: "ask" },
   },
   "build-auto": {
@@ -856,7 +928,8 @@ export const DEFAULT_AGENTS: Record<string, z.input<typeof Agent>> = {
       "library the manifest does not list. That is not permission — it is which of two " +
       "realities to build for, and the repository cannot settle it because the repository " +
       "is one of the two sides. Guessing there costs the whole turn. Check the code first: " +
-      "if reading it resolves the conflict, it was never a question worth asking.",
+      "if reading it resolves the conflict, it was never a question worth asking.\n\n" +
+      SHAPING_DECISIONS,
     /*
      * SEMUA sumbu, bukan enam dari delapan.
      *
