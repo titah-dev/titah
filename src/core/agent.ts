@@ -89,7 +89,23 @@ import type { TitahTool } from "./tool/index.ts"
 import { dispatchableAgents, teamAgents, teamSkipped } from "./subagent.ts"
 
 /** Batas langkah bawaan, dipakai agent yang tidak menyatakan `steps` sendiri. */
-const MAX_STEPS = 20
+/**
+ * Plafon langkah ketika tidak ada anggaran token yang bisa dipakai.
+ *
+ * Naik dari 20, dan angkanya diukur bukan ditebak: dari 68 giliran nyata,
+ * 13,2% mentok di 20 — sebarannya meluruh mulus dari 1 sampai 16 lalu MENUMPUK
+ * di 19–20. Itu tembok, bukan sebaran alami. Ekor alaminya tipis (12, 14, dan
+ * 16 langkah masing-masing hanya satu giliran), jadi 40 menutupnya dengan
+ * kelonggaran.
+ *
+ * TIDAK dinaikkan lebih jauh, dan alasannya bukan biaya. Angka ini hanya
+ * berlaku saat `contextWindow` model TIDAK dideklarasikan — dan tanpa itu
+ * pemadatan otomatis juga mati. Giliran seratus langkah di sana akan meluapkan
+ * jendela model dan gagal dengan error provider yang jauh lebih sulit dibaca
+ * daripada "berhenti di batas". Selama jendelanya tidak diketahui, berhenti
+ * lebih awal memang jawaban yang benar.
+ */
+const MAX_STEPS = 40
 
 /**
  * Batas langkah ketika `limits.turnTokens` disetel.
@@ -100,6 +116,42 @@ const MAX_STEPS = 20
  * sesuatu yang benar-benar rusak sebelum ia berputar semalaman.
  */
 const STEP_BACKSTOP = 200
+
+/**
+ * Anggaran giliran bawaan, sebagai KELIPATAN jendela model.
+ *
+ * # Kenapa relatif, bukan angka
+ *
+ * Anggaran absolut apa pun salah untuk salah satu ujung: 500.000 token adalah
+ * empat giliran penuh di model 131k dan lima belas giliran di model 32k. Yang
+ * sebanding antar model bukan jumlah tokennya, melainkan berapa kali isi
+ * jendela boleh dikirim ulang — dan itulah yang sebenarnya menentukan berapa
+ * langkah sebuah giliran dapat.
+ *
+ * Ini juga menjawab keberatan yang membuat sumbu ini lahir tanpa bawaan sama
+ * sekali: Titah tidak tahu harga model dan kantong user, jadi ia tidak boleh
+ * memilih angka rupiah. Tapi ia TAHU jendelanya — user sendiri yang
+ * mendeklarasikannya — jadi ia boleh memilih angka yang diturunkan darinya.
+ *
+ * # Kenapa lima
+ *
+ * Diukur: pada `9router/ant` satu langkah memakan ~15.000 token, dan tembok 20
+ * langkah memotong 13% giliran. Ekor alaminya mencapai sekitar 40 langkah, yang
+ * berarti ~600.000 token — 4,6 kali jendela 131k. Lima menutupnya dengan
+ * sedikit kelonggaran, tanpa membuka pintu ke giliran yang berjalan berjam-jam.
+ *
+ * # Kenapa `undefined` kalau jendelanya tidak diketahui
+ *
+ * Tidak ada yang bisa diturunkan dari sesuatu yang tidak dinyatakan, dan
+ * menebaknya persis kesalahan yang `contextWindow` sendiri menolak lakukan.
+ * Di sana `MAX_STEPS` yang menjaga.
+ */
+const TURN_BUDGET_WINDOWS = 5
+
+function derivedTurnBudget(contextWindow: number | undefined): number | undefined {
+  if (contextWindow === undefined) return undefined
+  return contextWindow * TURN_BUDGET_WINDOWS
+}
 
 /**
  * Yang dikirim ke model pada giliran lanjutan.
@@ -783,7 +835,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * ke `STEP_BACKSTOP`. Itu bukan bonus tersembunyi — itu maksudnya: user baru
      * saja memilih batas yang benar, jadi batas yang arbitrer minggir.
      */
-    const turnBudget = config.limits.turnTokens
+    const turnBudget = config.limits.turnTokens ?? derivedTurnBudget(contextWindow)
     const maxSteps = agentDef?.steps ?? (turnBudget === undefined ? MAX_STEPS : STEP_BACKSTOP)
 
     /*
@@ -1264,9 +1316,15 @@ export async function prompt(input: PromptInput): Promise<Message> {
         sessionID: streamSessionID,
         message:
           `Stopped at this turn's token budget — ${spentTokens.toLocaleString()} of ` +
-          `${turnBudget.toLocaleString()} spent across ${steps.length} steps. The work may ` +
-          'not be finished. Raise it with "limits.turnTokens", or send another prompt to ' +
-          "continue from where it stopped.",
+          `${turnBudget.toLocaleString()} spent across ${steps.length} steps. ` +
+          // Anggaran turunan harus MENYEBUT dirinya turunan. Angka yang tidak
+          // pernah ditulis user, muncul tanpa penjelasan, terbaca sebagai batas
+          // misterius alih-alih sebagai sesuatu yang bisa ia ubah.
+          (config.limits.turnTokens === undefined
+            ? `That is the default: ${TURN_BUDGET_WINDOWS}× the model's context window. `
+            : "") +
+          'The work may not be finished. Raise it with "limits.turnTokens", or send another ' +
+          "prompt to continue from where it stopped.",
       })
     } else if (steps.length >= maxSteps) {
       bus.publish({

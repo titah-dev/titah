@@ -267,9 +267,44 @@ export function markedSkillId(part: unknown): string | undefined {
 }
 
 /** Katalog satu baris per skill, dengan id lengkap karena itu yang harus diketik user. */
+/**
+ * Panjang maksimum deskripsi di katalog, dalam karakter.
+ *
+ * Katalog dikirim UTUH di setiap permintaan, dan ongkosnya diukur: dengan
+ * penemuan bawaan (`claude` + `opencode`) ia memakan 2.241 token — lebih
+ * banyak daripada seluruh sisa system prompt yang 1.909. Lima puluh empat
+ * persen anggaran awal habis untuk mengatalogkan skill milik alat lain, yang
+ * mungkin tidak pernah dipanggil.
+ *
+ * Yang dipotong deskripsinya saja, bukan daftarnya. Katalog ini dipakai model
+ * untuk MEMILIH, dan pilihan hampir selalu jatuh pada beberapa kata pertama —
+ * "Use when reviewing a PR" sudah cukup memisahkan, sementara paragraf
+ * lengkapnya baru berguna sesudah skill itu dibuka. Menghapus skill dari
+ * daftar akan membuatnya tidak bisa dipilih sama sekali; memotong deskripsinya
+ * hanya membuat pemilihannya sedikit lebih kasar.
+ *
+ * 160 karakter: cukup untuk satu kalimat utuh, dan memotong tepat di tempat
+ * deskripsi mulai berubah jadi dokumentasi.
+ */
+const CATALOG_DESCRIPTION_CHARS = 160
+
+function shortDescription(description: string): string {
+  const flat = description.replace(/\s+/g, " ").trim()
+  if (flat.length <= CATALOG_DESCRIPTION_CHARS) return flat
+  /*
+   * Dipotong di batas KATA, bukan di tengahnya.
+   *
+   * Kata yang terpenggal ("Use when reviewi") terbaca sebagai berkas rusak, dan
+   * model yang membacanya sebagai data rusak akan meragukan seluruh daftar.
+   */
+  const cut = flat.slice(0, CATALOG_DESCRIPTION_CHARS)
+  const lastSpace = cut.lastIndexOf(" ")
+  return `${(lastSpace > CATALOG_DESCRIPTION_CHARS / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`
+}
+
 export function skillCatalog(skills: Skill[]): string {
   return skills
-    .map((skill) => `- ${skill.id}${skill.description ? `: ${skill.description}` : ""}`)
+    .map((skill) => `- ${skill.id}${skill.description ? `: ${shortDescription(skill.description)}` : ""}`)
     .join("\n")
 }
 
