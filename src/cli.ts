@@ -16,6 +16,7 @@ import {
 } from "./core/portable.ts"
 import { loadPlugins } from "./core/plugin.ts"
 import { collectStats } from "./core/stats.ts"
+import { available as sandboxAvailable } from "./core/sandbox.ts"
 import {
   alive,
   findBackground,
@@ -995,6 +996,24 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       out(`  ${id} is installed but not registered. Add this to titah.json:`)
       out(`    "externalAgent": { ${JSON.stringify(id)}: ${JSON.stringify(preset)} }`)
     }
+  }
+  out()
+
+  /*
+   * Sandbox dilaporkan di sini karena keadaannya bisa BERBEDA dari yang
+   * dikira user: config menyalakannya, tapi mesinnya tidak punya. Tanpa baris
+   * ini, satu-satunya cara mengetahuinya adalah perintah bash pertama yang
+   * ditolak — jauh setelah ia mengira dirinya terlindungi.
+   */
+  const kind = sandboxAvailable()
+  out("Sandbox")
+  if (!loaded.config.sandbox.bash) {
+    out(`  off — bash runs with your full permissions (${kind} is available here)`)
+  } else if (kind === "none") {
+    out(`  ON, but this platform has none — bash will be REFUSED`)
+  } else {
+    out(`  on — ${kind}; writes confined to the project and temp`)
+    out(`  network inside the sandbox: ${loaded.config.sandbox.network ? "allowed" : "denied"}`)
   }
   out()
 

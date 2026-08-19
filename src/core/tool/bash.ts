@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { z } from "zod"
 import { ToolError, type TitahTool } from "./types.ts"
+import { cleanup, wrap } from "../sandbox.ts"
 
 const DEFAULT_TIMEOUT = 120_000
 const MAX_TIMEOUT = 600_000
@@ -95,8 +96,18 @@ export const bashTool: TitahTool<typeof inputSchema> = {
   async execute(input, ctx) {
     const timeout = Math.min(input.timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
 
+    /*
+     * Sandbox dibungkus DI SINI, sesudah izin dan sesudah kait.
+     *
+     * Urutannya penting: yang dilihat user di dialog izin dan yang dilihat kait
+     * penjaga adalah perintah ASLINYA. Membungkusnya lebih dulu berarti
+     * keduanya menilai `sandbox-exec -f /tmp/… /bin/sh -c "…"` — dan pola
+     * `bash(git *)` berhenti cocok dengan apa pun.
+     */
+    const wrapped = wrap(ctx.config, input.command, ctx.cwd)
+
     return new Promise((resolve, reject) => {
-      const child = spawn(input.command, {
+      const child = spawn(wrapped.command, {
         cwd: ctx.cwd,
         shell: true,
         env: { ...process.env, GIT_PAGER: "cat", PAGER: "cat" },
@@ -159,6 +170,9 @@ export const bashTool: TitahTool<typeof inputSchema> = {
         if (truncated) sections.push(`[output truncated at ${MAX_OUTPUT} bytes]`)
         if (code !== 0) sections.push(`[exit code ${code}]`)
 
+        // Profil sandbox sementara dibuang di sini, di satu-satunya jalur yang
+        // pasti dilewati setiap perintah — baik selesai wajar maupun timeout.
+        cleanup(wrapped)
         resolve({
           title: `bash: ${input.command.split("\n")[0]?.slice(0, 60)}${code === 0 ? "" : ` (exit ${code})`}`,
           output: sections.length === 0 ? "(no output, exit 0)" : sections.join("\n"),
