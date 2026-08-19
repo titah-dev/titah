@@ -59,19 +59,32 @@ const PAD = 1
  * orang lain, tempat ia paling berguna. Menambahkannya ke `files` demi dua baris
  * teks berarti mengirim seluruh riwayat rilis ke setiap instalasi.
  */
+/*
+ * Bahasa INGGRIS, seperti seluruh string yang dilihat user (AGENTS.md).
+ * Label di sekitarnya — "Tips for getting started", "What's New" — sudah
+ * Inggris; isi yang Indonesia di dalam kotak berbahasa Inggris membaca seperti
+ * terjemahan yang belum selesai.
+ *
+ * Setiap butir harus menyebut sesuatu yang BENAR-BENAR ada. Tips yang menyebut
+ * perintah tak berwujud ("/undo") lebih buruk daripada tidak ada tips: user
+ * mengetiknya, gagal, dan berhenti percaya pada kotak ini.
+ */
 const TIPS: readonly string[] = [
-  "@claude <tanya> mendelegasikan ke agent lain",
-  "/consensus membandingkan jawaban beberapa agent",
-  "ctrl+x d membuka semua keluaran tool sekaligus",
-  "/undo mengembalikan seluruh perubahan giliran terakhir",
-  "tab berpindah agent tanpa kehilangan percakapan",
+  "@claude <question> asks another agent",
+  "/consensus asks every agent at once",
+  "ctrl+x d opens every tool block",
+  "ctrl+x u reverts the whole last turn",
+  "ctrl+r cycles the closing analysis",
+  "tab switches agent, keeping history",
 ]
 
 const NEWS: readonly string[] = [
-  "Prompt terpaku di bawah, jaraknya tetap dua baris",
-  "Tabel markdown rata, termasuk kolom berisi ✅/❌",
-  "Login akun lewat browser, tanpa akun tetap penuh",
-  "Peringatan eksperimental node:sqlite tidak lagi tercetak",
+  "titah stats reads tokens and cost",
+  "run --bg detaches a long turn",
+  "run --output-format json for scripts",
+  "sandbox.bash fences bash writes",
+  "hooks run shell around every tool",
+  "titah web opens a browser client",
 ]
 
 /**

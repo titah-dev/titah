@@ -9,9 +9,13 @@ bring the answer back into the conversation. Including **consensus mode**: one
 question fanned out to several agents at once, synthesised, with the
 disagreements marked.
 
-> **Status: 0.1.0, usable.** All milestones M0–M6 are done. What remains before
-> tagging `v1.0.0` is not code: using Titah to build Titah for a full week.
-> See [DESIGN.md](./DESIGN.md) and [CHANGELOG.md](./CHANGELOG.md).
+> **Status: 0.2.0, usable.** All milestones M0–M6 are done, and 0.2.0 closed six
+> gaps measured against `opencode` 1.18.4 and Claude Code 2.1.233 rather than
+> guessed: structured output, cost and limits, hooks, background turns, a web
+> client, and a bash sandbox. Every new axis is off or absent by default.
+>
+> What remains before tagging `v1.0.0` is not code: using Titah to build Titah
+> for a full week. See [DESIGN.md](./DESIGN.md) and [CHANGELOG.md](./CHANGELOG.md).
 
 ## About the external agents
 
@@ -189,13 +193,22 @@ dashboard.
 | `titah stats [--since 7d] [--all]` | Tokens and cost so far, by model and by day |
 | `titah hooks list` | Shell hooks from config, and which tools each matches |
 | `titah bg list` \| `logs <id> [-f]` \| `stop <id>` | Background turns started with `run --bg` |
-| `/tim <task>` | Fan out to the **super agents** in `externalAgent`, split by `specialist` |
+| `titah mcp list` | Configured MCP servers, their transport, and sign-in state |
+| `titah mcp login <server>` \| `logout <server>` | OAuth against a remote MCP server |
+| `titah permission explain <kind> [argument]` | What a call would be allowed to do, and which rule decides |
 | `titah auth list` \| `set <p>` \| `remove <p>` | Manage credentials in `auth.json` (0600) |
 | `titah models` | List configured models |
 | `titah doctor [--probe]` | Check environment, config, external agents |
 
 Frequently used options: `-m/--model <provider/model>`, `-a/--agent <name>`,
-`-s/--session <id>`, `--auto`, `--bg`, `--output-format`, `--json-schema`.
+`-s/--session <id>`, `--auto`, `--bg`, `--output-format`, `--json-schema`,
+`--since <age>`, `--all`, `--older-than <age>`, `--port`, `--hostname`,
+`--server <url>`, `--no-browser`, `-y`, `--probe`, `-o <file>`, `-f`.
+`titah --help` prints the same list.
+
+In-session commands are separate — `/tim <task>` fans out to the **super agents**
+in `externalAgent`, split by `specialist`; see
+[Command palette](#command-palette) for the rest.
 
 > `titah run` runs the core **in process**, not over HTTP. It uses the exact
 > same agent loop and storage, just skipping the network layer. `titah` (the
@@ -250,12 +263,17 @@ more than decoration when space is scarce.
 `Ctrl+P` opens the palette without typing anything — the same key as opencode:
 
 ```
-│ Commands · 10 · ↑↓ move · tab/enter select · esc close │
+│ Commands · 15 · ↑↓ move · tab/enter select · esc close │
 │ › /model  Switch the model for this session            │
 │   /agent  Switch the agent for this session            │
 │   /skill  Insert a skill into your prompt              │
 │   /consensus  Fan one question out to every agent      │
 ```
+
+Fifteen are built in — `/model`, `/agent`, `/session`, `/new`, `/skill`,
+`/consensus`, `/tim`, `/compact`, `/agents`, `/skills`, `/commands`, `/login`,
+`/logout`, `/account`, `/exit` — and your own from `command` are listed after
+them. Undo is **not** among them: it is `Ctrl+X` `U`, or `titah undo`.
 
 Commands that need no arguments **run immediately** when you select them, and
 those with sub-options drill into a second menu. Picking `/model` opens the list
@@ -309,7 +327,10 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+P` | Open the command palette |
 | `↑` / `↓` | Recall the previous / next prompt (moves the cursor first on a multi-line draft) |
 | `Shift+↑` / `Shift+↓` | Scroll the history one line |
-| `Tab` | Switch agent (or select inside a popup) |
+| `Tab` / `Shift+Tab` | Switch agent forwards / backwards (or select inside a popup) |
+| `Ctrl+R` / `Ctrl+X` `R` | Cycle effort: default → low → medium → high → default |
+| `Ctrl+X` `N` | New session |
+| `Ctrl+X` `L` | List sessions |
 | `Ctrl+X` `D` | Expand/collapse every tool block — works mid-turn, and a running tool shows its arguments |
 | `End` / `Ctrl+X` `B` | Jump to the newest message |
 | `Ctrl+X` `M` | Toggle mouse capture — turn it **off** to select and copy text |
@@ -318,11 +339,21 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | Mouse wheel | Scroll the history |
 | `Ctrl+X` `U` | Undo the last turn's changes |
 | `Ctrl+X` `?` | Short help |
-| `Ctrl+X` `Q` / `Ctrl+C` | Quit (`Ctrl+C` clears the input first if it has content) |
+| `Ctrl+D` | Quit |
+| `Ctrl+C` | Clear the input; twice on an empty input quits |
 | `Ctrl+Alt+U` / `Ctrl+Alt+D` | Scroll half a page |
 | `PageUp` / `PageDown` | Scroll a page |
-| `Ctrl+G` / `End` | Jump to start / end |
+| `Ctrl+G` / `Home` | Jump to the start |
 | `y` / `a` / `n` | Answer a permission dialog: once / always / deny |
+
+Inside the prompt the usual readline keys work: `Ctrl+A` / `Ctrl+E` for line
+start and end, `Ctrl+B` / `Ctrl+F` to move a character, `Ctrl+U` to delete to the
+start of the line.
+
+There is deliberately **no `<leader>q`**. Four ways out — `Ctrl+C` twice,
+`Ctrl+D`, `<leader>q`, `/exit` — meant three had to be remembered without ever
+being used, and each was a key that could be hit by accident. What is left:
+`Ctrl+D` for fingers, `/exit` for people who type, `Ctrl+C` twice for reflex.
 
 **Selecting text to copy.** While Titah tracks the mouse, the terminal stops
 using clicks to highlight text — the two cannot both be on. `Ctrl+X` `M` turns
@@ -356,16 +387,28 @@ without a TUI at all.
 
 | Route | Purpose |
 |---|---|
-| `GET /health` | Status, version, pid |
+| `GET /` | The web client (HTML) for browsers, the `/health` payload (JSON) for everything else |
+| `GET /health` | Status, version, pid — always JSON |
 | `GET /event?session=<id>` | SSE stream of all events (optional per-session filter) |
-| `POST /session` | Create a session (`{"directory": "..."}`) |
-| `GET /session` | List sessions |
+| `POST /session` | Create a session (`{"directory": "...", "title": "..."}`) |
+| `GET /session[?directory=…]` | List sessions; without the filter, every session on the machine |
+| `GET /session/:id` \| `DELETE /session/:id` | Read or delete one session |
+| `GET /session/:id/status` | `{"running": bool}` — is this session working right now |
+| `POST /session/:id/discard` | Delete it **only if** it has no messages |
 | `GET /session/:id/message` | Message history |
-| `POST /session/:id/message` | Send a prompt (`{"text": "...", "auto": false}`) |
+| `POST /session/:id/message` | Send a prompt (`{"text", "auto", "model", "agent", "effort"}`) |
 | `POST /session/:id/abort` | Cancel the running turn |
 | `GET /session/:id/permission` | Pending permission requests |
 | `POST /session/:id/permission/:permID` | Answer (`{"decision": "once"\|"always"\|"reject"}`) |
+| `GET /session/:id/question` | Pending questions from the `question` tool |
+| `POST /session/:id/question/:qID` | Answer (`{"answer": "..."}`; an empty string means "no answer") |
 | `POST /session/:id/undo` | Revert the last turn's changes |
+
+`/` splits on `Accept` rather than on a new path: both it and `/health` answer
+the same question — what is here — and the honest answer differs by who is
+asking. `/health` stays JSON unconditionally so a health checker never guesses.
+`discard` is not a plain `DELETE` because the caller is throwing away a session
+it merely *believes* is unused, so the emptiness check runs on the server.
 
 Send `Accept: text/event-stream` on `POST .../message` to receive the answer as
 a stream:
@@ -408,7 +451,10 @@ snapshots resend every part each time.
 | `memory` | Record a durable project fact, recalled into every request | — |
 | `question` | Ask the user and wait for their answer | — |
 | `exit_plan` | Offer to leave Plan mode, and switch if accepted | — |
+| `github` | Run the `gh` CLI: PRs, issues, releases, runs, code search | `network` when it only reads, `bash` when it changes something |
 | *(from MCP)* | Every tool an MCP server offers, as `<server>_<tool>` | `mcp` |
+
+That is **23 built-in tools**, plus whatever your MCP servers contribute.
 
 All filesystem access is confined to the session working directory — paths that
 escape it are refused. Tool output larger than 32 KB is written to
@@ -685,9 +731,15 @@ Use `permission` when you want the model to know why it was refused; use `tools`
 when you do not want it thinking about the tool at all.
 
 `steps` caps how many tool-calling iterations one turn may take for this agent —
-five for a scout, sixty for a refactor. The default is 20. When the cap is
-reached, the final iteration runs with no tools at all, so the model has to
-report what it found rather than stopping mid-air.
+five for a scout, sixty for a refactor. Unset, the cap is **40**, and declaring
+`limits.turnTokens` lifts it to **200** — at that point steps have stopped being
+what bounds the turn. When the cap is reached, the final iteration runs with no
+tools at all, so the model has to report what it found rather than stopping
+mid-air, and the stop is announced rather than silent.
+
+`effort` (`low` | `medium` | `high`) sets how much closing analysis an answer
+ends with, not how hard the model thinks. Unset means the model decides; `ctrl+r`
+cycles it live.
 
 **`skills`** loads those skills into this agent's system prompt in full, and
 takes fully-qualified ids (`namespace:name`), exactly like `skills.always` —
@@ -779,12 +831,14 @@ A sub-agent never gets the `task` tool itself, no matter its own `mode` —
 dispatch depth is capped at exactly one level, so nothing can spawn a tree of
 sub-agents that burns through your provider quota with no way to stop it.
 
-### A sub-agent is not bound by the coordinator's mode
+### A sub-agent inherits the coordinator's ceiling
 
-A dispatched sub-agent's tool calls are checked against **its own**
-`permission`, resolved by the same rules, in the same order, as your top-level
-agent (see [Permissions & undo](#permissions--undo)) — never against the
-coordinator's. One rule differs, deliberately, and in both directions:
+A dispatched sub-agent's permission is computed from its **parent**, not from
+`config.permission`, and then clamped by the stricter of parent and child on
+every axis (`narrower` in `src/core/permission.ts`). One sentence: **a parent
+can never hand out more than it holds.**
+
+One rule differs from top level, deliberately, and in both directions:
 
 > **"Always" from a sub-agent lasts the turn, not the session.** Answering `a`
 > to a dialog raised by a sub-agent adds the pattern to an allowlist that is
@@ -794,15 +848,24 @@ coordinator's. One rule differs, deliberately, and in both directions:
 > job would otherwise ask the same question five times, and dialogs that
 > repeat are dialogs that stop being read.
 
-This includes **Plan mode**: Plan's own turn refuses every change, but the
-`task` tool itself carries no permission check of its own, so a Plan-mode
-coordinator can still call it, and the sub-agent it dispatches runs under
-whatever `permission` *that agent's own config* gives it. With the
-`qc-developer` example above (`"bash": "allow"`), typing `/tim …` while in
-Plan mode gets its shell command run with **no confirmation**, even though
-Plan mode's own description says every command is refused. This is not
-something `/tim` added — it follows from how `task` was designed, with no
-gate of its own — but it means Plan mode is not a boundary sub-agents respect.
+That ceiling is what makes **Plan mode** a real boundary. Under a `plan`
+coordinator whose `write` and `edit` are `"deny"`, a sub-agent that declares
+nothing inherits the `deny`, and one that declares `"write": "allow"` is clamped
+back down. It used to leak: `task` carried no gate of its own and the child fell
+through to its own config, so `/tim` in Plan mode could run a `qc-developer` with
+`"bash": "allow"` and get a shell command executed with no confirmation.
+
+The same change fixed the mirror image. `build-auto` opens every axis so it never
+interrupts, but sub-agents fell back to the user's global block — usually `ask`
+everywhere — so the mode kept its "no confirmations" promise exactly until it
+delegated, then asked about `ls`. Inheriting from the parent removes the dialog
+without widening anything: the child still cannot do what the parent could not
+have done itself, directly, without asking anyone.
+
+`rules` and `allowlist` are **merged** rather than intersected. They work at a
+different layer — the axis decides the class of action, the rule decides the
+argument — and a child's `allow` rule cannot open an axis that is already
+`deny`, because `decide()` checks the axis first.
 
 ### Watching them work
 
@@ -833,16 +896,16 @@ history line is marked `⊘`, not `✓`. This holds for both engines: a sub-agen
 running an external CLI has that CLI killed, exactly as an internal one has
 its turn stopped.
 
-### `/undo` can revert more than the `/tim` turn — read this before relying on it
+### Undo can revert more than the `/tim` turn — read this before relying on it
 
-Sub-agents change nothing about the *mechanism* of `/undo`: it still reverts
+Sub-agents change nothing about the *mechanism* of undo: it still reverts
 to the last assistant message, in the given session, that actually took a
 snapshot — never a single tool call in isolation (see
 [Permissions & undo](#permissions--undo)). The part that changes is which
 message that turns out to be. A sub-agent's own writes take their snapshot on
 the **sub-agent's own (child) session**, not on the coordinator's turn — so if
 a `/tim` turn's coordinator dispatches work and writes nothing itself, its own
-turn has no snapshot at all. `/undo` does not stop there: it walks the
+turn has no snapshot at all. Undo does not stop there: it walks the
 session's messages for the most recent one that *does* have a snapshot, which
 skips straight past the empty `/tim` turn to whatever the coordinator last
 wrote **in an earlier turn** — reverting that older turn as well, silently,
@@ -1357,7 +1420,7 @@ timed out.
 
 It is not the TUI in a browser. There is: the session list, history, streaming
 answers, sending prompts, answering permission, stopping a turn. There is not:
-the sub-agent panel, `/undo`, the model picker, the skill picker.
+the sub-agent panel, undo, the model picker, the skill picker.
 
 ## Sandbox
 

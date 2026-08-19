@@ -193,11 +193,16 @@ Options:
 In-session commands:
   /login  /logout  /account     Sign in, sign out, or show the current account
   /consensus <question>    Fan out to every external agent and compare
+  /tim <task>              Split one task across your sub-agents
+  /compact [focus]         Summarise the session so far to free up context
   /model  /agent           Switch model or agent (TUI only)
   /session  /new           Resume a previous session, or start a new one (TUI only)
   /skill                   Insert a skill into your prompt (TUI only)
   /agents  /skills  /commands   List what is available
+  /exit                    Quit Titah
   /<name> <input>          Custom command from your config
+
+  Undo is not a slash command: ctrl+x u in the TUI, or "titah undo".
 
 Delegation:
   Type "@claude <prompt>" or "@opencode <prompt>" as an ordinary prompt.
