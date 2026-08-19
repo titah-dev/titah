@@ -15,6 +15,7 @@ import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt, type Effort } from "./prompt.ts"
 import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
 import { hasOpenWork } from "./plan-progress.ts"
+import { sessionTokens } from "./stats.ts"
 import {
   contextWindowFor,
   resolveModel,
@@ -617,6 +618,29 @@ export async function prompt(input: PromptInput): Promise<Message> {
    * melewatinya, karena config tidak berubah di tengah sesi dan menyentuh disk
    * tiap giliran adalah ongkos tanpa imbalan.
    */
+  /*
+   * Anggaran SESI diperiksa sebelum giliran dimulai, bukan di tengahnya.
+   *
+   * Giliran yang dihentikan separuh jalan meninggalkan pekerjaan setengah jadi —
+   * berkas tersunting, test belum dijalankan. Menolak sebelum ada yang tersentuh
+   * jauh lebih mudah dipulihkan, dan pesannya bisa menyebut angka yang tepat.
+   *
+   * Sub-agent dilewati: jatahnya sudah terpakai lewat induknya, dan menolak anak
+   * di tengah giliran induk menghasilkan persis kegagalan setengah jalan yang
+   * pemeriksaan ini hindari.
+   */
+  const sessionBudget = config.limits.sessionTokens
+  if (sessionBudget !== undefined && !isChild) {
+    const already = sessionTokens(session.id)
+    if (already >= sessionBudget) {
+      throw new AgentError(
+        `This session has used ${already.toLocaleString()} of its ` +
+          `${sessionBudget.toLocaleString()}-token budget. Start a new session, or raise ` +
+          '"limits.sessionTokens".',
+      )
+    }
+  }
+
   if (!scaffolded.has(session.id)) {
     scaffolded.add(session.id)
     const made = ensureDeclared(config, session.directory)

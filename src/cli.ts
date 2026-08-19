@@ -15,6 +15,7 @@ import {
   planImport,
 } from "./core/portable.ts"
 import { loadPlugins } from "./core/plugin.ts"
+import { collectStats } from "./core/stats.ts"
 import {
   applySchema,
   isOutputFormat,
@@ -129,6 +130,7 @@ Session:
   undo                     Revert the changes of the last turn
   serve                    Run the headless server (HTTP + SSE)
   sessions list            List stored sessions
+  stats [--since <age>]    Tokens and cost so far, by model and by day
   sessions prune           Delete old sessions + orphaned blobs & snapshots
 
 Account:
@@ -163,7 +165,8 @@ Options:
       --port <n>           Server port (serve), random by default
       --hostname <h>       Server hostname (serve), 127.0.0.1 by default
       --older-than <age>   Age cutoff for prune, e.g. 30d / 12h
-      --all                sessions list: every project, not just this folder
+      --since <age>        (stats) Only count this far back, e.g. 7d / 24h
+      --all                sessions list / stats: every project, not just this folder
       --server <url>       (login) Account server, overriding config and $TITAH_ACCOUNT_SERVER
       --no-browser         (login) Print the URL instead of opening a browser
       --auto               (run) Auto-approve permissions not denied by config
@@ -219,6 +222,7 @@ async function main(argv: string[]): Promise<void> {
       "no-browser": { type: "boolean" },
       "output-format": { type: "string" },
       "json-schema": { type: "string" },
+      since: { type: "string" },
     },
   })
 
@@ -276,6 +280,11 @@ async function main(argv: string[]): Promise<void> {
         ...(typeof values["json-schema"] === "string" ? { schemaPath: values["json-schema"] } : {}),
       })
     }
+    case "stats":
+      return cmdStats({
+        all: values.all === true,
+        ...(typeof values.since === "string" ? { since: values.since } : {}),
+      })
     case "login":
       return cmdLogin({
         ...(typeof values.server === "string" ? { server: values.server } : {}),
@@ -1573,6 +1582,83 @@ function parseDuration(value: string): number {
   const unit = match[2] as "s" | "m" | "h" | "d"
   const multiplier = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit]
   return amount * multiplier
+}
+
+/**
+ * Angka besar dibuat bisa dibaca sekilas, tapi TIDAK dibulatkan diam-diam.
+ *
+ * "30,2 jt" cukup untuk menilai skala; totalnya tetap dicetak utuh di bawah,
+ * karena angka yang dibulatkan adalah angka yang tidak bisa dicocokkan dengan
+ * tagihan.
+ */
+function short(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
+function money(n: number): string {
+  return n >= 10 ? n.toFixed(2) : n.toFixed(4)
+}
+
+function cmdStats(options: { since?: string; all?: boolean }): void {
+  const { config } = loadConfig(process.cwd())
+  const query = {
+    ...(options.since ? { from: Date.now() - parseDuration(options.since) } : {}),
+    ...(options.all === true ? {} : { directory: process.cwd() }),
+  }
+  const stats = collectStats(config, query)
+
+  if (stats.turns === 0) {
+    out(
+      options.all === true
+        ? "No recorded turns yet."
+        : "No recorded turns in this folder. Use --all for every project.",
+    )
+    return
+  }
+
+  const scope = options.all === true ? "every project" : process.cwd()
+  const window = options.since ? `last ${options.since}` : "all time"
+  out(`${stats.turns} turns across ${stats.sessions} sessions · ${window} · ${scope}\n`)
+
+  out("  by model")
+  for (const model of stats.byModel) {
+    const cost = model.cost === undefined ? "       —" : money(model.cost).padStart(8)
+    out(
+      `    ${model.model.padEnd(22)} ${String(model.turns).padStart(5)} turns  ` +
+        `${short(model.input).padStart(7)} in  ${short(model.output).padStart(7)} out  ${cost}`,
+    )
+  }
+
+  out("\n  by day")
+  for (const day of stats.byDay.slice(-14)) {
+    const cost = day.cost === undefined ? "       —" : money(day.cost).padStart(8)
+    out(
+      `    ${day.day}  ${String(day.turns).padStart(5)} turns  ` +
+        `${short(day.input).padStart(7)} in  ${short(day.output).padStart(7)} out  ${cost}`,
+    )
+  }
+
+  out(
+    `\n  total  ${stats.input.toLocaleString()} in / ${stats.output.toLocaleString()} out` +
+      (stats.cost > 0 ? `  ·  ${money(stats.cost)}` : ""),
+  )
+
+  /*
+   * Model tanpa harga DISEBUT, tidak didiamkan.
+   *
+   * Menghitungnya sebagai nol akan membuat totalnya berbohong ke arah paling
+   * berbahaya — terlihat murah — dan tidak ada satu pun tanda di layar yang
+   * membedakan "gratis" dari "belum diberi harga".
+   */
+  if (stats.unpriced.length > 0) {
+    out(
+      `\n  not priced: ${stats.unpriced.join(", ")}` +
+        `\n  Their tokens are counted above; their cost is not. Add ` +
+        `provider.<name>.models.<id>.price to include them.`,
+    )
+  }
 }
 
 function cmdSessions(args: string[], olderThan: string | undefined, all = false): void {
