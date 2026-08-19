@@ -833,6 +833,35 @@ export const Config = z.object({
         ),
     })
     .default({ "tool.before": [], "tool.after": [] }),
+  /*
+   * Pagar di lapisan PROSES, untuk menutup jarak yang tidak bisa ditutup sumbu
+   * izin.
+   *
+   * Model izin Titah menjaga di lapisan tool. Begitu sebuah perintah `bash`
+   * diizinkan, ia berjalan dengan hak penuh milik user — `rm -rf ~`,
+   * `curl | sh`, menulis ke `~/.ssh`. Sumbu `delete` mengatur tool `remove`,
+   * dan `bash` tidak pernah melewatinya.
+   *
+   * Bawaannya MATI. Sandbox mengubah cara perintah berjalan, dan perubahan
+   * seperti itu tidak boleh datang tanpa diminta — perintah yang tiba-tiba
+   * gagal menulis ke tempat yang selama ini boleh adalah kegagalan yang tidak
+   * akan dihubungkan siapa pun dengan pembaruan Titah.
+   */
+  sandbox: z
+    .object({
+      bash: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Run bash commands inside the OS sandbox: writes are confined to the project " +
+            "directory and temp. Refuses to run bash if no sandbox exists on this platform.",
+        ),
+      network: z
+        .boolean()
+        .default(true)
+        .describe("Allow network from inside the sandbox. npm and git need it."),
+    })
+    .default({ bash: false, network: true }),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 
