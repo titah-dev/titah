@@ -58,7 +58,20 @@ type Queue = {
 
 /** Pub/sub sederhana dalam proses. Server yang menyiarkannya lewat SSE. */
 export class Bus {
-  #subscribers = new Set<{ sessionID?: string; queue: Queue }>()
+  /*
+   * `client` memisahkan dua hal yang sebelumnya tidak perlu dipisah: siapa yang
+   * MENERIMA event, dan siapa yang bisa MENJAWAB dialog izin.
+   *
+   * Selama satu-satunya pelanggan adalah TUI, CLI, dan server, keduanya sama
+   * saja. Begitu ada pelanggan yang cuma mengamati — tracking — perbedaannya
+   * jadi jaminan: `listenerCount` dipakai permission engine untuk tolak-otomatis
+   * (Q17), jadi pelanggan pengamat yang ikut dihitung akan membuat `titah run`
+   * di CI berhenti menolak-otomatis dan menggantung menunggu jawaban yang tidak
+   * akan pernah datang.
+   *
+   * Bawaannya `true`, supaya setiap pemanggil lama tetap berarti persis sama.
+   */
+  #subscribers = new Set<{ sessionID?: string; client?: boolean; queue: Queue }>()
 
   publish(event: Event): void {
     for (const subscriber of this.#subscribers) {
@@ -67,8 +80,15 @@ export class Bus {
     }
   }
 
-  /** Berhenti saat `signal` di-abort. Filter opsional per sesi. */
-  subscribe(options: { sessionID?: string; signal?: AbortSignal } = {}): AsyncIterable<Event> {
+  /**
+   * Berhenti saat `signal` di-abort. Filter opsional per sesi.
+   *
+   * `client: false` untuk pengamat murni — ia tetap menerima setiap event, tapi
+   * tidak dihitung `listenerCount` karena ia tidak bisa menjawab apa pun.
+   */
+  subscribe(
+    options: { sessionID?: string; signal?: AbortSignal; client?: boolean } = {},
+  ): AsyncIterable<Event> {
     const buffer: Event[] = []
     let notify: (() => void) | undefined
     let closed = false
@@ -84,7 +104,11 @@ export class Bus {
       },
     }
 
-    const entry = { ...(options.sessionID ? { sessionID: options.sessionID } : {}), queue }
+    const entry = {
+      ...(options.sessionID ? { sessionID: options.sessionID } : {}),
+      ...(options.client === false ? { client: false } : {}),
+      queue,
+    }
     this.#subscribers.add(entry)
 
     const unsubscribe = () => {
@@ -127,6 +151,9 @@ export class Bus {
   listenerCount(sessionID: string): number {
     let count = 0
     for (const subscriber of this.#subscribers) {
+      // Pengamat tidak bisa menjawab dialog, jadi ia tidak boleh membuat
+      // permission engine mengira ada yang siap menjawab.
+      if (subscriber.client === false) continue
       if (subscriber.sessionID === undefined || subscriber.sessionID === sessionID) count += 1
     }
     return count

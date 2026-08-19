@@ -6,6 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { isExplicit, loadConfig, redact, ConfigError } from "./core/config.ts"
+import { startTracking, trackingStatus, type Tracker } from "./core/tracking.ts"
 import type { Json } from "./core/config.ts"
 import {
   BundleError,
@@ -75,6 +76,7 @@ import { effectiveReserved, reservedCollisions } from "./core/compact.ts"
 import { which } from "./core/which.ts"
 import {
   authFile,
+  configDir,
   globalConfigFile,
   projectConfigFile,
   dataDir,
@@ -209,6 +211,21 @@ Delegation:
   The answer lands in your session; the next "@claude" resumes the same session.
 
 See DESIGN.md for the milestone plan.`
+
+/**
+ * Menyalakan pelaporan dashboard, dan TIDAK PERNAH mengeluh kalau tidak bisa.
+ *
+ * Config yang gagal dimuat sudah punya jalur keluhannya sendiri di tempat lain;
+ * mengulanginya di sini berarti satu pesan yang sama dua kali. Dan seluruh
+ * jalur tracking berjanji tidak bersuara — termasuk saat gagal menyala.
+ */
+function beginTracking(): Tracker | undefined {
+  try {
+    return startTracking(loadConfig(process.cwd()).config, VERSION)
+  } catch {
+    return undefined
+  }
+}
 
 function fail(message: string): never {
   process.stderr.write(`titah: ${message}\n`)
@@ -825,6 +842,30 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   }
   out()
 
+  /*
+   * Tracking dilaporkan dengan ALASANnya, bukan sekadar nyala/mati.
+   *
+   * Empat sakelar bisa mematikannya, dan "tidak terkirim" tanpa sebab adalah
+   * keadaan yang tidak bisa diperbaiki siapa pun. Ini juga satu-satunya tempat
+   * keadaannya terlihat: pengirimannya sendiri berjanji tidak pernah bersuara.
+   */
+  out("Tracking")
+  const tracking = trackingStatus(loaded.config, process.cwd())
+  const why: Record<string, string> = {
+    ok: "on — this folder is reported to your dashboard",
+    disabled: 'off — tracking.enabled is false',
+    "not-signed-in": "off — not signed in, so there is nowhere to send it",
+    excluded: "off — this path matches tracking.exclude",
+  }
+  out(`  ${why[tracking.reason] ?? tracking.reason}`)
+  out(
+    tracking.lastSent === undefined
+      ? "  last sent: never"
+      : `  last sent: ${new Date(tracking.lastSent).toISOString()}`,
+  )
+  out(`  log: ${path.join(configDir(), "tracking.log")}`)
+  out()
+
   out("Providers")
   const providers = Object.entries(loaded.config.provider)
   if (providers.length === 0) out("  no providers configured")
@@ -1030,6 +1071,7 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
 
 async function cmdServe(port: number, hostname: string): Promise<void> {
   const handle = await listen(VERSION, port, hostname)
+  const tracker = beginTracking()
   out(`titah serve ${VERSION}`)
   out(`  ${handle.url}`)
   out()
@@ -1046,6 +1088,7 @@ async function cmdServe(port: number, hostname: string): Promise<void> {
   await new Promise<void>((resolve) => {
     const stop = () => {
       process.stderr.write("\nshutting down...\n")
+      tracker?.stop()
       void handle.close().then(resolve)
     }
     process.once("SIGINT", stop)
@@ -1154,6 +1197,13 @@ async function cmdRun(
   const controller = new AbortController()
   const notices: string[] = []
 
+  /*
+   * Dinyalakan SESUDAH cabang latar diambil: giliran yang dilepas ke latar
+   * dijalankan proses anak, dan proses itu menyalakan trackingnya sendiri.
+   * Menyalakannya di sini juga berarti satu giliran dilaporkan dua kali.
+   */
+  const tracker = beginTracking()
+
   // Berlangganan sebelum giliran dimulai supaya tidak ada event yang lolos.
   const events = bus.subscribe({ sessionID, signal: controller.signal })
   const turn = prompt({
@@ -1255,6 +1305,7 @@ async function cmdRun(
         `\n${assistant.usage.input ?? "?"} in / ${assistant.usage.output ?? "?"} out\n`,
       )
     }
+    await tracker?.flush()
     process.exit(assistant?.error ? 1 : 0)
   }
 
@@ -1283,6 +1334,7 @@ async function cmdRun(
       ? `${JSON.stringify({ type: "result", result: final })}\n`
       : `${JSON.stringify(final, null, 2)}\n`,
   )
+  await tracker?.flush()
   process.exit(exit)
 }
 
