@@ -2,6 +2,7 @@ import http from "node:http"
 import type { AddressInfo } from "node:net"
 import { abort, isRunning, prompt, AgentError } from "../core/agent.ts"
 import { EFFORTS } from "../core/prompt.ts"
+import { WEB_HTML } from "./web.ts"
 import { bus, type Event } from "../core/event.ts"
 import { listPending, respond, type PermissionDecision } from "../core/permission.ts"
 import { answerQuestion, cancelQuestion, listPendingQuestions } from "../core/question.ts"
@@ -106,6 +107,20 @@ async function handle(
   const url = new URL(req.url ?? "/", "http://localhost")
   const segments = url.pathname.split("/").filter(Boolean)
   const method = req.method ?? "GET"
+
+  /*
+   * `/` menyajikan klien web untuk BROWSER, JSON untuk yang lain.
+   *
+   * Dipisah lewat `Accept`, bukan lewat path baru, karena keduanya menjawab
+   * pertanyaan yang sama — "apa yang ada di sini" — dan jawabannya memang
+   * berbeda tergantung siapa yang bertanya. `/health` tetap JSON tanpa syarat,
+   * supaya pemeriksa kesehatan tidak pernah ikut menebak.
+   */
+  if (segments.length === 0 && method === "GET" && (req.headers.accept ?? "").includes("text/html")) {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+    res.end(WEB_HTML)
+    return
+  }
 
   if (segments.length === 0 || segments[0] === "health") {
     return json(res, 200, { status: "ok", version, pid: process.pid })

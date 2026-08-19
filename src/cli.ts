@@ -137,6 +137,7 @@ Session:
   run <prompt>             Run a single turn and stream the answer
   undo                     Revert the changes of the last turn
   serve                    Run the headless server (HTTP + SSE)
+  web [--port <n>]         Start the server and open the browser client
   sessions list            List stored sessions
   stats [--since <age>]    Tokens and cost so far, by model and by day
   sessions prune           Delete old sessions + orphaned blobs & snapshots
@@ -296,6 +297,8 @@ async function main(argv: string[]): Promise<void> {
         ...(typeof values["json-schema"] === "string" ? { schemaPath: values["json-schema"] } : {}),
       })
     }
+    case "web":
+      return cmdWeb(values.port === undefined ? 0 : Number(values.port))
     case "hooks":
       return cmdHooks()
     case "bg":
@@ -1666,6 +1669,34 @@ function since(at: number): string {
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`
   if (seconds < 86_400) return `${Math.round(seconds / 3600)}h`
   return `${Math.round(seconds / 86_400)}d`
+}
+
+/**
+ * Server plus browser, satu perintah.
+ *
+ * `titah serve` sudah menyajikan kliennya di `/` — ini hanya menghapus dua
+ * langkah yang selalu sama: membaca portnya dari keluaran, lalu menempelkannya
+ * ke bilah alamat.
+ *
+ * Membuka browser TIDAK PERNAH menggagalkan perintahnya. Mesin tanpa browser —
+ * server, kontainer, SSH — tetap mendapat servernya, dan URL-nya dicetak untuk
+ * disalin sendiri.
+ */
+async function cmdWeb(port: number): Promise<void> {
+  const handle = await listen(VERSION, port, "127.0.0.1")
+  const url = handle.url
+  out(url)
+  process.stderr.write("Web client ready. Press ctrl+c to stop.\n")
+
+  const opener =
+    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open"
+  try {
+    const { spawn } = await import("node:child_process")
+    spawn(opener, [url], { stdio: "ignore", detached: true }).unref()
+  } catch {
+    // Tidak ada browser di sini. Servernya tetap jalan, dan URL-nya sudah
+    // dicetak — itu seluruh yang dibutuhkan.
+  }
 }
 
 function cmdBackground(args: string[], options: { follow?: boolean }): void {
