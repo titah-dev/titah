@@ -82,6 +82,31 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
+                },
+                "price": {
+                  "description": "Price per 1M tokens. Declared, never guessed — `titah stats` reports unpriced models separately rather than counting them as free.",
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "number",
+                      "minimum": 0,
+                      "description": "Per 1M input tokens"
+                    },
+                    "output": {
+                      "type": "number",
+                      "minimum": 0,
+                      "description": "Per 1M output tokens"
+                    },
+                    "cacheRead": {
+                      "description": "Per 1M cached input tokens",
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "input",
+                    "output"
+                  ]
                 }
               }
             }
@@ -216,6 +241,15 @@
           "model": {
             "description": "Model override, in \"provider/model\" form",
             "type": "string"
+          },
+          "effort": {
+            "description": "How much closing analysis each answer ends with. Unset means no limit — the model decides. Cycle it live with ctrl+r.",
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
           },
           "steps": {
             "description": "Maximum agentic iterations for this agent before it is forced to answer in text",
@@ -778,11 +812,138 @@
       }
     },
     "instructions": {
+      "description": "Extra instruction files, beyond AGENTS.md/CLAUDE.md/TITAH.md. A string, {\"path\": \"...\"}, or an array of either. Missing files are created on the first turn of a session.",
       "default": [],
-      "description": "Extra instruction file paths, beyond AGENTS.md/CLAUDE.md/TITAH.md",
       "type": "array",
       "items": {
-        "type": "string"
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        ]
+      }
+    },
+    "limits": {
+      "default": {
+        "continueTurns": 0
+      },
+      "type": "object",
+      "properties": {
+        "turnTokens": {
+          "description": "Token budget for one turn (input + output, summed across steps). Unset means no budget. Setting it also lifts the step ceiling to 200, since steps stop being the thing that bounds the turn.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sessionTokens": {
+          "description": "Token budget for a whole session (input + output, summed across turns). Unset means no session budget. A turn that would start past it is refused.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "continueTurns": {
+          "default": 0,
+          "description": "How many times Titah may continue on its own after a turn stops at a limit, while the plan still has unchecked items. 0 disables it.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "scaffold": {
+      "default": true,
+      "description": "Create declared instruction files, skill folders, and a starter AGENTS.md on the first turn of a session. Set false to never write anything you did not ask for.",
+      "type": "boolean"
+    },
+    "hooks": {
+      "default": {
+        "tool.before": [],
+        "tool.after": []
+      },
+      "type": "object",
+      "properties": {
+        "tool.before": {
+          "default": [],
+          "description": "Run before a tool. A non-zero exit refuses the call; stderr is the reason.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "match": {
+                "description": "Regex over the tool name. Omit to match all.",
+                "type": "string"
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timeout": {
+                "description": "ms, default 30000",
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "run"
+            ]
+          }
+        },
+        "tool.after": {
+          "default": [],
+          "description": "Run after a tool. A non-zero exit does not undo anything, but its stderr is appended to the tool output so the model sees it.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "match": {
+                "type": "string"
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timeout": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "run"
+            ]
+          }
+        }
+      }
+    },
+    "sandbox": {
+      "default": {
+        "bash": false,
+        "network": true
+      },
+      "type": "object",
+      "properties": {
+        "bash": {
+          "default": false,
+          "description": "Run bash commands inside the OS sandbox: writes are confined to the project directory and temp. Refuses to run bash if no sandbox exists on this platform.",
+          "type": "boolean"
+        },
+        "network": {
+          "default": true,
+          "description": "Allow network from inside the sandbox. npm and git need it.",
+          "type": "boolean"
+        }
       }
     },
     "logLevel": {
