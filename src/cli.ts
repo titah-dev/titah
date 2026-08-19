@@ -15,6 +15,15 @@ import {
   planImport,
 } from "./core/portable.ts"
 import { loadPlugins } from "./core/plugin.ts"
+import {
+  applySchema,
+  isOutputFormat,
+  OUTPUT_FORMATS,
+  schemaInstruction,
+  streamLine,
+  turnResult,
+  type OutputFormat,
+} from "./core/output.ts"
 import { EXAMPLE_EXTERNAL_AGENTS } from "./core/schema.ts"
 import {
   authorizationUrl,
@@ -158,6 +167,8 @@ Options:
       --server <url>       (login) Account server, overriding config and $TITAH_ACCOUNT_SERVER
       --no-browser         (login) Print the URL instead of opening a browser
       --auto               (run) Auto-approve permissions not denied by config
+      --output-format <f>  (run) text (default) | json | stream-json
+      --json-schema <file> (run) Require the answer to be JSON matching this schema
   -y, --yes                (init) Use the first detected provider, no questions
       --probe              (doctor) Also test network reachability per provider
 
@@ -206,6 +217,8 @@ async function main(argv: string[]): Promise<void> {
       server: { type: "string" },
       out: { type: "string", short: "o" },
       "no-browser": { type: "boolean" },
+      "output-format": { type: "string" },
+      "json-schema": { type: "string" },
     },
   })
 
@@ -249,13 +262,20 @@ async function main(argv: string[]): Promise<void> {
         values.port === undefined ? 0 : Number(values.port),
         typeof values.hostname === "string" ? values.hostname : "127.0.0.1",
       )
-    case "run":
+    case "run": {
+      const format = typeof values["output-format"] === "string" ? values["output-format"] : "text"
+      if (!isOutputFormat(format)) {
+        fail(`unknown --output-format "${format}". Use one of: ${OUTPUT_FORMATS.join(", ")}`)
+      }
       return cmdRun(rest.join(" "), {
         auto: values.auto === true,
+        format,
         ...(typeof values.model === "string" ? { model: values.model } : {}),
         ...(typeof values.agent === "string" ? { agent: values.agent } : {}),
         ...(typeof values.session === "string" ? { session: values.session } : {}),
+        ...(typeof values["json-schema"] === "string" ? { schemaPath: values["json-schema"] } : {}),
       })
+    }
     case "login":
       return cmdLogin({
         ...(typeof values.server === "string" ? { server: values.server } : {}),
@@ -1016,18 +1036,47 @@ async function askPermission(request: PermissionRequest): Promise<PermissionDeci
 
 async function cmdRun(
   text: string,
-  options: { model?: string; session?: string; auto?: boolean; agent?: string },
+  options: {
+    model?: string
+    session?: string
+    auto?: boolean
+    agent?: string
+    format?: OutputFormat
+    schemaPath?: string
+  },
 ): Promise<void> {
   if (text.trim() === "") fail('usage: titah run "<prompt>"')
 
+  const format = options.format ?? "text"
+  /*
+   * Dalam mode json, stdout milik DATA — tidak satu pun karakter untuk manusia
+   * boleh menyentuhnya. Satu baris "session: ..." di depan objeknya membuat
+   * `JSON.parse` gagal, dan pemanggilnya tidak punya cara menebak bahwa yang
+   * salah adalah barisnya, bukan datanya.
+   */
+  const quiet = format !== "text"
+
+  let schema: unknown
+  if (options.schemaPath !== undefined) {
+    try {
+      schema = JSON.parse(fs.readFileSync(options.schemaPath, "utf8"))
+    } catch (error) {
+      fail(`cannot read --json-schema ${options.schemaPath}: ${(error as Error).message}`)
+    }
+  }
+
   const sessionID = options.session ?? createSession(process.cwd()).id
   const controller = new AbortController()
+  const notices: string[] = []
 
   // Berlangganan sebelum giliran dimulai supaya tidak ada event yang lolos.
   const events = bus.subscribe({ sessionID, signal: controller.signal })
   const turn = prompt({
     sessionID,
-    text,
+    // Bentuknya diminta lewat PROMPT, bukan system prompt: system prompt ikut
+    // di-cache sebagai awalan stabil, dan skema yang berubah tiap pemanggilan
+    // akan mematahkan cache itu untuk setiap permintaan.
+    text: schema === undefined ? text : `${text}${schemaInstruction(schema)}`,
     ...(options.auto === true ? { auto: true } : {}),
     ...(options.model ? { model: options.model } : {}),
     ...(options.agent ? { agent: options.agent } : {}),
@@ -1036,15 +1085,27 @@ async function cmdRun(
     throw error
   })
 
-  process.stderr.write(`session: ${sessionID}\n\n`)
+  if (!quiet) process.stderr.write(`session: ${sessionID}\n\n`)
   const printedToolStates = new Set<string>()
 
   for await (const event of events) {
+    /*
+     * `stream-json` sengaja BUKAN format baru: ia persis `Event` milik Titah,
+     * satu per baris. Format kedua berarti dua bentuk yang harus dijaga tetap
+     * sama, dan yang kedua selalu tertinggal begitu event baru ditambahkan.
+     */
+    if (format === "stream-json") process.stdout.write(streamLine(event))
+    if (event.type === "session.notice") notices.push(event.message)
+
     switch (event.type) {
       case "text.delta":
-        process.stdout.write(event.text)
+        if (!quiet) process.stdout.write(event.text)
         break
       case "message.updated": {
+        // Glyph tool adalah kemajuan untuk MATA. Dalam mode json ia sudah
+        // terkirim sebagai data — di `stream-json` lewat eventnya sendiri, di
+        // `json` lewat daftar `tools` di akhir.
+        if (quiet) break
         // message.updated adalah SNAPSHOT (Q22): setiap kali dikirim ia memuat
         // seluruh part. Tanpa penjejak ini, satu tool tercetak berkali-kali.
         for (const part of event.message.parts) {
@@ -1086,10 +1147,10 @@ async function cmdRun(
        * dipakai dalam pipa.
        */
       case "session.notice":
-        process.stderr.write(`\n  · ${event.message}\n`)
+        if (!quiet) process.stderr.write(`\n  · ${event.message}\n`)
         break
       case "session.error":
-        process.stderr.write(`\ntitah: ${event.message}\n`)
+        if (!quiet) process.stderr.write(`\ntitah: ${event.message}\n`)
         break
       case "session.idle":
         controller.abort()
@@ -1101,13 +1162,43 @@ async function cmdRun(
   }
 
   const assistant = await turn
-  process.stdout.write("\n")
-  if (assistant?.usage) {
-    process.stderr.write(
-      `\n${assistant.usage.input ?? "?"} in / ${assistant.usage.output ?? "?"} out\n`,
-    )
+
+  if (format === "text") {
+    process.stdout.write("\n")
+    if (assistant?.usage) {
+      process.stderr.write(
+        `\n${assistant.usage.input ?? "?"} in / ${assistant.usage.output ?? "?"} out\n`,
+      )
+    }
+    process.exit(assistant?.error ? 1 : 0)
   }
-  process.exit(assistant?.error ? 1 : 0)
+
+  const result = turnResult(sessionID, assistant, notices)
+
+  /*
+   * Skema yang tidak cocok GAGAL, dan dengan kode keluar sendiri.
+   *
+   * Membiarkannya lolos sebagai teks biasa akan membuat skrip pemanggil
+   * memproses jawaban yang bentuknya bukan yang ia minta — kegagalan yang baru
+   * terlihat beberapa langkah kemudian, jauh dari sebabnya. Kode 2 memisahkannya
+   * dari 1 (giliran yang gagal): keduanya butuh penanganan yang berbeda.
+   */
+  const { result: final, exit } = applySchema(result, schema)
+
+  /*
+   * Di `stream-json` hasilnya tetap dicetak sebagai baris terakhir.
+   *
+   * Pemanggil yang mengikuti aliran tetap butuh satu tempat yang memuat
+   * kesimpulannya — merakit ulang dari puluhan event adalah pekerjaan yang
+   * seharusnya tidak dibebankan padanya, dan tiap klien akan merakitnya sedikit
+   * berbeda.
+   */
+  process.stdout.write(
+    format === "stream-json"
+      ? `${JSON.stringify({ type: "result", result: final })}\n`
+      : `${JSON.stringify(final, null, 2)}\n`,
+  )
+  process.exit(exit)
 }
 
 /**
