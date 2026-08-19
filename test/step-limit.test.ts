@@ -423,3 +423,79 @@ test("kabarnya MENYEBUT bahwa anggarannya turunan", async () => {
   const kabar = seen.messages.find((message) => message.includes("token budget")) ?? ""
   assert.match(kabar, /That is the default: 5× the model's context window/)
 })
+
+// ---------- anggaran SESI ----------
+
+test("giliran ditolak kalau sesinya sudah melewati anggaran", async () => {
+  /*
+   * `turnTokens` menjaga satu giliran tidak berlari; ini menjaga sesi tidak
+   * merayap. Bedanya nyata sejak ada lanjutan otomatis: enam giliran
+   * berturut-turut, masing-masing patuh pada anggarannya sendiri, tetap bisa
+   * menghabiskan berkali-kali lipat tanpa satu pun batas terlampaui.
+   */
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow" },
+      limits: { sessionTokens: 15 },
+      agent: { pendek: { mode: "primary", steps: 2 } },
+    }),
+  )
+  neverStops()
+  const session = createSession(project)
+
+  // Giliran pertama lolos — sesinya masih kosong saat diperiksa.
+  await prompt({ sessionID: session.id, text: "pertama", agent: "pendek" })
+
+  await assert.rejects(
+    () => prompt({ sessionID: session.id, text: "kedua", agent: "pendek" }),
+    /token budget/,
+    "giliran kedua ditolak, dengan pesan yang menyebut anggarannya",
+  )
+})
+
+test("ditolak SEBELUM apa pun tersentuh, bukan di tengah jalan", async () => {
+  /*
+   * Giliran yang dihentikan separuh jalan meninggalkan pekerjaan setengah jadi —
+   * berkas tersunting, test belum dijalankan. Menolak sebelum ada yang tersentuh
+   * jauh lebih mudah dipulihkan.
+   */
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow", write: "allow" },
+      limits: { sessionTokens: 15 },
+      agent: { pendek: { mode: "primary", steps: 2 } },
+    }),
+  )
+  const seen = neverStops()
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "pertama", agent: "pendek" })
+
+  const before = seen.calls
+  await prompt({ sessionID: session.id, text: "kedua", agent: "pendek" }).catch(() => undefined)
+  assert.equal(seen.calls, before, "model tidak pernah dipanggil untuk giliran yang ditolak")
+})
+
+test("tanpa sessionTokens, tidak ada batas sesi sama sekali", async () => {
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow" },
+      agent: { pendek: { mode: "primary", steps: 2 } },
+    }),
+  )
+  neverStops()
+  const session = createSession(project)
+
+  await prompt({ sessionID: session.id, text: "satu", agent: "pendek" })
+  await prompt({ sessionID: session.id, text: "dua", agent: "pendek" })
+  await prompt({ sessionID: session.id, text: "tiga", agent: "pendek" })
+  assert.ok(true, "tiga giliran berturut-turut tanpa penolakan")
+})

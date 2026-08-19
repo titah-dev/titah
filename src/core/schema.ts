@@ -26,6 +26,24 @@ export const ProviderOptions = z
   })
   .describe("Options passed to the AI SDK provider factory")
 
+/**
+ * Harga per SEJUTA token, dalam mata uang apa pun yang kamu pakai.
+ *
+ * Titah tidak menyimpan tabel harga dan tidak akan pernah menyimpannya. Harga
+ * berubah, berbeda per wilayah, berbeda per kontrak, dan tabel yang basi
+ * menghasilkan angka yang terlihat resmi sekaligus salah — bentuk kesalahan
+ * yang paling sulit ditemukan, karena tidak ada yang curiga pada angka.
+ *
+ * Aturan yang sama dengan `contextWindow`: DINYATAKAN, tidak ditebak. Model
+ * tanpa harga tetap dihitung tokennya dan dilaporkan terpisah sebagai "tanpa
+ * harga" — bukan dihitung nol, yang akan membuat totalnya berbohong.
+ */
+export const ModelPrice = z.object({
+  input: z.number().nonnegative().describe("Per 1M input tokens"),
+  output: z.number().nonnegative().describe("Per 1M output tokens"),
+  cacheRead: z.number().nonnegative().optional().describe("Per 1M cached input tokens"),
+})
+
 export const ProviderModel = z.object({
   name: z.string().optional().describe("Display name for this model"),
   contextWindow: z
@@ -34,6 +52,10 @@ export const ProviderModel = z.object({
     .positive()
     .optional()
     .describe("Context window in tokens. Required for automatic compaction on this model."),
+  price: ModelPrice.optional().describe(
+    "Price per 1M tokens. Declared, never guessed — `titah stats` reports unpriced models " +
+      "separately rather than counting them as free.",
+  ),
 })
 
 export const Provider = z.object({
@@ -724,6 +746,27 @@ export const Config = z.object({
        * pengawasan dengan kelanjutan; user yang tidak pernah memintanya tidak
        * boleh menemukan itu sudah terjadi.
        */
+      /*
+       * Anggaran untuk SELURUH sesi, bukan satu giliran.
+       *
+       * `turnTokens` menjaga satu giliran tidak berlari; ini menjaga sesi tidak
+       * merayap. Bedanya nyata sejak ada lanjutan otomatis: enam giliran
+       * berturut-turut, masing-masing patuh pada anggarannya sendiri, tetap bisa
+       * menghabiskan berkali-kali lipat tanpa satu pun batas yang terlampaui.
+       *
+       * Tanpa nilai bawaan, alasan yang sama dengan `turnTokens`: Titah tahu
+       * jendela model, tapi tidak tahu berapa yang pantas kamu belanjakan dalam
+       * satu duduk.
+       */
+      sessionTokens: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Token budget for a whole session (input + output, summed across turns). Unset " +
+            "means no session budget. A turn that would start past it is refused.",
+        ),
       continueTurns: z
         .number()
         .int()
@@ -756,6 +799,7 @@ export const Config = z.object({
 
 export type Config = z.infer<typeof Config>
 export type Provider = z.infer<typeof Provider>
+export type ModelPrice = z.infer<typeof ModelPrice>
 export type ExternalAgent = z.infer<typeof ExternalAgent>
 export type Agent = z.infer<typeof Agent>
 export type Command = z.infer<typeof Command>
