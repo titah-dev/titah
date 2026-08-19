@@ -187,13 +187,17 @@ dashboard.
 | `titah export [-o file]` | Portable config bundle, credentials left out and listed |
 | `titah import <file> [-y]` | Preview what a bundle changes; `-y` applies it |
 | `titah plugin list` | Load the configured plugins and report what each provides |
+| `titah web [--port N]` | Start the server and open the browser client |
+| `titah stats [--since 7d] [--all]` | Tokens and cost so far, by model and by day |
+| `titah hooks list` | Shell hooks from config, and which tools each matches |
+| `titah bg list` \| `logs <id> [-f]` \| `stop <id>` | Background turns started with `run --bg` |
 | `/tim <task>` | Fan out to the **super agents** in `externalAgent`, split by `specialist` |
 | `titah auth list` \| `set <p>` \| `remove <p>` | Manage credentials in `auth.json` (0600) |
 | `titah models` | List configured models |
 | `titah doctor [--probe]` | Check environment, config, external agents |
 
 Frequently used options: `-m/--model <provider/model>`, `-a/--agent <name>`,
-`-s/--session <id>`, `--auto`.
+`-s/--session <id>`, `--auto`, `--bg`, `--output-format`, `--json-schema`.
 
 > `titah run` runs the core **in process**, not over HTTP. It uses the exact
 > same agent loop and storage, just skipping the network layer. `titah` (the
@@ -1203,6 +1207,183 @@ consensus. Agents that fail are still reported, never silently dropped.
 Titah reads `AGENTS.md`, then `CLAUDE.md`, then `TITAH.md`, walking up from the
 working directory to the git root. The closest to the working directory is read
 last, so it wins.
+
+## Limits: what stops a turn
+
+A step is a unit of *conversation*, not a unit of *work* — twenty steps reading
+small files is cheap, twenty steps dispatching sub-agents is not. So the real
+bound is tokens:
+
+```jsonc
+"limits": {
+  "turnTokens": 400000,     // input + output, summed across steps
+  "sessionTokens": 2000000, // across every turn in one session
+  "continueTurns": 5        // keep going after a limit, while the plan has open items
+}
+```
+
+`turnTokens` **defaults to 5× the model's `contextWindow`.** Titah does not know
+what a model costs you, but it does know the window you declared — so the
+default is derived from it rather than guessed. Declaring it also lifts the step
+ceiling from 40 to 200: once there is a real bound, the arbitrary one steps
+aside.
+
+`continueTurns` is what "keep going until it's done" looks like, and it is a
+loop of *bounded turns*, not one unbounded turn. A thousand-step turn gets
+compacted repeatedly until the model is working from a summary of a summary; a
+fresh turn starts with a clean transcript and re-reads the whole plan from the
+one table compaction never touches. It only fires when the turn stopped at a
+limit **and** the plan still has unchecked `- [ ]` items. Default `0`.
+
+Every stop says so — the model is told it is on its last step and asked to close
+by naming what remains, and you get a notice that says which limit was hit and
+which knob raises it.
+
+## Structured output
+
+```bash
+titah run --output-format json "…"          # one object at the end
+titah run --output-format stream-json "…"   # one event per line, as it happens
+titah run --json-schema shape.json "…"      # require the answer to match
+```
+
+The result carries what a script needs rather than what reads well: `ok`,
+`agent`, `model`, `text` (the answer only — reasoning never leaks in), `tools`
+with both `status` and `outcome`, `usage`, and `notices`, which is where "stopped
+at the token budget" reaches the caller.
+
+In json modes **nothing human touches stdout.** One `session: ses_…` line in
+front of the object breaks `JSON.parse`, and the caller has no way to guess the
+line is at fault rather than the data.
+
+Exit codes: `0` done, `1` the turn failed, `2` the turn succeeded but the answer
+was not the requested shape. The last two are separate because the fix is
+different — retry versus change the prompt.
+
+`--json-schema` asks for the shape in the prompt and checks the answer here,
+rather than using provider-native structured output. Most openai-compatible
+endpoints do not support that, and a feature that only works on some providers
+is a feature that exists in the docs and not on your machine. The checker is a
+**subset** of JSON Schema — `type`, `required`, `properties`, `items`, `enum` —
+and unknown keywords are skipped rather than failed.
+
+## Cost
+
+Titah has recorded tokens per turn since the first version. `titah stats` is
+what finally reads them back:
+
+```bash
+titah stats --all
+# 231 turns across 74 sessions · all time · every project
+#
+#   by model
+#     9router/ant     174 turns   29.7M in   241.2k out    12.34
+#   by day
+#     2026-08-17       72 turns   23.3M in   142.1k out     9.81
+#
+#   total  30,283,249 in / 296,374 out  ·  12.34
+```
+
+Prices are **declared, never guessed** — the same rule as `contextWindow`:
+
+```jsonc
+"provider": { "9router": { "models": { "ant": {
+  "price": { "input": 3, "output": 15 }   // per 1M tokens
+}}}}
+```
+
+Titah ships no price table and never will. Prices change, differ by region and
+by contract, and a stale table produces numbers that look official and are
+wrong. A model with no price still has its tokens counted, and is **named
+separately** rather than counted as free.
+
+## Hooks
+
+Shell commands at the same hook points plugins use — for the rules that are one
+line long and do not deserve an npm package:
+
+```jsonc
+"hooks": {
+  "tool.before": [{ "match": "^bash$",     "run": "scripts/guard.sh" }],
+  "tool.after":  [{ "match": "edit|write", "run": "npm run format" }]
+}
+```
+
+`match` is a regex over the tool name; omit it to match every tool. The event
+arrives on **stdin as JSON**, and `$TITAH_TOOL`, `$TITAH_SESSION`, `$TITAH_CWD`
+are set for one-liners.
+
+The two contracts are deliberately asymmetric. `tool.before` **refuses** the call
+on a non-zero exit, with stderr as the reason — and a hook that fails to run or
+hangs also refuses, because a guard that goes quiet when broken is worse than no
+guard. `tool.after` cancels nothing, since the work already happened, but its
+stderr is appended to the **tool output** so the model sees it: a formatter that
+failed silently is a formatter everyone believes succeeded.
+
+Plugins run first, then shell hooks, and shell hooks see the input plugins
+already reshaped.
+
+## Background turns
+
+```bash
+titah run --bg --auto "work through the migration"
+# bg_a490a57d  ses_acac583a-…
+titah bg list
+titah bg logs bg_a490a57d -f    # stops on its own when the turn ends
+titah bg stop bg_a490a57d       # kills the whole tree, sub-agents included
+```
+
+There is no stored `status` column: a background process can finish at any
+moment and nothing cleans up after it, so a saved status goes stale with nobody
+knowing. The state is asked of the **operating system** every time it is read.
+
+Output goes to a **file**, not a pipe — a pipe dies with its parent, leaving work
+that ran with no readable trace, which is the opposite of why anyone detaches
+something.
+
+## Web client
+
+```bash
+titah web
+# http://127.0.0.1:53211
+```
+
+The server has been headless for a long time; this is the client. **No new
+routes** — the page uses exactly the API the TUI uses, and it is embedded as a
+string with no build step, because assets that must be copied and found by
+relative path are three new ways to fail on someone else's machine.
+
+Permission requests and questions are answered **on the page**. Without that it
+would only be a reader, and every turn that touches a file would hang until it
+timed out.
+
+It is not the TUI in a browser. There is: the session list, history, streaming
+answers, sending prompts, answering permission, stopping a turn. There is not:
+the sub-agent panel, `/undo`, the model picker, the skill picker.
+
+## Sandbox
+
+Titah's permission model guards at the **tool** layer. Once a `bash` command is
+allowed it runs with your full rights — `rm -rf ~`, `curl | sh`, writes to
+`~/.ssh`. The `delete` axis governs the `remove` tool; `bash` never passes
+through it.
+
+```jsonc
+"sandbox": { "bash": true, "network": true }
+```
+
+Reads stay free — confining them confines compilers, and you would turn the
+whole feature off within a day. What is confined is **writes** outside the
+project directory and temp: the one fence that stops `rm -rf ~` without stopping
+`npm install`.
+
+Seatbelt on macOS, bubblewrap on Linux. It **fails closed**: turn it on where no
+sandbox exists and `bash` is refused rather than run unfenced, because someone
+who enabled it believes there is a fence. Off by default, and `titah doctor`
+reports which state you are actually in.
+
+> Verified on macOS/seatbelt. The bubblewrap path is written but has not been
+> run on a Linux box yet; Windows has no sandbox at all.
 
 ## Maintenance
 

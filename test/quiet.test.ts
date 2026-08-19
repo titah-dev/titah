@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import fs from "node:fs"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
 import test from "node:test"
@@ -25,7 +26,17 @@ test("peringatan eksperimental node:sqlite tidak menyambut user", () => {
    */
   const { stdout, stderr } = jalankan("--version")
 
-  assert.match(stdout, /0\.1\.0/, "versinya tetap tercetak")
+  /*
+   * Versinya DIBACA dari package.json, bukan ditulis tetap.
+   *
+   * Angka literal di sini membuat setiap rilis memerahkan test yang tidak ada
+   * hubungannya dengan rilis — dan test yang selalu merah saat versi naik akan
+   * diperbaiki dengan mengubah angkanya, bukan dibaca.
+   */
+  const version = JSON.parse(
+    fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ).version as string
+  assert.ok(stdout.includes(version), `versinya tetap tercetak (${version})`)
   assert.doesNotMatch(stderr, /ExperimentalWarning/, `stderr tidak bersih: ${stderr}`)
   assert.doesNotMatch(stderr, /SQLite/)
 })

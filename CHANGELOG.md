@@ -3,7 +3,130 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
-## [0.1.0] — unreleased
+## [0.2.0] — 2026-08-19
+
+Two days of closing the distance to the other terminal agents, measured against
+`opencode` 1.18.4 and Claude Code 2.1.233 rather than guessed. Six gaps were
+written down; all six are closed here.
+
+Nothing in 0.1.0 changed shape. Every new axis is off or absent by default,
+except the turn budget — which is derived from a number you already declared.
+
+### Structured output
+
+- `titah run --output-format json` — one object at the end, carrying `ok`,
+  `agent`, `model`, `text`, `tools` (with both `status` and `outcome`), `usage`,
+  and `notices`. In json modes nothing human touches stdout.
+- `--output-format stream-json` — one `Event` per line as it happens, then a
+  final `{"type":"result",…}`. Deliberately not a new format: it is Titah's own
+  event union, so a second shape cannot drift from the first.
+- `--json-schema <file>` — requires the answer to be JSON matching a **subset**
+  of JSON Schema (`type`, `required`, `properties`, `items`, `enum`). Unknown
+  keywords are skipped, not failed. Asked for in the prompt and checked locally,
+  because most openai-compatible endpoints have no native structured output.
+- Exit codes split: `0` done, `1` the turn failed, `2` the answer was the wrong
+  shape. The fixes are different, so the codes are too.
+
+### Cost and limits
+
+- `titah stats [--since 7d] [--all]` — tokens and cost by model and by day.
+  Titah has recorded per-turn usage since the first version and never had a way
+  to read it back; 30.2M tokens were sitting in one database unreadable.
+- `provider.<p>.models.<m>.price` — per 1M tokens, **declared, never guessed**.
+  Titah ships no price table: prices change by region and contract, and a stale
+  table produces numbers that look official and are wrong. Unpriced models still
+  have their tokens counted and are named separately rather than counted free.
+- `limits.turnTokens` — a token budget for one turn, replacing step count as the
+  real bound. **Defaults to 5× the model's `contextWindow`.** Declaring a window
+  also lifts the step ceiling from 40 to 200.
+- `limits.sessionTokens` — a budget across every turn in a session. Checked
+  before a turn starts, never mid-turn: a turn stopped halfway leaves edited
+  files and unrun tests.
+- `limits.continueTurns` — continue automatically after a limit while the plan
+  still has unchecked `- [ ]` items. A loop of bounded turns, not one unbounded
+  turn: a fresh turn starts on a clean transcript and re-reads the whole plan.
+  Default `0`.
+
+### Hooks
+
+- `hooks."tool.before"` and `hooks."tool.after"` — shell commands at the same
+  hook points plugins already use, for rules that do not deserve an npm package.
+  `match` is a regex over the tool name; the event arrives on stdin as JSON.
+- `tool.before` refuses the call on a non-zero exit, and a hook that fails to
+  run or hangs also refuses. `tool.after` cancels nothing but appends its stderr
+  to the **tool output**, so the model learns the formatter failed.
+- `titah hooks list` names invalid regexes explicitly — a hook silent because
+  its pattern is broken looks exactly like a hook that did not match.
+
+### Background turns
+
+- `titah run --bg` detaches and returns the terminal immediately.
+- `titah bg list` / `logs <id> [-f]` / `stop <id>`. There is no stored status
+  column: the state is asked of the operating system on every read. `logs -f`
+  stops on its own when the turn ends. `stop` kills the whole process group.
+
+### Web client
+
+- `titah web` starts the server and opens a browser client. **No new routes** —
+  it uses exactly the API the TUI uses, embedded as a string with no build step.
+- Permission requests and questions are answered on the page. Without that it
+  would only be a reader, and every turn touching a file would hang.
+- `/` serves HTML to browsers and JSON to everything else; `/health` stays JSON.
+
+### Sandbox
+
+- `sandbox.bash` — runs bash commands under Seatbelt (macOS) or bubblewrap
+  (Linux). Reads stay free; **writes** are confined to the project and temp.
+  This closes the one hole the permission axes cannot: `bash` never passes
+  through the `delete` axis.
+- **Fails closed.** Enabled where no sandbox exists, `bash` is refused rather
+  than run unfenced. `titah doctor` reports which state you are in.
+- Off by default. Verified on macOS/seatbelt; the bubblewrap path is written but
+  has not been run on Linux yet.
+
+### Agents, prompts, and defaults
+
+- `delegation` (`ask` | `auto` | `always` | `never`) plus four prompt fixes.
+  Delegation was measured at 1 call in 5 before, 2 in 2 with `always` after —
+  the tool inventory never listed `task`, and `build` said to work "directly".
+- Sub-agents inherit the **parent's** permission instead of falling back to
+  global. `build-auto` used to promise no confirmations and then ask for `ls`
+  through every sub-agent it spawned.
+- `agent.<id>.effort` (`low` | `medium` | `high`) — how much closing analysis an
+  answer ends with. Unset means the model decides. Cycle it live with `ctrl+r`.
+- Every answer now ends with a conclusion: what changed, what is verified, what
+  is still open. Skipped where there is nothing to conclude.
+- `build` and `build-auto` ask before decisions that shape everything after —
+  which datastore, how auth works, REST or GraphQL — with a recommendation and
+  the reason drawn from the code just read. Measured 3/3 on a datastore choice
+  and 0/3 on a trivial one.
+- Turns that stop at a limit say so, to the model and to you. Measured: 13.2% of
+  real turns were hitting the old 20-step wall silently.
+- `instructions` accepts a string, `{ "path": … }`, or an array of either, and
+  missing files are created on the first turn of a session. A starter
+  `AGENTS.md` is written for projects with no instruction file at all.
+- `scaffold: false` turns all of that off.
+
+### Fixed
+
+- `TITAH.md` lost to `AGENTS.md` in the same directory. The flat result list was
+  reversed, which also reversed the order *within* a directory — so the file
+  whose whole purpose is to override was read first and therefore lost.
+- `titah run` dropped every `session.notice`: no case for it, so context-window
+  warnings, loop detection, and limit notices were invisible outside the TUI.
+- The TUI's step spinner and the running-step glyph now differ in kind, not just
+  shape, so two animations on screen are told apart without being read.
+- Answers are marked with the agent that produced them, and the working
+  indicator names the agent actually running — which is not always the one the
+  footer shows after you press Tab mid-turn.
+
+### Notes
+
+- Linux and macOS. Windows is still unsupported, and the sandbox is macOS-only
+  in practice until the bubblewrap path is exercised.
+- Requires Node.js ≥ 22.6.
+
+## [0.1.0] — 2026-08-19
 
 First release. Titah works as a full coding agent, with delegation to other
 agent editors as the thing that sets it apart.
