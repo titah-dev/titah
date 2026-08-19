@@ -17,6 +17,14 @@ import {
 import { loadPlugins } from "./core/plugin.ts"
 import { collectStats } from "./core/stats.ts"
 import {
+  alive,
+  findBackground,
+  listBackground,
+  pruneBackground,
+  spawnBackground,
+  stopBackground,
+} from "./core/background.ts"
+import {
   applySchema,
   isOutputFormat,
   OUTPUT_FORMATS,
@@ -146,6 +154,9 @@ Configuration:
   import <file> [-y]       Show what a bundle would change; -y applies it
   plugin list              Load the configured plugins and report what each provides
   hooks list               Shell hooks from config, and which tools each matches
+  bg list                  Background turns, and whether each is still running
+  bg logs <id> [-f]        Read what a background turn has written so far
+  bg stop <id>             Stop a background turn and everything it started
   mcp list                 Configured MCP servers, their transport, and sign-in state
   mcp login <server>       Sign in to a remote MCP server with OAuth
   mcp logout <server>      Forget a remote server's stored token
@@ -171,6 +182,7 @@ Options:
       --server <url>       (login) Account server, overriding config and $TITAH_ACCOUNT_SERVER
       --no-browser         (login) Print the URL instead of opening a browser
       --auto               (run) Auto-approve permissions not denied by config
+      --bg                 (run) Detach and return immediately; follow with \`titah bg\`
       --output-format <f>  (run) text (default) | json | stream-json
       --json-schema <file> (run) Require the answer to be JSON matching this schema
   -y, --yes                (init) Use the first detected provider, no questions
@@ -224,6 +236,8 @@ async function main(argv: string[]): Promise<void> {
       "output-format": { type: "string" },
       "json-schema": { type: "string" },
       since: { type: "string" },
+      bg: { type: "boolean" },
+      follow: { type: "boolean", short: "f" },
     },
   })
 
@@ -274,6 +288,7 @@ async function main(argv: string[]): Promise<void> {
       }
       return cmdRun(rest.join(" "), {
         auto: values.auto === true,
+        background: values.bg === true,
         format,
         ...(typeof values.model === "string" ? { model: values.model } : {}),
         ...(typeof values.agent === "string" ? { agent: values.agent } : {}),
@@ -283,6 +298,8 @@ async function main(argv: string[]): Promise<void> {
     }
     case "hooks":
       return cmdHooks()
+    case "bg":
+      return cmdBackground(rest, { follow: values.follow === true })
     case "stats":
       return cmdStats({
         all: values.all === true,
@@ -1055,6 +1072,7 @@ async function cmdRun(
     agent?: string
     format?: OutputFormat
     schemaPath?: string
+    background?: boolean
   },
 ): Promise<void> {
   if (text.trim() === "") fail('usage: titah run "<prompt>"')
@@ -1078,6 +1096,34 @@ async function cmdRun(
   }
 
   const sessionID = options.session ?? createSession(process.cwd()).id
+
+  /*
+   * Cabang latar diambil SEBELUM apa pun yang mahal.
+   *
+   * Sesinya dibuat lebih dulu supaya idnya bisa dicetak sekarang — orang yang
+   * melepas pekerjaan ke latar butuh sesuatu untuk dipegang, dan menyuruhnya
+   * mencari sendiri di `bg list` beberapa detik kemudian adalah cara paling
+   * mudah kehilangan giliran yang baru saja ia mulai.
+   */
+  if (options.background === true) {
+    const passthrough: string[] = ["--session", sessionID]
+    if (options.auto === true) passthrough.push("--auto")
+    if (options.model) passthrough.push("--model", options.model)
+    if (options.agent) passthrough.push("--agent", options.agent)
+    if (options.schemaPath) passthrough.push("--json-schema", options.schemaPath)
+    if (format !== "text") passthrough.push("--output-format", format)
+
+    const turn = spawnBackground({
+      prompt: text,
+      directory: process.cwd(),
+      sessionID,
+      args: passthrough,
+    })
+    out(`${turn.id}  ${sessionID}`)
+    process.stderr.write(`Running in the background. Follow it with \`titah bg logs ${turn.id} -f\`.\n`)
+    return
+  }
+
   const controller = new AbortController()
   const notices: string[] = []
 
@@ -1613,6 +1659,95 @@ function money(n: number): string {
  * polanya rusak tidak bisa dibedakan dari kait yang memang tidak cocok, dan di
  * sinilah bedanya disebutkan.
  */
+/** Umur yang bisa dibaca sekilas: 3m, 2h, 4d. */
+function since(at: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  if (seconds < 86_400) return `${Math.round(seconds / 3600)}h`
+  return `${Math.round(seconds / 86_400)}d`
+}
+
+function cmdBackground(args: string[], options: { follow?: boolean }): void {
+  const sub = args[0] ?? "list"
+
+  if (sub === "list") {
+    /*
+     * Membersihkan lebih dulu, tapi HANYA catatan yang tidak menunjuk apa pun
+     * lagi. Giliran yang sudah selesai dan lognya masih ada sengaja tetap
+     * terdaftar: itulah satu-satunya cara membaca hasil pekerjaan yang selesai
+     * saat kamu tidak di depan layar.
+     */
+    pruneBackground()
+    const turns = listBackground()
+    if (turns.length === 0) {
+      out("No background turns. Start one with `titah run --bg \"…\"`.")
+      return
+    }
+    for (const turn of turns) {
+      const state = turn.alive ? "running" : "done"
+      out(
+        `${turn.id}  ${state.padEnd(7)} ${since(turn.started).padStart(4)} ago  ` +
+          `${turn.prompt.replace(/\s+/g, " ").slice(0, 48)}`,
+      )
+      out(`         ${turn.sessionID}  ${turn.directory}`)
+    }
+    return
+  }
+
+  const id = args[1]
+  if (id === undefined) fail(`usage: titah bg ${sub} <id>`)
+  const turn = findBackground(id)
+  if (!turn) fail(`no background turn matches "${id}". Run \`titah bg list\`.`)
+
+  if (sub === "logs") {
+    if (!fs.existsSync(turn.log)) fail(`its log is gone: ${turn.log}`)
+    if (options.follow !== true) {
+      process.stdout.write(fs.readFileSync(turn.log, "utf8"))
+      return
+    }
+    /*
+     * `-f` berhenti sendiri saat prosesnya mati.
+     *
+     * Tail yang menggantung selamanya di giliran yang sudah selesai memaksa
+     * user menekan ctrl+c untuk sesuatu yang sudah beres — dan menekan ctrl+c
+     * pada pekerjaan latar adalah gerakan yang tepat untuk MEMBATALKAN, jadi
+     * kebiasaan itu berbahaya untuk dilatih.
+     */
+    let read = 0
+    const pump = (): void => {
+      const size = fs.statSync(turn.log).size
+      if (size > read) {
+        const chunk = Buffer.alloc(size - read)
+        const handle = fs.openSync(turn.log, "r")
+        fs.readSync(handle, chunk, 0, chunk.length, read)
+        fs.closeSync(handle)
+        process.stdout.write(chunk)
+        read = size
+      }
+      if (!turn.alive && size === read) {
+        clearInterval(timer)
+        return
+      }
+      turn.alive = alive(turn.pid)
+    }
+    const timer = setInterval(pump, 300)
+    pump()
+    return
+  }
+
+  if (sub === "stop") {
+    if (!turn.alive) {
+      out(`${turn.id} already finished.`)
+      return
+    }
+    out(stopBackground(turn) ? `${turn.id} stopped.` : `${turn.id} could not be stopped.`)
+    return
+  }
+
+  fail(`unknown: titah bg ${sub}. Use list, logs, or stop.`)
+}
+
 function cmdHooks(): void {
   const { config } = loadConfig(process.cwd())
   const events = ["tool.before", "tool.after"] as const

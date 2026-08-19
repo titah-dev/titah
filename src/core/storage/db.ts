@@ -120,6 +120,32 @@ const MIGRATIONS: string[] = [
      updated INTEGER NOT NULL
    );
    CREATE INDEX memory_project ON memory(project, created);`,
+
+  /*
+   * Giliran yang berjalan di latar, sebagai proses TERPISAH.
+   *
+   * Tabel, bukan berkas JSON di dataDir: registri ini ditulis oleh satu proses
+   * dan dibaca oleh proses lain — persis keadaan yang membuat berkas JSON
+   * rusak, karena dua penulis yang bertemu di tengah menghasilkan berkas yang
+   * tidak bisa diurai siapa pun. SQLite sudah menangani itu, dan sudah ada.
+   *
+   * `pid` yang dicatat mungkin sudah mati saat dibaca — proses latar memang
+   * bisa selesai kapan saja, dan tidak ada yang membersihkan barisnya. Yang
+   * membaca WAJIB memeriksa apakah pidnya masih hidup, bukan mempercayai
+   * `status` di sini.
+   *
+   * DITAMBAHKAN DI UJUNG — lihat komentar `memory` di atas.
+   */
+  `CREATE TABLE background (
+     id         TEXT    PRIMARY KEY,
+     session_id TEXT    NOT NULL,
+     pid        INTEGER NOT NULL,
+     prompt     TEXT    NOT NULL,
+     directory  TEXT    NOT NULL,
+     log        TEXT    NOT NULL,
+     started    INTEGER NOT NULL
+   );
+   CREATE INDEX background_started ON background(started DESC);`,
 ]
 
 export function database(): DatabaseSync {
