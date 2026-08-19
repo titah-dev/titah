@@ -145,6 +145,7 @@ Configuration:
   export [-o <file>]       Write a portable config bundle (no credentials) to stdout or a file
   import <file> [-y]       Show what a bundle would change; -y applies it
   plugin list              Load the configured plugins and report what each provides
+  hooks list               Shell hooks from config, and which tools each matches
   mcp list                 Configured MCP servers, their transport, and sign-in state
   mcp login <server>       Sign in to a remote MCP server with OAuth
   mcp logout <server>      Forget a remote server's stored token
@@ -280,6 +281,8 @@ async function main(argv: string[]): Promise<void> {
         ...(typeof values["json-schema"] === "string" ? { schemaPath: values["json-schema"] } : {}),
       })
     }
+    case "hooks":
+      return cmdHooks()
     case "stats":
       return cmdStats({
         all: values.all === true,
@@ -1599,6 +1602,47 @@ function short(n: number): string {
 
 function money(n: number): string {
   return n >= 10 ? n.toFixed(2) : n.toFixed(4)
+}
+
+/**
+ * Kait yang terpasang, beserta pola yang tidak sah.
+ *
+ * Pola regex yang salah ketik TIDAK PERNAH cocok, dan itu keputusan yang benar
+ * di jalur panas — menolak seluruh giliran karena satu pola rusak jauh lebih
+ * merugikan daripada kait yang tidak menyala. Tapi kait yang diam karena
+ * polanya rusak tidak bisa dibedakan dari kait yang memang tidak cocok, dan di
+ * sinilah bedanya disebutkan.
+ */
+function cmdHooks(): void {
+  const { config } = loadConfig(process.cwd())
+  const events = ["tool.before", "tool.after"] as const
+  let total = 0
+
+  for (const event of events) {
+    const hooks = config.hooks[event]
+    if (hooks.length === 0) continue
+    total += hooks.length
+    out(`${event}`)
+    for (const hook of hooks) {
+      let scope = "all tools"
+      if (hook.match !== undefined) {
+        try {
+          new RegExp(hook.match)
+          scope = `/${hook.match}/`
+        } catch (error) {
+          scope = `INVALID regex — never matches: ${(error as Error).message}`
+        }
+      }
+      out(`  ${scope}`)
+      out(`    ${hook.run}`)
+      if (hook.timeout !== undefined) out(`    timeout ${hook.timeout}ms`)
+    }
+  }
+
+  if (total === 0) {
+    out('No shell hooks configured. Add them under "hooks" in titah.json.')
+    out('  e.g. "tool.after": [{ "match": "edit|write", "run": "npm run format" }]')
+  }
 }
 
 function cmdStats(options: { since?: string; all?: boolean }): void {
