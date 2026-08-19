@@ -12,7 +12,6 @@
   },
   "files": [
     "dist",
-    "src",
     "config.schema.json",
     "README.md",
     "DESIGN.md",
