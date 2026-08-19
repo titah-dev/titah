@@ -25,12 +25,33 @@ import type { Config } from "./schema.ts"
 /**
  * Dipakai kalau tidak ada konfigurasi maupun env var yang menyebut server lain.
  *
- * Sementara ini menunjuk ke titah-web di jaringan lokal, karena belum ada
- * instance publik. Begitu titah.dev hidup, SATU baris ini yang berubah —
- * `account.server` dan $TITAH_ACCOUNT_SERVER sudah menutupi semua orang yang
- * menjalankan instance mereka sendiri.
+ * # Kenapa nilai ini lebih mahal diganti daripada kelihatannya
+ *
+ * Ia IKUT TERKOMPILASI ke paket npm. Setiap instalasi memegang salinannya
+ * sendiri, dan tidak pernah berubah pikiran — mengganti baris ini hanya
+ * mengubah nasib orang yang memasang SESUDAHNYA. Yang sudah terpasang tetap
+ * menghubungi host lama sampai mereka upgrade, dan sebagian tidak akan pernah.
+ *
+ * Karena itu hostname di sini harus yang bisa dijaga hidup selamanya, bukan
+ * yang paling ingin dipakai. Subdomain di domain yang SUDAH dimiliki lebih
+ * aman daripada domain yang belum dibeli: kalau nanti pindah, yang lama tinggal
+ * jadi alias — satu record DNS, dan instalasi lama tetap jalan.
+ *
+ * Alias, bukan redirect. API ini dipanggil dengan POST, dan 301 pada POST
+ * diperlakukan berbeda oleh berbagai klien HTTP.
+ *
+ * # Kenapa BUKAN alamat privat
+ *
+ * Sebelum ini nilainya `http://10.10.100.54:8080` — titah-web di jaringan
+ * lokal, benar selama Titah belum pernah dipublikasikan. Begitu paketnya
+ * terbit, alamat itu di mesin orang lain menunjuk JARINGAN MEREKA SENDIRI:
+ * `titah login` menghubungi host acak di LAN mereka. Bukan sekadar rusak —
+ * terlihat mencurigakan, dan itu kesan pertama yang tidak bisa ditarik.
+ *
+ * `account.server` dan $TITAH_ACCOUNT_SERVER tetap menutupi semua orang yang
+ * menjalankan instance mereka sendiri, termasuk pengembangan lokal.
  */
-export const DEFAULT_SERVER = "http://10.10.100.54:8080"
+export const DEFAULT_SERVER = "https://titah.akil.co.id"
 
 const CLIENT_ID = "titah-cli"
 const FILE_MODE = 0o600
