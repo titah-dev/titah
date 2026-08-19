@@ -794,6 +794,45 @@ export const Config = z.object({
       "Create declared instruction files, skill folders, and a starter AGENTS.md on the " +
         "first turn of a session. Set false to never write anything you did not ask for.",
     ),
+  /*
+   * Kait berupa PERINTAH SHELL, di titik kait yang sudah ada.
+   *
+   * Titah sudah punya `tool.before` dan `tool.after` — tapi hanya lewat plugin
+   * npm. Untuk satu aturan seperti "jalankan formatter setelah tiap edit",
+   * orang harus membuat paket JavaScript, menulis factory, lalu
+   * mendaftarkannya: ongkos yang jauh lebih besar daripada aturannya.
+   *
+   * Ini bukan kait baru, melainkan cara kedua memasang kait yang sama — dan
+   * cara yang lebih murah untuk hal yang memang cuma satu baris perintah.
+   * Urutannya tetap: plugin dulu, lalu kait shell.
+   */
+  hooks: z
+    .object({
+      "tool.before": z
+        .array(
+          z.object({
+            match: z.string().optional().describe("Regex over the tool name. Omit to match all."),
+            run: z.string().min(1),
+            timeout: z.number().int().positive().optional().describe("ms, default 30000"),
+          }),
+        )
+        .default([])
+        .describe("Run before a tool. A non-zero exit refuses the call; stderr is the reason."),
+      "tool.after": z
+        .array(
+          z.object({
+            match: z.string().optional(),
+            run: z.string().min(1),
+            timeout: z.number().int().positive().optional(),
+          }),
+        )
+        .default([])
+        .describe(
+          "Run after a tool. A non-zero exit does not undo anything, but its stderr is " +
+            "appended to the tool output so the model sees it.",
+        ),
+    })
+    .default({ "tool.before": [], "tool.after": [] }),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 

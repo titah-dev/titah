@@ -28,6 +28,7 @@ import { buildCachedRequest, shouldCache } from "./cag.ts"
 import { loadMcpTools } from "./mcp.ts"
 import { diagnoseFile, formatFile, renderDiagnostics } from "./lsp.ts"
 import { loadPlugins, runAfter, runBefore, type LoadedPlugin } from "./plugin.ts"
+import { runAfterHooks, runBeforeHooks } from "./hook.ts"
 import { throttleProgress } from "./progress.ts"
 import { clearLoopWindow, noteCall } from "./loop.ts"
 import { relative, resolveInside } from "./tool/types.ts"
@@ -2290,6 +2291,34 @@ function buildTools(options: BuildToolsOptions): ToolSet {
             input = verdict.input
           }
 
+          /*
+           * Kait shell, SESUDAH plugin dan dengan masukan yang sudah dibentuk
+           * plugin.
+           *
+           * Urutannya disengaja: plugin bisa mengganti masukan, dan penjaga
+           * yang memeriksa masukan LAMA akan meloloskan panggilan yang
+           * sebenarnya sudah berubah.
+           */
+          {
+            const refusal = await runBeforeHooks(options.config, {
+              tool: definition.name,
+              input,
+              sessionID,
+              cwd,
+            })
+            if (refusal?.deny !== undefined) {
+              upsert(callID, definition.name, {
+                status: "denied",
+                input,
+                title: definition.name,
+                reason: refusal.deny,
+                started,
+                ended: Date.now(),
+              })
+              return `REFUSED: ${refusal.deny} The "${definition.name}" tool was not run.`
+            }
+          }
+
           // 1. Izin. Tool yang mengubah sesuatu tidak pernah jalan tanpa ini.
           if (definition.permission) {
             const need = definition.permission(input, ctx)
@@ -2406,6 +2435,26 @@ function buildTools(options: BuildToolsOptions): ToolSet {
               })
             }
           }
+
+          /*
+           * Kait shell DI LUAR penjaga plugin.
+           *
+           * Versi pertama menaruhnya di dalam `if (plugins.length > 0)` — dan
+           * seluruh fiturnya mati untuk siapa pun yang tidak memasang plugin
+           * npm, yaitu persis orang yang menulis kait shell supaya tidak perlu
+           * memasang plugin npm. Lulus semua unit test, nol efek di lapangan;
+           * ketahuan hanya karena dicoba pada giliran sungguhan.
+           */
+          output = (
+            await runAfterHooks(options.config, {
+              tool: definition.name,
+              input,
+              sessionID,
+              cwd,
+              output,
+              title: result.title,
+            })
+          ).output
 
           /*
            * Catatan delegasi ditempel ke hasil `plan`, bukan ke system prompt.
