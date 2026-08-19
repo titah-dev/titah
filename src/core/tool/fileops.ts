@@ -79,7 +79,7 @@ export const removeTool: TitahTool<typeof removeInput> = {
   name: "remove",
   description:
     "Delete a file, or a directory with recursive: true. This is not undoable through " +
-    "/undo unless the path was tracked by git — prefer leaving deletion to the user " +
+    "titah undo unless the path was tracked by git — prefer leaving deletion to the user " +
     "when you are not certain.",
   inputSchema: removeInput,
   mutates: true,

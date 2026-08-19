@@ -159,7 +159,7 @@ export const githubTool: TitahTool<typeof inputSchema> = {
         ? `Read from GitHub with the gh CLI:\n\n  ${printed}\n\nThis only reads.`
         : `Run the gh CLI, which acts on GitHub as you:\n\n  ${printed}\n\n` +
           `"${sub}" is not on the read-only list, so it is treated as a change. ` +
-          "Anything it does happens on GitHub, where /undo cannot reach.",
+          "Anything it does happens on GitHub, where undo cannot reach.",
       pattern: `github(${sub})`,
       subject: sub,
     }
