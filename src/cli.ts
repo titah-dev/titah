@@ -6,7 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { isExplicit, loadConfig, redact, ConfigError } from "./core/config.ts"
-import { startTracking, trackingStatus, type Tracker } from "./core/tracking.ts"
+import { startTracking, syncReason, trackingStatus, type Tracker } from "./core/tracking.ts"
 import type { Json } from "./core/config.ts"
 import {
   BundleError,
@@ -863,6 +863,13 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       ? "  last sent: never"
       : `  last sent: ${new Date(tracking.lastSent).toISOString()}`,
   )
+  const sync = syncReason(loaded.config, process.cwd())
+  const syncWhy: Record<string, string> = {
+    ok: "on — transcripts for this folder are uploaded (prompts, answers, tool names)",
+    "sync-off-locally": 'off — tracking.sync is false in your config',
+    "sync-off-on-server": "off — this project's toggle is off in the dashboard",
+  }
+  out(`  sync: ${syncWhy[sync] ?? `off — ${sync}`}`)
   out(`  log: ${path.join(configDir(), "tracking.log")}`)
   out()
 
