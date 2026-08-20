@@ -597,6 +597,17 @@ export function startTracking(config: Config, version: string): Tracker {
   return {
     stop: () => controller.abort(),
     async flush(ms = 1_500) {
+      /*
+       * Beri kesempatan event yang SUDAH antre di bus untuk sampai ke
+       * `inflight` lebih dulu.
+       *
+       * Pelanggan bus memproses antreannya di microtask, jadi `flush()` yang
+       * dipanggil tepat sesudah giliran selesai bisa melihat set kosong dan
+       * langsung kembali — padahal heartbeatnya belum sempat dilepas sama
+       * sekali. Gejalanya persis sama dengan "tidak ada yang perlu ditunggu",
+       * dan itulah yang membuatnya tidak terlihat.
+       */
+      await new Promise<void>((resolve) => setImmediate(resolve))
       if (inflight.size === 0) return
       let timer: NodeJS.Timeout | undefined
       const deadline = new Promise<void>((resolve) => {

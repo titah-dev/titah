@@ -704,3 +704,70 @@ test("unggahan pun tidak menulis sebyte ke stdout maupun stderr", async () => {
   }
   assert.deepEqual(keluar, [])
 })
+
+// ---------------------------------------------------------------------------
+// Titik pemasangan: yang menjalankan core WAJIB menyalakan tracking
+// ---------------------------------------------------------------------------
+
+test("session.idle pada sesi top-level memicu pengiriman", async () => {
+  /*
+   * Mekanismenya sendiri, terpisah dari titik pemasangannya. Tanpa tes ini,
+   * "tidak ada yang terkirim" tidak bisa dibedakan antara pelanggannya yang
+   * tidak bekerja dan pelanggannya yang tidak pernah dinyalakan.
+   */
+  const dir = path.join(root, "idle")
+  fs.mkdirSync(dir, { recursive: true })
+  const id = createSession(dir).id
+  turn(id, "user", [{ type: "text", text: "hai" }])
+
+  let hits = 0
+  await withServer(
+    (_req, _body, res) => {
+      hits += 1
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ sync_enabled: false }))
+    },
+    async (origin) => {
+      saveAccount({ ...account, server: origin })
+      const tracker = startTracking(off({ enabled: true }), "0.2.0")
+      try {
+        bus.publish({ type: "session.idle", sessionID: id })
+        await tracker.flush(3_000)
+      } finally {
+        tracker.stop()
+      }
+    },
+  )
+  assert.equal(hits, 1, "satu giliran selesai harus menghasilkan satu heartbeat")
+})
+
+test("setiap perintah yang menjalankan core secara lokal menyalakan tracking", () => {
+  /*
+   * Ini yang gagal sungguhan: `cmdRun` dan `cmdServe` dipasangi, `cmdTui` tidak
+   * — dan TUI adalah cara paling umum orang memakai Titah. Akibatnya tiap
+   * giliran di TUI tidak melapor apa pun, tanpa satu pun gejala.
+   *
+   * Dites dari SUMBER, bukan dari perilaku, karena yang salah bukan mekanismenya
+   * melainkan sebuah pemanggilan yang tidak ada. Yang dijaga: siapa pun yang
+   * menambahkan entry point keempat yang memanggil `listen(` atau `prompt(`
+   * akan membuat tes ini merah alih-alih diam.
+   */
+  const source = fs.readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8")
+
+  // Potong per `async function cmd...` sampai fungsi berikutnya.
+  const bodies = source.split(/\nasync function |\nfunction /).slice(1)
+  const menjalankanCore = bodies.filter(
+    (body) => /\blisten\(/.test(body) || /\bprompt\(\{/.test(body),
+  )
+
+  assert.ok(menjalankanCore.length >= 2, "harus ada minimal cmdServe dan cmdRun")
+  for (const body of menjalankanCore) {
+    const nama = body.slice(0, body.indexOf("(")).trim()
+    assert.match(
+      body,
+      /beginTracking\(/,
+      `${nama} menjalankan core tapi tidak menyalakan tracking`,
+    )
+  }
+})
+

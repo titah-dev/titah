@@ -1676,20 +1676,35 @@ async function cmdTui(options: {
     )
   }
 
+  /*
+   * TUI menjalankan servernya SENDIRI di dalam proses ini (`listen` di
+   * tui/index.tsx), jadi `session.idle` terbit di bus yang sama — dan tanpa
+   * baris ini tidak ada satu pun giliran TUI yang pernah dilaporkan.
+   *
+   * Tidak dinyalakan saat `attach`: di sana core-nya berjalan di proses lain,
+   * dan proses itulah yang melaporkan gilirannya sendiri.
+   */
+  const tracker = options.attach === undefined ? beginTracking() : undefined
+
   // Dynamic import: modul TUI berisi JSX, dan Node tidak bisa memuat .tsx
   // langsung. Perintah headless tetap jalan dari sumber tanpa build.
   const { start } = await import("./tui/index.tsx")
-  await start({
-    version: VERSION,
-    cwd: process.cwd(),
-    model,
-    config,
-    keybinds: config.keybinds,
-    agents: Object.keys(config.agent),
-    ...(config.defaultAgent ? { defaultAgent: config.defaultAgent } : {}),
-    ...(options.attach ? { attach: options.attach } : {}),
-    ...(options.sessionID ? { sessionID: options.sessionID } : {}),
-  })
+  try {
+    await start({
+      version: VERSION,
+      cwd: process.cwd(),
+      model,
+      config,
+      keybinds: config.keybinds,
+      agents: Object.keys(config.agent),
+      ...(config.defaultAgent ? { defaultAgent: config.defaultAgent } : {}),
+      ...(options.attach ? { attach: options.attach } : {}),
+      ...(options.sessionID ? { sessionID: options.sessionID } : {}),
+    })
+  } finally {
+    tracker?.stop()
+    await tracker?.flush()
+  }
 }
 
 async function cmdUndo(sessionID: string | undefined): Promise<void> {
@@ -1767,6 +1782,8 @@ function since(at: number): string {
  */
 async function cmdWeb(port: number): Promise<void> {
   const handle = await listen(VERSION, port, "127.0.0.1")
+  // Sama seperti `cmdServe` dan TUI: core-nya berjalan di proses ini.
+  beginTracking()
   const url = handle.url
   out(url)
   process.stderr.write("Web client ready. Press ctrl+c to stop.\n")
