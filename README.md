@@ -170,6 +170,48 @@ your login with it. Neither is ever written into `titah.json`.
 against the server — which is the only way to notice a token you revoked from the
 dashboard.
 
+### Tracking
+
+Signed in, Titah reports **metadata only** about each folder you work in, so the
+dashboard has something to show: project name, language, git remote and branch,
+and the same session/token/cost figures `titah stats` prints. No file contents,
+no transcripts, no tool output, ever.
+
+```jsonc
+{ "tracking": { "enabled": true, "exclude": [], "git": true } }
+```
+
+Four ways to turn it off, widest first:
+
+| | Scope |
+|---|---|
+| `titah logout` | Nothing is sent without an account, whatever the config says |
+| `"enabled": false` in the global config | Every project |
+| `"enabled": false` in a project's `./titah.json` | That project — and it travels with the repo |
+| `"exclude": ["~/clients/*"]` | Named paths, for folders you will not put a file in |
+
+`exclude` uses the **same glob dialect as `permission.allowlist`** — one dialect
+in the whole config, not two — where `*` already crosses `/`, so one star covers
+a whole subtree. `~` is expanded first.
+
+`"git": false` drops the remote URL and branch. A remote URL frequently names a
+client, which leaks more than the folder name does.
+
+It is sent after a turn ends, at most **once every five minutes per project**,
+and never blocks or fails a turn. The debounce lives in SQLite rather than in
+memory because `titah run` is one process per turn — an in-memory window would
+never fire there, which is exactly where a script runs it a hundred times.
+
+**It never says anything, succeeding or failing.** `titah run --output-format
+json` promises nothing human touches stdout, and a "heartbeat sent" line breaks
+the caller's `JSON.parse` in a way the caller cannot diagnose. What there is
+instead: one line per attempt in `~/.config/titah/tracking.log`, and a
+`Tracking` section in `titah doctor` saying which of the four switches is in
+effect and when it last sent.
+
+> Cost only appears for models that declare a `price` — see [Cost](#cost).
+> Without one the tokens are still counted and the cost reads 0.
+
 ## Commands
 
 | Command | Purpose |

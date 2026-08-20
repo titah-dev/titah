@@ -862,6 +862,57 @@ export const Config = z.object({
         .describe("Allow network from inside the sandbox. npm and git need it."),
     })
     .default({ bash: false, network: true }),
+  /*
+   * Apa yang dilaporkan ke dashboard akun.
+   *
+   * # Kenapa blok sendiri, bukan di dalam `account`
+   *
+   * Sumbu yang berbeda. `account` menjawab "siapa saya"; ini menjawab "apa yang
+   * direkam". Menggabungkannya berarti `titah logout` diam-diam mengubah arti
+   * pengaturan yang bukan tentang login — dan `account` sendiri optional, jadi
+   * "tanpa akun tapi jelas tanpa tracking" jadi canggung ditulis.
+   *
+   * Namanya `tracking`, bukan `heartbeat`, supaya sinkronisasi sesi bisa masuk
+   * ke blok yang sama nanti tanpa mengganti nama apa pun.
+   *
+   * # Kenapa bawaannya NYALA, padahal sumbu baru lain tidak
+   *
+   * Karena login ITU SENDIRI yang jadi tindakan opt-in. Menuntut langkah kedua
+   * berarti dashboard tetap kosong bagi orang yang sudah melakukan satu-satunya
+   * langkah yang terlihat seperti persetujuan. Tanpa login tidak ada yang
+   * terkirim, dan `enabled: true` di mesin yang tidak login tidak melakukan
+   * apa-apa.
+   */
+  tracking: z
+    .object({
+      enabled: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Report project metadata to your account dashboard. Nothing is ever sent " +
+            "when you are not signed in, whatever this says.",
+        ),
+      /*
+       * Pola memakai matcher yang SAMA dengan `permission.allowlist`: satu
+       * dialek glob di seluruh config, bukan dua. Di matcher itu `*` sudah
+       * melintasi `/`, jadi satu bintang cukup untuk seluruh subpohon.
+       */
+      exclude: z
+        .array(z.string())
+        .default([])
+        .describe(
+          'Project paths never reported, e.g. "~/clients/*". Same glob dialect as ' +
+            "permission.allowlist; ~ is expanded first.",
+        ),
+      git: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Include the git remote URL and branch. A remote URL often names a client, " +
+            "which leaks more than the folder name does.",
+        ),
+    })
+    .default({ enabled: true, exclude: [], git: true }),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 

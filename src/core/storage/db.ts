@@ -146,6 +146,26 @@ const MIGRATIONS: string[] = [
      started    INTEGER NOT NULL
    );
    CREATE INDEX background_started ON background(started DESC);`,
+
+  /*
+   * Kapan heartbeat terakhir terkirim, per proyek.
+   *
+   * Tabel, bukan nilai di memori proses, dengan alasan yang sama seperti
+   * `background` di atas — dan alasannya di sini bahkan lebih tajam: `titah run`
+   * adalah SATU PROSES per giliran, jadi debounce di memori tidak akan pernah
+   * menyala di sana. Skrip yang memanggil `titah run` seratus kali akan
+   * mengirim seratus request, dan debounce yang cuma bekerja di TUI gagal
+   * justru di kasus yang paling membutuhkannya.
+   *
+   * Satu baris per proyek, jadi ia tidak tumbuh bersama percakapan dan tidak
+   * perlu retensi sendiri.
+   *
+   * DITAMBAHKAN DI UJUNG — lihat komentar `memory` di atas.
+   */
+  `CREATE TABLE tracking (
+     path_hash TEXT    PRIMARY KEY,
+     sent      INTEGER NOT NULL
+   );`,
 ]
 
 export function database(): DatabaseSync {

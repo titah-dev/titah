@@ -3,6 +3,41 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Tracking
+
+- `tracking` — the CLI finally reports to the dashboard it has had since 0.1.0.
+  titah-web's endpoints, models and pages were built and tested; nothing ever
+  called them, so `/dashboard/projects/` stayed empty for everyone who signed
+  in. Metadata only: name, language, git, and the figures `titah stats` already
+  prints. No file contents, no transcripts, no tool output.
+- Four ways off, widest first: not signed in, `tracking.enabled: false`
+  globally, the same key in a project's `./titah.json`, or a path in
+  `tracking.exclude`. The per-project one is free — config merging already did
+  it — and travels with the repo.
+- `exclude` reuses `permission.allowlist`'s matcher. One glob dialect in the
+  config, not two.
+- Sent after a turn, at most once per five minutes per project, and **never
+  blocking or failing a turn**. The debounce lives in SQLite, not memory:
+  `titah run` is one process per turn, so an in-memory window never fires
+  exactly where a script runs it a hundred times.
+- **Silent, succeeding or failing.** A "heartbeat sent" line would break
+  `--output-format json` for the caller. One line per attempt goes to
+  `~/.config/titah/tracking.log`, and `titah doctor` grew a `Tracking` section
+  naming which switch is in effect.
+- Defaults **on** when signed in, which is a deliberate exception to "every new
+  axis is off by default": signing in is itself the opt-in, and demanding a
+  second step leaves the dashboard empty for someone who already took the only
+  step that looks like consent.
+
+### Fixed
+
+- `bus.subscribe` grew `client: false` for observers. `listenerCount` decides
+  auto-deny with no client attached (Q17), and it counted every subscriber — so
+  a purely observing subscriber would have made `titah run` in CI stop
+  auto-denying and hang waiting for an answer nobody could give.
+
 ## [0.2.0] — 2026-08-19
 
 Two days of closing the distance to the other terminal agents, measured against

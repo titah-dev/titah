@@ -946,6 +946,34 @@
         }
       }
     },
+    "tracking": {
+      "default": {
+        "enabled": true,
+        "exclude": [],
+        "git": true
+      },
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Report project metadata to your account dashboard. Nothing is ever sent when you are not signed in, whatever this says.",
+          "type": "boolean"
+        },
+        "exclude": {
+          "default": [],
+          "description": "Project paths never reported, e.g. \"~/clients/*\". Same glob dialect as permission.allowlist; ~ is expanded first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "git": {
+          "default": true,
+          "description": "Include the git remote URL and branch. A remote URL often names a client, which leaks more than the folder name does.",
+          "type": "boolean"
+        }
+      }
+    },
     "logLevel": {
       "default": "INFO",
       "type": "string",
