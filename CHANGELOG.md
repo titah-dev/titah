@@ -5,6 +5,22 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-22
+
+### Packaging
+
+- Published on npm as **`titah-code`**, not `titah`. npm's typosquat filter
+  rejects the shorter name as too similar to `tiag` — a `create-next-app`
+  scaffold published once in March 2024 and never touched since. `titah` itself
+  is unclaimed, so this is a false positive; a dispute is open with npm support.
+- **The command did not change.** `bin` is still `titah`, `~/.config/titah/`
+  is still the config directory, and no migration is needed. Only the install
+  name moved: `npm i -g titah-code`, or `npx titah-code` for a one-off run.
+- Code-identical to `titah-code@0.2.0` on the registry, which went out before
+  this tag existed. This release exists so that the git tag and the published
+  version finally describe the same tree — everything below shipped in `0.2.0`
+  on npm despite living under `[Unreleased]` here.
+
 ### Tracking
 
 - `tracking` — the CLI finally reports to the dashboard it has had since 0.1.0.
