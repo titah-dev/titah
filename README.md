@@ -33,8 +33,8 @@ keeps working fully without it.
 ## Getting started
 
 ```bash
-npx titah init      # detect a provider, write the config
-npx titah           # open the TUI
+npx titah-code init      # detect a provider, write the config
+npx titah-code           # open the TUI
 ```
 
 `titah init` looks for keys in the environment (`ANTHROPIC_API_KEY`,

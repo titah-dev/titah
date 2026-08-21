@@ -1,5 +1,5 @@
 {
-  "name": "titah",
+  "name": "titah-code",
   "version": "0.2.0",
   "description": "Coding agent CLI that can delegate a question to other agent editors (claude, opencode, ...)",
   "license": "Apache-2.0",
