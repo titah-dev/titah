@@ -31,8 +31,38 @@ Versioning follows [SemVer](https://semver.org/).
   second step leaves the dashboard empty for someone who already took the only
   step that looks like consent.
 
+### Session sync
+
+- `tracking.sync` — transcripts reach the dashboard, and it takes **two**
+  switches: this one and the per-project toggle on the server. A dashboard
+  toggle is remote policy; anyone who reaches the account can flip it and cannot
+  edit a file on your machine.
+- **Off by default**, unlike `tracking.enabled`. Signing in is consent to be
+  counted, not consent to be read.
+- Prompts, answers, and the *order of tool names*. Never tool arguments, never
+  tool output, never reasoning. Tool output is where secrets live, and a secret
+  filter you can rely on does not exist — one that catches `AKIA…` and misses an
+  internal token is worse than none, because it manufactures confidence.
+- 32 KB per message (the number already used for tool output) and 512 KB per
+  transcript. Over that the oldest messages go, and a marker says how many: a
+  silently truncated transcript looks complete.
+- The server toggle is learned from the **heartbeat response**, which already
+  returned it. Without that the only way to know would be attempting an upload
+  and being refused — one wasted request per turn, for the life of a project
+  that never turns it on. A `403` also switches the stored flag off, so it stops
+  trying until told otherwise.
+- Only sessions that get a turn after you switch it on go up. No backfill.
+- `titah doctor` reports which of the switches is holding it.
+
 ### Fixed
 
+- `Session.session_id` on titah-web was `max_length=36` while a Titah session id
+  is `ses_` + a UUID = 40 characters. It would have failed on the first real
+  upload; the column is 64 now. Trimming the prefix to fit would have been the
+  wrong direction — a trimmed id matches nothing the user can look up locally.
+- The tracking request timeout went from 5s to 10s. Measured: a warm request
+  finishes in ~200ms, but the first HTTPS connection on a cold machine (DNS plus
+  TLS) exceeded five seconds and failed silently.
 - `bus.subscribe` grew `client: false` for observers. `listenerCount` decides
   auto-deny with no client attached (Q17), and it counted every subscriber — so
   a purely observing subscriber would have made `titah run` in CI stop

@@ -6,7 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { isExplicit, loadConfig, redact, ConfigError } from "./core/config.ts"
-import { startTracking, trackingStatus, type Tracker } from "./core/tracking.ts"
+import { startTracking, syncReason, trackingStatus, type Tracker } from "./core/tracking.ts"
 import type { Json } from "./core/config.ts"
 import {
   BundleError,
@@ -863,6 +863,13 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       ? "  last sent: never"
       : `  last sent: ${new Date(tracking.lastSent).toISOString()}`,
   )
+  const sync = syncReason(loaded.config, process.cwd())
+  const syncWhy: Record<string, string> = {
+    ok: "on — transcripts for this folder are uploaded (prompts, answers, tool names)",
+    "sync-off-locally": 'off — tracking.sync is false in your config',
+    "sync-off-on-server": "off — this project's toggle is off in the dashboard",
+  }
+  out(`  sync: ${syncWhy[sync] ?? `off — ${sync}`}`)
   out(`  log: ${path.join(configDir(), "tracking.log")}`)
   out()
 
@@ -1669,20 +1676,35 @@ async function cmdTui(options: {
     )
   }
 
+  /*
+   * TUI menjalankan servernya SENDIRI di dalam proses ini (`listen` di
+   * tui/index.tsx), jadi `session.idle` terbit di bus yang sama — dan tanpa
+   * baris ini tidak ada satu pun giliran TUI yang pernah dilaporkan.
+   *
+   * Tidak dinyalakan saat `attach`: di sana core-nya berjalan di proses lain,
+   * dan proses itulah yang melaporkan gilirannya sendiri.
+   */
+  const tracker = options.attach === undefined ? beginTracking() : undefined
+
   // Dynamic import: modul TUI berisi JSX, dan Node tidak bisa memuat .tsx
   // langsung. Perintah headless tetap jalan dari sumber tanpa build.
   const { start } = await import("./tui/index.tsx")
-  await start({
-    version: VERSION,
-    cwd: process.cwd(),
-    model,
-    config,
-    keybinds: config.keybinds,
-    agents: Object.keys(config.agent),
-    ...(config.defaultAgent ? { defaultAgent: config.defaultAgent } : {}),
-    ...(options.attach ? { attach: options.attach } : {}),
-    ...(options.sessionID ? { sessionID: options.sessionID } : {}),
-  })
+  try {
+    await start({
+      version: VERSION,
+      cwd: process.cwd(),
+      model,
+      config,
+      keybinds: config.keybinds,
+      agents: Object.keys(config.agent),
+      ...(config.defaultAgent ? { defaultAgent: config.defaultAgent } : {}),
+      ...(options.attach ? { attach: options.attach } : {}),
+      ...(options.sessionID ? { sessionID: options.sessionID } : {}),
+    })
+  } finally {
+    tracker?.stop()
+    await tracker?.flush()
+  }
 }
 
 async function cmdUndo(sessionID: string | undefined): Promise<void> {
@@ -1760,6 +1782,8 @@ function since(at: number): string {
  */
 async function cmdWeb(port: number): Promise<void> {
   const handle = await listen(VERSION, port, "127.0.0.1")
+  // Sama seperti `cmdServe` dan TUI: core-nya berjalan di proses ini.
+  beginTracking()
   const url = handle.url
   out(url)
   process.stderr.write("Web client ready. Press ctrl+c to stop.\n")

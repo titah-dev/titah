@@ -911,8 +911,28 @@ export const Config = z.object({
           "Include the git remote URL and branch. A remote URL often names a client, " +
             "which leaks more than the folder name does.",
         ),
+      /*
+       * Unggah transkrip sesi — dan bawaannya MATI, tidak seperti `enabled`.
+       *
+       * Argumen yang membuat heartbeat nyala secara bawaan ("login itu sendiri
+       * yang jadi opt-in") tidak merentang sampai ke sini. Login adalah
+       * persetujuan untuk DIHITUNG, bukan persetujuan untuk DIBACA.
+       *
+       * Ia juga bukan satu-satunya gerbang: server harus menyalakan
+       * `sync_enabled` untuk proyek itu. Butuh dua-duanya karena sakelar di
+       * dashboard adalah kebijakan jarak jauh — siapa pun yang masuk ke akun
+       * bisa menyalakannya, dan ia tidak bisa menyunting berkas di mesin ini.
+       */
+      sync: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Upload session transcripts. Needs this AND the per-project toggle on the " +
+            "server. Prompts, answers, and tool NAMES only — never tool arguments or " +
+            "tool output, which is where secrets live.",
+        ),
     })
-    .default({ enabled: true, exclude: [], git: true }),
+    .default({ enabled: true, exclude: [], git: true, sync: false }),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 

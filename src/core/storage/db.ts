@@ -166,6 +166,19 @@ const MIGRATIONS: string[] = [
      path_hash TEXT    PRIMARY KEY,
      sent      INTEGER NOT NULL
    );`,
+
+  /*
+   * Apakah server menyalakan sinkronisasi sesi untuk proyek ini.
+   *
+   * Dipelajari dari respons `heartbeat`, yang sudah mengembalikannya — jadi
+   * tidak ada request tambahan untuk mencari tahu, dan tidak ada percobaan
+   * unggah yang berakhir 403 di setiap giliran.
+   *
+   * `ALTER`, bukan menyunting entri di atas: entri itu sudah dijalankan setiap
+   * mesin yang memakai versi sebelumnya, jadi menyuntingnya tidak berpengaruh
+   * apa pun di sana — persis alasan aturan "DITAMBAHKAN DI UJUNG".
+   */
+  `ALTER TABLE tracking ADD COLUMN sync INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 export function database(): DatabaseSync {

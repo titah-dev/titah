@@ -212,6 +212,42 @@ effect and when it last sent.
 > Cost only appears for models that declare a `price` — see [Cost](#cost).
 > Without one the tokens are still counted and the cost reads 0.
 
+#### Session sync
+
+Off by default, and it needs **two** switches: `tracking.sync` here *and* the
+per-project toggle in the dashboard.
+
+```jsonc
+{ "tracking": { "sync": true } }
+```
+
+Two, because a dashboard toggle is **remote policy**. Anyone who reaches your
+account can turn it on; they cannot edit a file on your machine. It is the same
+reason `external_directory` is evaluated when the config loads and never at
+runtime — a structural boundary must not become a runtime question.
+
+Defaulting off is also deliberate, and unlike `enabled` above. The argument that
+makes the heartbeat default on — signing in *is* the opt-in — does not stretch
+this far. **Signing in is consent to be counted, not consent to be read.**
+
+What goes up: your prompts, the model's answers, and the *order of tool names*
+that ran between them. What never does:
+
+| | Why |
+|---|---|
+| Tool **output** | That is where secrets live — `read .env`, `bash env`, `grep -r password`. Filtering them automatically is not an option: a secret filter you can rely on does not exist, and one that catches `AKIA…` while missing an internal token is worse than none, because it manufactures confidence |
+| Tool **arguments** | Subtler, and still no. `edit` carries `oldString` and `newString`, which is code; `write` carries a whole file. `▸ edit` says something was edited; the arguments say what it said |
+| **Reasoning** | Not for its size. Titah separates it from `text` because text is the answer and this is the road to it — the longest and least re-read material is the worst candidate to leave the machine |
+
+Capped at 32 KB per message — the same number Titah already uses for tool output
+— and 512 KB per transcript. Over that, the **oldest** messages are dropped and a
+marker says how many. A silently truncated transcript looks complete, and
+somebody will draw a conclusion from a conversation that was not all of it.
+
+Only sessions that get a turn **after** you switch it on are uploaded. There is
+no backfill: seventy sessions arriving at once because somebody flipped one
+toggle is a surprise in the wrong direction.
+
 ## Commands
 
 | Command | Purpose |
