@@ -14,6 +14,9 @@ import { parseArgs } from "node:util"
  *   node scripts/bench.ts --repeat 1           # lebih cepat, lebih berisik
  *   node scripts/bench.ts --dry-run            # cetak perintahnya, jangan jalankan
  *
+ * Env: $TITAH_BENCH_BASE_URL mengarahkan provider opencode ke gateway lain —
+ * kosongkan untuk memakai config opencode global apa adanya.
+ *
  * Yang diukur, dan definisinya — karena tanpa definisi angkanya tidak bisa
  * dibandingkan:
  *
@@ -118,29 +121,37 @@ function ndjson(text: string): unknown[] {
   return out
 }
 
+/** Override baseURL provider opencode; kosong berarti pakai config global. */
+const OPENCODE_BASE_URL = process.env.TITAH_BENCH_BASE_URL
+const MODEL_9ROUTER = "9router/ant"
+
 /**
- * Config opencode dengan `baseURL` 9router yang benar.
+ * Config opencode dengan `baseURL` provider yang bisa dijangkau.
  *
- * Config global di mesin ini menunjuk host yang tidak menjawab, dan opencode
- * menanggapinya dengan mencoba ulang diam-diam sampai timeout — bukan dengan
- * error. Salinan ini ditulis ke direktori kerja benchmark dan dipakai lewat
- * $OPENCODE_CONFIG, yang di-MERGE di atas config global, bukan menggantikannya.
- * Config milik pengguna tidak disentuh.
+ * Kalau $TITAH_BENCH_BASE_URL diset, salinan config global ditulis ke direktori
+ * kerja benchmark dengan baseURL itu, lalu dipakai lewat $OPENCODE_CONFIG —
+ * yang di-MERGE di atas config global, bukan menggantikannya. Config milik
+ * pengguna tidak pernah disentuh.
+ *
+ * Kalau tidak diset, config global dipakai apa adanya. Perlu diketahui: kalau
+ * config itu menunjuk host yang tidak menjawab, opencode mencoba ulang
+ * diam-diam sampai timeout — bukan error. Tier yang TIMEOUT tanpa sebab lain
+ * biasanya ini, bukan agent-nya yang lambat.
  */
-function opencodeConfig(): string {
+function opencodeConfig(): string | undefined {
+  if (!OPENCODE_BASE_URL) return undefined
   const source = join(homedir(), ".config", "opencode", "opencode.json")
   const patched = join(WORKDIR, "opencode-bench.json")
-  const config = JSON.parse(readFileSync(source, "utf8")) as {
-    provider?: Record<string, { options?: Record<string, unknown> }>
-  }
-  const nine = config.provider?.["9router"]
-  if (nine?.options) nine.options.baseURL = OPENCODE_BASE_URL
+  const config = (existsSync(source)
+    ? JSON.parse(readFileSync(source, "utf8"))
+    : {}) as { provider?: Record<string, { options?: Record<string, unknown> }> }
+  const provider = MODEL_9ROUTER.split("/")[0]!
+  config.provider ??= {}
+  const entry = (config.provider[provider] ??= {})
+  entry.options = { ...entry.options, baseURL: OPENCODE_BASE_URL }
   writeFileSync(patched, JSON.stringify(config, null, 2))
   return patched
 }
-
-const OPENCODE_BASE_URL = "http://10.10.90.122:20127/v1"
-const MODEL_9ROUTER = "9router/ant"
 
 const AGENTS: AgentSpec[] = [
   {
@@ -230,7 +241,10 @@ const AGENTS: AgentSpec[] = [
     id: "opencode",
     model: MODEL_9ROUTER,
     command: "opencode",
-    env: () => ({ OPENCODE_CONFIG: opencodeConfig() }),
+    env: () => {
+      const config = opencodeConfig()
+      return config ? { OPENCODE_CONFIG: config } : {}
+    },
     argv: (tier) => [
       "run",
       tier.prompt,
