@@ -14,8 +14,14 @@ import { parseArgs } from "node:util"
  *   node scripts/bench.ts --repeat 1           # lebih cepat, lebih berisik
  *   node scripts/bench.ts --dry-run            # cetak perintahnya, jangan jalankan
  *
- * Env: $TITAH_BENCH_BASE_URL mengarahkan provider opencode ke gateway lain —
- * kosongkan untuk memakai config opencode global apa adanya.
+ * Env:
+ *   $TITAH_BENCH_MODEL     model untuk titah & opencode, mis. `9router/ant`.
+ *                          Kosong berarti tiap agent memakai default-nya
+ *                          sendiri — perbandingannya jadi antar-setup, bukan
+ *                          antar-harness pada model yang sama.
+ *   $TITAH_BENCH_BASE_URL  arahkan provider opencode ke gateway lain. Butuh
+ *                          $TITAH_BENCH_MODEL, karena provider yang di-patch
+ *                          diambil dari prefiks nama model.
  *
  * Yang diukur, dan definisinya — karena tanpa definisi angkanya tidak bisa
  * dibandingkan:
@@ -123,7 +129,19 @@ function ndjson(text: string): unknown[] {
 
 /** Override baseURL provider opencode; kosong berarti pakai config global. */
 const OPENCODE_BASE_URL = process.env.TITAH_BENCH_BASE_URL
-const MODEL_9ROUTER = "9router/ant"
+
+/**
+ * Model untuk titah dan opencode. Kosong berarti `--model` tidak dikirim sama
+ * sekali dan tiap agent memilih default-nya sendiri — sama seperti claude, yang
+ * selalu jalan as-configured. Setel kalau yang ingin diukur adalah harness-nya
+ * pada model yang sama, bukan setup masing-masing.
+ */
+const BENCH_MODEL = process.env.TITAH_BENCH_MODEL
+
+/** Label untuk tabel & raw.json kalau agent-nya tidak melaporkan model. */
+const MODEL_LABEL = BENCH_MODEL ?? "(as configured)"
+
+const modelFlag = BENCH_MODEL ? ["--model", BENCH_MODEL] : []
 
 /**
  * Config opencode dengan `baseURL` provider yang bisa dijangkau.
@@ -145,7 +163,9 @@ function opencodeConfig(): string | undefined {
   const config = (existsSync(source)
     ? JSON.parse(readFileSync(source, "utf8"))
     : {}) as { provider?: Record<string, { options?: Record<string, unknown> }> }
-  const provider = MODEL_9ROUTER.split("/")[0]!
+  const provider = BENCH_MODEL?.split("/")[0]
+  // Dijaga di preflight; di sini cuma supaya tidak menulis config asal-asalan.
+  if (!provider) return undefined
   config.provider ??= {}
   const entry = (config.provider[provider] ??= {})
   entry.options = { ...entry.options, baseURL: OPENCODE_BASE_URL }
@@ -156,14 +176,13 @@ function opencodeConfig(): string | undefined {
 const AGENTS: AgentSpec[] = [
   {
     id: "titah",
-    model: MODEL_9ROUTER,
+    model: MODEL_LABEL,
     command: process.execPath,
     argv: (_tier) => [
       join(ROOT, "dist", "cli.js"),
       "run",
       _tier.prompt,
-      "--model",
-      MODEL_9ROUTER,
+      ...modelFlag,
       "--output-format",
       "json",
       "--auto",
@@ -239,7 +258,7 @@ const AGENTS: AgentSpec[] = [
   },
   {
     id: "opencode",
-    model: MODEL_9ROUTER,
+    model: MODEL_LABEL,
     command: "opencode",
     env: () => {
       const config = opencodeConfig()
@@ -248,8 +267,7 @@ const AGENTS: AgentSpec[] = [
     argv: (tier) => [
       "run",
       tier.prompt,
-      "--model",
-      MODEL_9ROUTER,
+      ...modelFlag,
       "--format",
       "json",
       "--auto",
@@ -463,11 +481,23 @@ if (tiers.length === 0 || agents.length === 0) {
   process.exit(1)
 }
 
+if (OPENCODE_BASE_URL && !BENCH_MODEL && agents.some((a) => a.id === "opencode")) {
+  process.stderr.write(
+    "$TITAH_BENCH_BASE_URL butuh $TITAH_BENCH_MODEL: provider yang di-patch " +
+      "diambil dari prefiks nama model.\n",
+  )
+  process.exit(1)
+}
+
 mkdirSync(WORKDIR, { recursive: true })
 for (const agent of agents) agent.version = versionOf(agent)
 
 process.stderr.write(`workdir : ${WORKDIR}\n`)
 process.stderr.write(`agents  : ${agents.map((a) => `${a.id} ${a.version}`).join(" · ")}\n`)
+const showBaseUrl = OPENCODE_BASE_URL && agents.some((a) => a.id === "opencode")
+process.stderr.write(
+  `model   : ${MODEL_LABEL}${showBaseUrl ? ` · opencode baseURL ${OPENCODE_BASE_URL}` : ""}\n`,
+)
 process.stderr.write(`tiers   : ${tiers.map((t) => t.id).join(", ")} · repeat ${repeat}\n\n`)
 
 const results: RunResult[] = []
