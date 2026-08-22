@@ -441,11 +441,25 @@ function verdictT4(cwd: string): RunResult["verdict"] {
   return { fileExists, testExists, npmTest }
 }
 
-function median(values: number[]): number {
-  if (values.length === 0) return Number.NaN
-  const sorted = [...values].sort((a, b) => a - b)
+/**
+ * Median dari nilai yang benar-benar terukur.
+ *
+ * Yang tidak dilaporkan agent-nya dibuang dulu, bukan dibawa masuk sebagai NaN:
+ * satu run yang tidak menyebut jumlah token tidak boleh menghapus angka dari
+ * run lain yang menyebutkannya. Kalau tidak ada satu pun nilai, hasilnya
+ * undefined — dan itu dicetak sebagai `—`, bukan `NaN`.
+ */
+function median(values: (number | undefined)[]): number | undefined {
+  const usable = values.filter((v): v is number => v !== undefined && Number.isFinite(v))
+  if (usable.length === 0) return undefined
+  const sorted = usable.sort((a, b) => a - b)
   const middle = Math.floor(sorted.length / 2)
   return sorted.length % 2 === 0 ? (sorted[middle - 1]! + sorted[middle]!) / 2 : sorted[middle]!
+}
+
+/** Sel tabel yang tidak punya angka ditulis `—`. */
+function cell(value: number | undefined, render: (n: number) => string): string {
+  return value === undefined ? "—" : render(value)
 }
 
 function versionOf(agent: AgentSpec): string {
@@ -550,10 +564,10 @@ for (const tier of tiers) {
         : `${ok.length}/${runs.length} run`
     rows.push(
       `| ${tier.id} | ${agent.id} | ${model} | ` +
-        `${(median(ok.map((r) => r.latencyMs)) / 1000).toFixed(1)}s | ` +
-        `${Math.round(median(ok.map((r) => r.parsed.inputTokens ?? Number.NaN)))} | ` +
-        `${Math.round(median(ok.map((r) => r.parsed.outputTokens ?? Number.NaN)))} | ` +
-        `${median(ok.map((r) => r.parsed.tools.length))} | ${passed} |`,
+        `${cell(median(ok.map((r) => r.latencyMs)), (n) => `${(n / 1000).toFixed(1)}s`)} | ` +
+        `${cell(median(ok.map((r) => r.parsed.inputTokens)), (n) => String(Math.round(n)))} | ` +
+        `${cell(median(ok.map((r) => r.parsed.outputTokens)), (n) => String(Math.round(n)))} | ` +
+        `${cell(median(ok.map((r) => r.parsed.tools.length)), String)} | ${passed} |`,
     )
   }
 }
