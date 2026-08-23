@@ -269,6 +269,7 @@ toggle is a surprise in the wrong direction.
 | `titah plugin list` | Load the configured plugins and report what each provides |
 | `titah extension list` | Load the configured side panels and report what each provides |
 | `titah extension install <pkg>` \| `remove <pkg>` | Download a panel and record it in config, or drop it |
+| `titah extension update [<pkg>]` | Move the lockfile to the newest version whose `engines.titah` accepts this Titah — and name the newer ones it had to skip |
 | `titah upgrade` | Check npm for a newer Titah and print how to install it — never installs by itself |
 | `titah web [--port N]` | Start the server and open the browser client |
 | `titah stats [--since 7d] [--all]` | Tokens and cost so far, by model and by day |

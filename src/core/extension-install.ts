@@ -3,6 +3,7 @@ import path from "node:path"
 import { spawn } from "node:child_process"
 import { configDir } from "./paths.ts"
 import { extensionRoot } from "./extension.ts"
+import { satisfiesEngine } from "../extension.ts"
 
 /**
  * Memasang extension: mengunduh, menyematkan versi, dan mencatat hash.
@@ -212,6 +213,99 @@ export async function installExtension(options: InstallOptions): Promise<Install
   writeLockfile(lock, lockFile)
 
   return { packageName: options.packageName, version, ...(integrity !== undefined ? { integrity } : {}), changed: true }
+}
+
+export type Fetcher = (url: string) => Promise<string>
+
+const defaultFetcher: Fetcher = async (url) => {
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+  return await response.text()
+}
+
+/**
+ * Versi TERBARU yang `engines.titah`-nya masih menerima Titah ini.
+ *
+ * Bukan `dist-tags.latest`, dan bedanya menentukan. Extension yang menuntut
+ * `^0.5.0` akan jadi `latest` di npm sementara Titah masih 0.4.0 — memasangnya
+ * berarti mengganti extension yang bekerja dengan yang tidak bisa dimuat, dan
+ * pesan kegagalannya baru muncul di sesi berikutnya, jauh dari perintah yang
+ * menyebabkannya.
+ *
+ * Metadata `engines` ada di dalam packument, jadi ini bisa diketahui SEBELUM
+ * mengunduh apa pun.
+ */
+export async function latestCompatible(
+  packageName: string,
+  titahVersion: string,
+  fetcher: Fetcher = defaultFetcher,
+): Promise<{ version?: string; rejected: { version: string; needs: string }[] }> {
+  const text = await fetcher(`https://registry.npmjs.org/${packageName.replace("/", "%2F")}`)
+  const packument = JSON.parse(text) as {
+    versions?: Record<string, { engines?: { titah?: string }; deprecated?: string }>
+  }
+  const versions = Object.entries(packument.versions ?? {})
+    // Prerelease dilewati: ia tidak pernah yang dimaksud orang saat mengetik
+    // `update`, dan menariknya diam-diam adalah kejutan yang tidak diminta.
+    .filter(([version]) => !version.includes("-"))
+    .filter(([, meta]) => meta.deprecated === undefined)
+    .sort(([left], [right]) => (satisfiesEngine(left, `>=${right}`) ? -1 : 1))
+
+  const rejected: { version: string; needs: string }[] = []
+  for (const [version, meta] of versions) {
+    const needs = meta.engines?.titah
+    if (needs !== undefined && satisfiesEngine(titahVersion, needs)) return { version, rejected }
+    if (needs !== undefined) rejected.push({ version, needs })
+  }
+  return { rejected }
+}
+
+export interface UpdateResult {
+  packageName: string
+  from?: string
+  to?: string
+  changed: boolean
+  /** Versi yang lebih baru tapi menuntut Titah lain. Untuk dikatakan, bukan disembunyikan. */
+  blocked: { version: string; needs: string }[]
+}
+
+/**
+ * Memindahkan lockfile ke versi terbaru yang kompatibel, lalu memasangnya.
+ *
+ * Ada sebagai perintah TERSENDIRI dan bukan sebagai perilaku `install`, karena
+ * keduanya menjawab pertanyaan yang berbeda. `install` menghormati lockfile —
+ * itu seluruh gunanya lockfile, dan `install` yang diam-diam menaikkan versi
+ * membuat "kode yang sama di dua mesin" jadi harapan lagi. `update` adalah
+ * tempat user MENYATAKAN bahwa ia ingin bergerak maju.
+ */
+export async function updateExtension(
+  options: InstallOptions & { titahVersion: string; fetcher?: Fetcher },
+): Promise<UpdateResult> {
+  const root = options.root ?? extensionRoot()
+  const lockFile = options.lockFile ?? lockfilePath()
+  const from = installedVersion(root, options.packageName) ?? readLockfile(lockFile).extension[options.packageName]?.version
+
+  const { version, rejected } = await latestCompatible(
+    options.packageName,
+    options.titahVersion,
+    options.fetcher ?? defaultFetcher,
+  )
+
+  if (version === undefined) {
+    return { packageName: options.packageName, ...(from ? { from } : {}), changed: false, blocked: rejected }
+  }
+  if (version === from) {
+    return { packageName: options.packageName, from, to: version, changed: false, blocked: rejected }
+  }
+
+  const result = await installExtension({ ...options, version })
+  return {
+    packageName: options.packageName,
+    ...(from ? { from } : {}),
+    to: result.version,
+    changed: result.changed,
+    blocked: rejected,
+  }
 }
 
 /**

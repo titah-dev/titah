@@ -7,6 +7,8 @@ import {
   InstallError,
   installExtension,
   installedVersion,
+  latestCompatible,
+  updateExtension,
   integrityFrom,
   readLockfile,
   removeExtension,
@@ -198,4 +200,115 @@ test("integrity dibaca dari package-lock npm, bukan dihitung ulang", () => {
   assert.equal(integrityFrom(root, "x"), "sha512-abc")
   assert.equal(integrityFrom(root, "missing"), undefined)
   assert.equal(installedVersion(root, "x"), undefined)
+})
+
+const PACKUMENT = JSON.stringify({
+  versions: {
+    "0.1.0": { engines: { titah: "^0.3.0" } },
+    "0.2.0": { engines: { titah: "^0.4.0" } },
+    "0.3.0": { engines: { titah: "^0.5.0" } },
+  },
+})
+
+test("update memilih versi terbaru yang KOMPATIBEL, bukan yang paling baru", async () => {
+  /*
+   * Bedanya menentukan. Extension yang menuntut `^0.5.0` akan jadi `latest` di
+   * npm sementara Titah masih 0.4.0 — memasangnya berarti mengganti extension
+   * yang bekerja dengan yang tidak bisa dimuat, dan pesan kegagalannya baru
+   * muncul di sesi berikutnya, jauh dari perintah yang menyebabkannya.
+   */
+  const result = await latestCompatible("@a/b", "0.4.0", async () => PACKUMENT)
+  assert.equal(result.version, "0.2.0")
+  assert.deepEqual(result.rejected, [{ version: "0.3.0", needs: "^0.5.0" }])
+})
+
+test("Titah yang lebih tua memilih versi extension yang lebih tua", async () => {
+  const result = await latestCompatible("@a/b", "0.3.0", async () => PACKUMENT)
+  assert.equal(result.version, "0.1.0")
+  assert.deepEqual(result.rejected.map((entry) => entry.version), ["0.3.0", "0.2.0"])
+})
+
+test("tidak ada versi yang menerima Titah ini dilaporkan, bukan diloloskan", async () => {
+  const result = await latestCompatible("@a/b", "0.1.0", async () => PACKUMENT)
+  assert.equal(result.version, undefined)
+  assert.equal(result.rejected.length, 3)
+})
+
+test("prerelease dan versi deprecated dilewati", async () => {
+  // Prerelease tidak pernah yang dimaksud orang saat mengetik `update`, dan
+  // menariknya diam-diam adalah kejutan yang tidak diminta.
+  const packument = JSON.stringify({
+    versions: {
+      "1.0.0": { engines: { titah: "^0.4.0" } },
+      "1.1.0-rc.1": { engines: { titah: "^0.4.0" } },
+      "1.2.0": { engines: { titah: "^0.4.0" }, deprecated: "salah publish" },
+    },
+  })
+  const result = await latestCompatible("@a/b", "0.4.0", async () => packument)
+  assert.equal(result.version, "1.0.0")
+})
+
+test("update memindahkan lockfile dan melaporkan dari-ke", async () => {
+  const root = scratch()
+  const lock = path.join(scratch(), "extension-lock.json")
+  const npm = fakeNpm()
+  await installExtension({ packageName: "@a/b", version: "0.1.0", root, lockFile: lock, run: npm.run })
+
+  const result = await updateExtension({
+    packageName: "@a/b",
+    titahVersion: "0.4.0",
+    root,
+    lockFile: lock,
+    run: npm.run,
+    fetcher: async () => PACKUMENT,
+  })
+  assert.equal(result.from, "0.1.0")
+  assert.equal(result.to, "0.2.0")
+  assert.equal(result.changed, true)
+  assert.equal(readLockfile(lock).extension["@a/b"]?.version, "0.2.0")
+})
+
+test("update yang tidak mengubah apa pun TETAP menyebut versi yang diblokir", async () => {
+  /*
+   * Tanpa itu, `update` yang tidak mengubah apa pun terlihat seperti tidak ada
+   * versi baru — padahal ada, dan yang menahannya adalah versi Titah, satu hal
+   * yang user bisa perbaiki.
+   */
+  const root = scratch()
+  const lock = path.join(scratch(), "extension-lock.json")
+  const npm = fakeNpm()
+  await installExtension({ packageName: "@a/b", version: "0.2.0", root, lockFile: lock, run: npm.run })
+
+  const result = await updateExtension({
+    packageName: "@a/b",
+    titahVersion: "0.4.0",
+    root,
+    lockFile: lock,
+    run: npm.run,
+    fetcher: async () => PACKUMENT,
+  })
+  assert.equal(result.changed, false)
+  assert.equal(result.to, "0.2.0")
+  assert.deepEqual(result.blocked, [{ version: "0.3.0", needs: "^0.5.0" }])
+})
+
+test("update tidak memasang apa pun kalau tidak ada versi yang kompatibel", async () => {
+  const root = scratch()
+  const lock = path.join(scratch(), "extension-lock.json")
+  const npm = fakeNpm()
+  await installExtension({ packageName: "@a/b", version: "0.1.0", root, lockFile: lock, run: npm.run })
+  const calls = npm.calls.length
+
+  const result = await updateExtension({
+    packageName: "@a/b",
+    titahVersion: "0.1.0",
+    root,
+    lockFile: lock,
+    run: npm.run,
+    fetcher: async () => PACKUMENT,
+  })
+  assert.equal(result.changed, false)
+  assert.equal(result.to, undefined)
+  assert.equal(npm.calls.length, calls, "npm tidak boleh dipanggil")
+  assert.equal(readLockfile(lock).extension["@a/b"]?.version, "0.1.0", "lockfile tidak tersentuh")
 })

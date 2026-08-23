@@ -83,9 +83,10 @@ Tiga bentuk kunci, sama dengan `plugin`:
 | `market:<id>` | entri registry, dipetakan ke npm package **dan versi yang pasti** |
 
 ```
-titah extension list            apa yang terpasang, dimuat SUNGGUHAN
-titah extension install <pkg>   unduh, lalu tulis ke config
-titah extension remove <pkg>    cabut, lalu buang dari config
+titah extension list             apa yang terpasang, dimuat SUNGGUHAN
+titah extension install <pkg>    unduh, lalu tulis ke config
+titah extension update [<pkg>]   pindahkan lockfile ke versi terbaru yang KOMPATIBEL
+titah extension remove <pkg>     cabut, lalu buang dari config
 ```
 
 `list` memuatnya sungguhan lalu melaporkan apa yang disediakan masing-masing, dan
@@ -412,13 +413,40 @@ yang `paths.ts` sudah menyatakan akan didukung, dan npm sudah menangani
 dependency transitif.
 
 Kalau lockfile menyebut sebuah versi, versi itu yang dipasang — bukan yang
-terbaru. Itu seluruh gunanya.
+terbaru. Itu seluruh gunanya, dan itu berarti `install` **tidak pernah** menaikkan
+versi. Yang menaikkannya adalah `titah extension update`, sebagai perintah
+tersendiri: `install` yang diam-diam bergerak membuat "kode yang sama di dua
+mesin" jadi harapan lagi, dan `update` adalah tempat user MENYATAKAN bahwa ia
+ingin bergerak.
+
+### `update` memilih versi terbaru yang KOMPATIBEL, bukan yang paling baru
+
+Bedanya menentukan. Extension yang menuntut `^0.5.0` akan jadi `latest` di npm
+sementara Titah masih 0.4.0 — memasangnya berarti mengganti extension yang
+bekerja dengan yang tidak bisa dimuat, dan pesan kegagalannya baru muncul di sesi
+BERIKUTNYA, jauh dari perintah yang menyebabkannya.
+
+`engines` ada di dalam packument npm, jadi ini diketahui **sebelum** mengunduh
+apa pun. Versi yang lebih baru tapi diblokir tetap **dikatakan**:
+
+```
+· @titah/extension-git 0.2.0 is already the newest compatible version
+    0.3.0 exists but needs Titah ^0.5.0 — run: titah upgrade
+```
+
+Tanpa baris kedua, `update` yang tidak mengubah apa pun terlihat seperti tidak
+ada versi baru — padahal ada, dan yang menahannya adalah versi Titah, satu hal
+yang user bisa perbaiki.
+
+Prerelease dan versi yang di-deprecate dilewati. Prerelease tidak pernah yang
+dimaksud orang saat mengetik `update`.
 
 ## Picker
 
-`<leader>x` membuka picker: popup di tengah layar dengan pencarian, dan Enter
-memasang baris yang tersorot. Di luar TUI, `titah extension install` melakukan
-hal yang sama.
+`<leader>x` membuka picker: popup di tengah layar dengan pencarian, dan **Enter**
+memasang baris yang tersorot. Itu satu-satunya aksi yang ada di picker hari ini —
+memperbarui dan mencabut lewat `titah extension update` dan `titah extension
+remove`.
 
 Tiga keadaan dibedakan tampilannya, karena `I` berarti hal berbeda pada
 masing-masing:
@@ -428,6 +456,11 @@ masing-masing:
 | `✓` | terpasang | tidak ada yang perlu dilakukan |
 | `↓` | ada di config, belum terunduh | unduh |
 | `+` | ada di registry, belum dipilih | **tulis ke config**, lalu unduh |
+
+Perhatikan bahwa `✓` **tidak** berarti "versi terbaru" — hanya "ada di disk".
+Picker tidak memanggil registry npm untuk setiap baris; itu satu request per
+extension setiap kali picker dibuka, untuk informasi yang jarang berubah.
+`titah extension update` yang menjawab pertanyaan itu.
 
 Penandanya visual, bukan hanya di keterangan. Tombol yang artinya berubah
 tergantung baris yang tersorot, tanpa tampilan yang membedakan barisnya, adalah

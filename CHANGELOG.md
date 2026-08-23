@@ -3,6 +3,42 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
+## 0.4.1
+
+### `titah extension update`
+
+Sampai sekarang tidak ada jalur update sama sekali. Lockfile bekerja persis
+seperti yang seharusnya — `install` menghormatinya, jadi memasang ulang
+mengembalikan versi yang sama selamanya — tapi tidak ada perintah untuk
+menyatakan "saya mau bergerak maju". Satu-satunya jalan adalah mengetahui nomor
+versinya lalu `install <pkg>@<versi>`, yang berarti menghafal angka yang
+seharusnya dicari Titah sendiri.
+
+Perintah tersendiri, bukan perilaku `install`: `install` yang diam-diam
+menaikkan versi membuat "kode yang sama di dua mesin" jadi harapan lagi.
+
+- **Memilih versi terbaru yang KOMPATIBEL, bukan `dist-tags.latest`.** Extension
+  yang menuntut `^0.5.0` akan jadi `latest` di npm sementara Titah masih 0.4.0;
+  memasangnya berarti mengganti extension yang bekerja dengan yang tidak bisa
+  dimuat, dan pesan kegagalannya baru muncul di sesi BERIKUTNYA — jauh dari
+  perintah yang menyebabkannya. `engines` ada di packument, jadi ini diketahui
+  sebelum mengunduh apa pun.
+- **Versi yang lebih baru tapi diblokir tetap dikatakan**, beserta versi Titah
+  yang dituntutnya. Tanpa itu, `update` yang tidak mengubah apa pun terlihat
+  seperti tidak ada versi baru — padahal ada, dan yang menahannya adalah satu hal
+  yang user bisa perbaiki.
+- Prerelease dan versi yang di-deprecate dilewati.
+- Tanpa argumen, seluruh extension npm di config diperiksa. Path lokal dilewati
+  dan disebutkan: ia dimuat langsung dari disk, jadi tidak ada yang bisa
+  di-update dari sini.
+
+### Diperbaiki
+
+- `docs/extensions.md` menjanjikan tombol `U` dan `X` di picker yang tidak
+  pernah dibuat. Picker hari ini hanya punya Enter, dan dokumennya sekarang
+  mengatakan itu. Penanda `✓` juga diluruskan: ia berarti "ada di disk", BUKAN
+  "versi terbaru" — picker tidak memanggil registry npm untuk setiap baris.
+
 ## 0.4.0
 
 ### Panel bisa diklik, dan lebarnya bisa diubah tanpa keluar dari sesi

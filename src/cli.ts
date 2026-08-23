@@ -26,7 +26,7 @@ import {
   parseInstallTarget,
   readManifest,
 } from "./core/extension.ts"
-import { installExtension, removeExtension } from "./core/extension-install.ts"
+import { installExtension, removeExtension, updateExtension } from "./core/extension-install.ts"
 import { editConfigFile } from "./core/config-edit.ts"
 import { checkUpdate } from "./core/update.ts"
 import { collectStats } from "./core/stats.ts"
@@ -176,6 +176,7 @@ Configuration:
   bg stop <id>             Stop a background turn and everything it started
   extension list           Configured side panels — loaded for real, not just read
   extension install <pkg>  Download a panel and add it to your config
+  extension update [<pkg>] Move the lockfile to the newest COMPATIBLE version
   extension remove <pkg>   Remove a panel and drop it from your config
   upgrade                  Check npm for a newer Titah and print how to install it
   mcp list                 Configured MCP servers, their transport, and sign-in state
@@ -660,6 +661,51 @@ async function cmdExtension(args: string[]): Promise<void> {
     return
   }
 
+  if (sub === "update" || sub === "upgrade") {
+    /*
+     * Perintah tersendiri, bukan perilaku `install`.
+     *
+     * `install` menghormati lockfile — itu seluruh gunanya lockfile, dan
+     * `install` yang diam-diam menaikkan versi membuat "kode yang sama di dua
+     * mesin" jadi harapan lagi. Di sini user MENYATAKAN bahwa ia mau bergerak.
+     */
+    const named = args[1]
+    const targets = named
+      ? [named]
+      : Object.keys(loaded.config.extension).filter((spec) => parseExtensionSpec(spec).kind === "npm")
+
+    if (targets.length === 0) {
+      out("No npm extensions in your config — nothing to update.")
+      out("Local paths are loaded straight from disk; update them however you edit them.")
+      return
+    }
+
+    for (const packageName of targets) {
+      let result
+      try {
+        result = await updateExtension({ packageName, titahVersion: VERSION })
+      } catch (error) {
+        out(`✗ ${packageName} — ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+
+      if (result.changed) out(`↑ ${packageName} ${result.from ?? "(none)"} → ${result.to}`)
+      else if (result.to !== undefined) out(`· ${packageName} ${result.to} is already the newest compatible version`)
+      else out(`✗ ${packageName} — no published version accepts Titah ${VERSION}`)
+
+      /*
+       * Versi yang lebih baru tapi menuntut Titah lain DIKATAKAN, bukan
+       * disembunyikan. Tanpa baris ini, `update` yang tidak mengubah apa pun
+       * terlihat seperti tidak ada versi baru — padahal ada, dan yang menahannya
+       * adalah versi Titah, satu hal yang user bisa perbaiki.
+       */
+      for (const blocked of result.blocked) {
+        out(`    ${blocked.version} exists but needs Titah ${blocked.needs} — run: titah upgrade`)
+      }
+    }
+    return
+  }
+
   if (sub === "remove" || sub === "uninstall") {
     const packageName = args[1]
     if (!packageName) fail("Usage: titah extension remove <package>")
@@ -673,7 +719,7 @@ async function cmdExtension(args: string[]): Promise<void> {
     return
   }
 
-  fail(`Unknown extension subcommand: "${sub}". Options: list, install, remove.`)
+  fail(`Unknown extension subcommand: "${sub}". Options: list, install, update, remove.`)
 }
 
 /**
