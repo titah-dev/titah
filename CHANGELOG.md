@@ -3,7 +3,7 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
-## Unreleased
+## 0.3.0
 
 ### Extension — panel samping yang disumbang paket npm
 
