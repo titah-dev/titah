@@ -3,7 +3,7 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
-## Unreleased
+## 0.4.0
 
 ### Panel bisa diklik, dan lebarnya bisa diubah tanpa keluar dari sesi
 
