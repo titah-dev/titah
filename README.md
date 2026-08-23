@@ -267,6 +267,9 @@ toggle is a surprise in the wrong direction.
 | `titah export [-o file]` | Portable config bundle, credentials left out and listed |
 | `titah import <file> [-y]` | Preview what a bundle changes; `-y` applies it |
 | `titah plugin list` | Load the configured plugins and report what each provides |
+| `titah extension list` | Load the configured side panels and report what each provides |
+| `titah extension install <pkg>` \| `remove <pkg>` | Download a panel and record it in config, or drop it |
+| `titah upgrade` | Check npm for a newer Titah and print how to install it — never installs by itself |
 | `titah web [--port N]` | Start the server and open the browser client |
 | `titah stats [--since 7d] [--all]` | Tokens and cost so far, by model and by day |
 | `titah hooks list` | Shell hooks from config, and which tools each matches |
@@ -413,6 +416,9 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `End` / `Ctrl+X` `B` | Jump to the newest message |
 | `Ctrl+X` `M` | Toggle mouse capture — turn it **off** to select and copy text |
 | `Ctrl+X` `↓` | Toggle the sub-agent panel — it owns the keyboard while open: `↑`/`↓` select, `x` `x` cancels the selected sub-agent, `Esc` closes |
+| `Ctrl+X` `←` / `→` | Toggle the left / right side panel — below `panel.floor` columns of history they close themselves rather than squeeze the conversation |
+| `Ctrl+X` `E` | Refresh both side panels. They also refresh when you send a prompt, when a turn ends, and when a panel opens |
+| `Ctrl+X` `X` | Extensions — search the registry, install with `Enter` |
 | Click a tool line | Expand/collapse just that block |
 | Mouse wheel | Scroll the history |
 | `Ctrl+X` `U` | Undo the last turn's changes |
