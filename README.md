@@ -419,6 +419,8 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+X` `←` / `→` | Toggle the left / right side panel — below `panel.floor` columns of history they close themselves rather than squeeze the conversation |
 | `Ctrl+X` `E` | Refresh both side panels. They also refresh when you send a prompt, when a turn ends, and when a panel opens |
 | `Ctrl+X` `F` | Give the keyboard to a side panel so its own keys work — `Esc` returns it without closing the panel |
+| `+` / `-` / `=` | While a panel has the keyboard: widen, narrow, or reset it to the width in config. Widening stops at `panel.floor` |
+| Click a panel row | Reaches the extension's `onClick` and moves the keyboard to that panel |
 | `Ctrl+X` `X` | Extensions — search the registry, install with `Enter` |
 | Click a tool line | Expand/collapse just that block |
 | Mouse wheel | Scroll the history |

@@ -3,6 +3,49 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
+## Unreleased
+
+### Panel bisa diklik, dan lebarnya bisa diubah tanpa keluar dari sesi
+
+Dua pertanyaan sederhana — "bagaimana resize?" dan "apakah bisa diklik?" —
+menemukan bahwa jawabannya "tidak bisa" untuk keduanya, dan menemukan dua cacat
+yang dikirim di 0.3.0. Lihat bagian Diperbaiki.
+
+- **`onClick({ row })`** di permukaan publik. `row` adalah indeks baris yang
+  DIGAMBAR, bukan indeks data extension — pemetaannya milik extension, karena
+  hanya ia yang tahu baris mana berarti apa. Klik tidak menuntut fokus (klik
+  sudah menyebutkan sasarannya) tapi MEMINDAHKAN fokus, supaya tombol yang
+  panelnya iklankan langsung bekerja sesudahnya.
+- **`+` / `-` / `=`** saat panel fokus: lebarkan, sempitkan, kembalikan ke lebar
+  config. Tiga tombol itu dipesan Titah dan tidak pernah diteruskan ke
+  extension — kebalikannya membuat artinya bergantung pada extension mana yang
+  sedang fokus. Pelebaran berhenti di `panel.floor`: tanpa batas itu, satu
+  tekanan lagi membuat panel yang sedang dilebarkan menutup sendiri.
+- Lebar hasil resize hidup di memori sesi, **tidak** ditulis ke config. `+`/`-`
+  ditekan berkali-kali dalam hitungan detik.
+
+### Diperbaiki
+
+- **`onKey` tidak pernah dipanggil.** Ada di permukaan publik, diimplementasikan
+  extension referensi, dan `app.tsx` tidak pernah memanggilnya — jadi panel git
+  menampilkan "b branches · r refresh" dengan kedua tombol mati. Sekarang lewat
+  `<leader>f`, yang memisahkan BUKA dari FOKUS: panel samping dibuka untuk
+  dilihat sambil bekerja, dan kalau membukanya berarti memakan tombol, tidak ada
+  yang akan membukanya.
+- **Panel tidak digambar di layar pembuka.** Memasang extension lalu menekan
+  `Ctrl+X ←` sebelum prompt pertama tidak menghasilkan apa pun — dan itu terbaca
+  sebagai extension yang gagal dipasang, bukan sebagai layar yang berbeda.
+- Pilihan logo layar pembuka diambil dari kolom tengah, bukan lebar terminal.
+
+### Catatan tentang kelas bug yang sama tiga kali
+
+Ketiga cacat di atas berakar pada satu hal: callback dan listener yang dep
+array-nya tidak memuat `extensions` menutup atas render PERTAMA, saat daftarnya
+masih kosong. Gejalanya bukan error, melainkan tombol atau klik yang tidak
+melakukan apa pun. Ketiganya sekarang lewat ref yang disegarkan tiap render —
+pola yang sama dengan `view.current`, dan alasannya sama: hanya render yang tahu
+apa yang sedang terlihat, sedangkan penanganan input datang belakangan.
+
 ## 0.3.0
 
 ### Extension — panel samping yang disumbang paket npm

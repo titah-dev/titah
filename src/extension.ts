@@ -99,6 +99,20 @@ export interface ExtensionPanel {
   render(request: RenderRequest): View | Promise<View>
   /** Dipanggil hanya saat panel ini yang sedang fokus. */
   onKey?(press: { key: string }): KeyVerdict | void
+  /**
+   * Dipanggil saat baris panel ini diklik. TIDAK menuntut fokus.
+   *
+   * `row` adalah indeks baris yang DIGAMBAR, bukan indeks di dalam data
+   * extension. Keduanya sama selama `render` mengembalikan satu baris per
+   * entri, dan berbeda begitu extension menyisipkan baris pemisah atau baris
+   * petunjuk — pemetaan itu milik extension, karena hanya ia yang tahu baris
+   * mana yang berarti apa.
+   *
+   * Fokus tidak dituntut karena klik sudah menyebutkan sasarannya sendiri.
+   * Memaksa fokus lebih dulu berarti klik pertama tidak melakukan apa pun, dan
+   * itu terbaca sebagai panel yang tidak bisa diklik.
+   */
+  onClick?(press: { row: number }): KeyVerdict | void
 }
 
 /**

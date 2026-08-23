@@ -176,6 +176,32 @@ extension harus menguranginya sendiri, setiap extension menebak berapa yang
 diambil bingkai — dan tebakan yang salah muncul sebagai teks yang membungkus,
 dengan Titah yang disalahkan.
 
+### Klik
+
+```js
+onClick({ row }) {
+  const branch = drawn[row]
+  if (branch === undefined) return
+  selected = branch
+  return { refresh: true }
+}
+```
+
+`row` adalah indeks baris yang **digambar**, bukan indeks di dalam data
+extension. Keduanya sama selama `render` mengembalikan satu baris per entri, dan
+berbeda begitu extension menyisipkan baris pemisah atau baris petunjuk —
+pemetaan itu milik extension, karena hanya ia yang tahu baris mana berarti apa.
+Cara paling aman: bangun petanya dari baris yang **sama** dengan yang dikembalikan
+`render`, bukan menghitungnya ulang dari state.
+
+Klik **tidak menuntut fokus**. Klik sudah menyebutkan sasarannya sendiri, dan
+memaksa fokus lebih dulu berarti klik pertama tidak melakukan apa pun — yang
+terbaca sebagai panel yang tidak bisa diklik. Klik juga **memindahkan** fokus ke
+panel itu, supaya tombol yang panelnya iklankan langsung bekerja sesudahnya.
+
+Klik pada bingkai atau judul panel tidak mengenai baris apa pun, dan tidak
+diteruskan ke riwayat di belakangnya.
+
 `onKey` hanya dipanggil saat panel ini yang sedang **fokus** — `<leader>f`
 menyerahkan papan tombol, `Esc` mengambilnya kembali tanpa menutup panelnya.
 
@@ -232,6 +258,29 @@ berarti mengirim API yang lebih besar dari yang bisa dijaga.
 | `<leader>→` | buka/tutup panel kanan |
 | `<leader>e` | segarkan kedua panel |
 | `<leader>f` | serahkan papan tombol ke panel samping; `Esc` mengambilnya kembali |
+
+Saat panel sedang fokus, tiga tombol **dipesan Titah** dan tidak pernah
+diteruskan ke extension:
+
+| | |
+|---|---|
+| `+` | lebarkan dua kolom |
+| `-` | sempitkan dua kolom |
+| `=` | kembali ke lebar dari config |
+
+Diperiksa sebelum `onKey` karena kebalikannya membuat artinya bergantung pada
+extension mana yang sedang fokus — `+` yang melebarkan panel git tapi melakukan
+hal lain di panel orang lain adalah tombol yang tidak bisa dihafal.
+
+Pelebaran **tidak bisa menembus lantai**: `+` berhenti saat riwayat mencapai
+`panel.floor`. Tanpa batas itu, satu tekanan lagi membuat panel yang sedang kamu
+lebarkan menutup sendiri — lantai bekerja seperti seharusnya, tapi dari tempat
+user itu terbaca sebagai panel yang hilang karena dilebarkan.
+
+Lebar hasil resize hidup di memori sesi, tidak ditulis ke config. `+`/`-`
+ditekan berkali-kali dalam hitungan detik, dan menulis berkas user pada setiap
+tekanan adalah tulisan yang tidak pernah ia minta. `=` mengembalikannya ke angka
+config, jadi sumber kebenarannya tetap di sana.
 | `<leader>x` | picker extension — cari dan pasang |
 
 Ketiga panel Titah dijangkau lewat satu pola yang sama: leader lalu arah —

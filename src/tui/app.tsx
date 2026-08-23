@@ -36,7 +36,15 @@ import {
 } from "./components.tsx"
 import { SubagentPanel, SUBAGENT_PANEL_ROWS } from "./subagent-panel.tsx"
 import { Panel } from "./panel.tsx"
-import { droppedNotice, panelLayout, type PanelLine } from "./panels.ts"
+import {
+  droppedNotice,
+  panelLayout,
+  PANEL_CHROME_ROWS,
+  PANEL_RESIZE_STEP,
+  panelHit,
+  resizePanel,
+  type PanelLine,
+} from "./panels.ts"
 import { loadExtensions, type ExtensionFailure, type LoadedExtension } from "../core/extension.ts"
 import { errorLines, renderPanel } from "./extension-host.ts"
 import { checkUpdate, updateNotice } from "../core/update.ts"
@@ -260,6 +268,45 @@ export function App({
    * yang sedang terlihat, dan penanganan tombol datang belakangan.
    */
   const drawnPanels = useRef<("left" | "right")[]>([])
+
+  /**
+   * Lebar hasil resize, per sisi. Kosong berarti pakai lebar dari config.
+   *
+   * State dan bukan tulisan ke config: `+`/`-` ditekan berkali-kali dalam
+   * hitungan detik, dan menulis berkas user pada setiap tekanan adalah tulisan
+   * yang tidak pernah ia minta secara eksplisit. `=` mengembalikannya ke angka
+   * config, jadi sumber kebenarannya tetap di sana.
+   */
+  const [panelWidth, setPanelWidth] = useState<{ left?: number; right?: number }>({})
+
+  /**
+   * Di mana panel digambar, disegarkan tiap render — jembatan untuk klik.
+   *
+   * Pola dan alasan yang sama dengan `view.current` di bawah: hanya render yang
+   * tahu baris layar keberapa isi panel dimulai, dan klik datang belakangan
+   * lewat listener yang tidak ikut dirender.
+   */
+  /**
+   * Extension yang termuat, dibaca oleh listener yang tidak ikut dirender.
+   *
+   * Ini kejadian KETIGA dari satu kelas bug yang sama di berkas ini: listener
+   * dan callback yang dep array-nya tidak memuat `extensions` akan menutup atas
+   * render PERTAMA, saat daftarnya masih kosong — dan gejalanya bukan error,
+   * melainkan tombol atau klik yang tidak melakukan apa pun.
+   *
+   * Ref, bukan dep tambahan: effect mouse berlangganan sekali, dan menambahkan
+   * `extensions` ke deps-nya berarti berlangganan ulang setiap kali daftarnya
+   * berubah — biaya tanpa manfaat, karena yang dibutuhkan handler hanyalah nilai
+   * terbaru saat ia dipanggil.
+   */
+  const extensionsRef = useRef<LoadedExtension[]>([])
+
+  const panelView = useRef<{
+    /** Baris layar (0-basis) tempat baris ISI pertama panel digambar. */
+    contentTop: number
+    left?: { from: number; to: number; rows: number }
+    right?: { from: number; to: number; rows: number }
+  }>({ contentTop: 0 })
   /**
    * Isi panel per sisi, beserta error terakhirnya.
    *
@@ -536,6 +583,43 @@ export function App({
         return
       }
       if (event.kind !== "press") return
+
+      /*
+       * Klik panel diperiksa LEBIH DULU daripada klik baris riwayat.
+       *
+       * Keduanya membaca `event.y`, dan panel menempati kolom yang berbeda —
+       * jadi tanpa pemeriksaan kolom di sini, klik di panel akan dicocokkan ke
+       * baris riwayat pada baris layar yang sama dan membuka blok tool yang
+       * tidak pernah diklik siapa pun.
+       */
+      {
+        const geometry = panelView.current
+        const inPanelColumns = (["left", "right"] as const).some((side) => {
+          const box = geometry[side]
+          return box !== undefined && event.x >= box.from && event.x <= box.to
+        })
+        const hit = panelHit(geometry, event.x, event.y)
+        if (hit !== undefined) {
+          const owner = extensionsRef.current.find((entry) => entry.side === hit.side)
+          /*
+           * Klik juga MEMINDAHKAN fokus ke panel itu. Kalau tidak, klik bekerja
+           * lalu tombol `b` yang baru saja diiklankan panelnya tidak bekerja —
+           * dua cara berinteraksi dengan satu panel yang tidak saling tahu.
+           */
+          setPanelFocus(hit.side)
+          const verdict = owner?.panel.onClick?.({ row: hit.row })
+          if (verdict?.refresh === true) setRefreshToken((value) => value + 1)
+          return
+        }
+        /*
+         * Klik di kolom panel tapi di luar barisnya BERHENTI di sini.
+         *
+         * Bingkai dan judul panel menempati kolom itu juga, dan meneruskannya
+         * ke pencocokan riwayat akan membuka blok tool yang kebetulan sebaris
+         * dengan judul panel.
+         */
+        if (inPanelColumns) return
+      }
 
       // y berbasis 1 dari terminal; `top` adalah baris layar tempat riwayat mulai.
       const line = lines[event.y - 1 - top]
@@ -1322,6 +1406,35 @@ export function App({
       } else if (press.key === "escape" && plain) {
         setPanelFocus(undefined)
         return
+      } else if (plain && (press.key === "+" || press.key === "-" || press.key === "=")) {
+        /*
+         * Tiga tombol ini DIPESAN Titah dan tidak pernah diteruskan ke
+         * extension. Diperiksa sebelum `onKey` karena kebalikannya membuat
+         * artinya bergantung pada extension mana yang sedang fokus: `+` yang
+         * melebarkan panel git tapi melakukan hal lain di panel orang lain
+         * adalah tombol yang tidak bisa dihafal.
+         *
+         * `=` mengembalikan ke lebar config, bukan ke angka bawaan Titah —
+         * yang user tulis di config adalah lebar yang ia maksud.
+         */
+        const side = panelFocus
+        if (press.key === "=") {
+          setPanelWidth((current) => ({ ...current, [side]: undefined }))
+          return
+        }
+        const other = side === "left" ? panels.right : panels.left
+        const current = side === "left"
+          ? (panelWidth.left ?? config.panel.left.width)
+          : (panelWidth.right ?? config.panel.right.width)
+        const next = resizePanel({
+          current,
+          delta: press.key === "+" ? PANEL_RESIZE_STEP : -PANEL_RESIZE_STEP,
+          columns: size.columns,
+          other,
+          floor: config.panel.floor,
+        })
+        setPanelWidth((value) => ({ ...value, [side]: next }))
+        return
       } else if (plain) {
         const verdict = owner.panel.onKey?.({ key: press.key })
         if (verdict?.refresh === true) setRefreshToken((value) => value + 1)
@@ -1739,8 +1852,8 @@ export function App({
   const panels = panelLayout({
     columns: size.columns,
     floor: config.panel.floor,
-    left: leftPanelOpen ? config.panel.left.width : 0,
-    right: rightPanelOpen ? config.panel.right.width : 0,
+    left: leftPanelOpen ? (panelWidth.left ?? config.panel.left.width) : 0,
+    right: rightPanelOpen ? (panelWidth.right ?? config.panel.right.width) : 0,
   })
   const textWidth = Math.max(20, panels.content - 2)
 
@@ -1766,6 +1879,8 @@ export function App({
     const width = panelFocus === "left" ? panels.left : panels.right
     if (width === 0 || !extensions.some((entry) => entry.side === panelFocus)) setPanelFocus(undefined)
   }, [panelFocus, panels.left, panels.right, extensions])
+
+  extensionsRef.current = extensions
 
   drawnPanels.current = (["left", "right"] as const).filter(
     (side) =>
@@ -1947,6 +2062,38 @@ export function App({
    * kalau tidak ada — jadi sisi yang terbuka tanpa extension mengatakan
    * keadaannya alih-alih menggambar kotak kosong yang terlihat seperti bug.
    */
+  /*
+   * Kondisi layar pembuka dibaca SEKALI, dipakai dua kali.
+   *
+   * Peta klik butuh tahu di baris layar keberapa panel dimulai, dan kedua
+   * cabang render menaruhnya berbeda: di layar pembuka baris panel adalah anak
+   * pertama, di layar percakapan ia sesudah header. Dua ekspresi untuk satu
+   * kondisi berarti peta klik dan render bisa tidak sepakat sedang di layar
+   * mana kita berada.
+   */
+  const onSplash = state.messages.length === 0 && state.permission === undefined
+
+  /*
+   * Geometri panel untuk klik, dari angka yang SAMA dengan yang dirender.
+   * Menghitungnya terpisah adalah cara peta klik menyimpang dari apa yang
+   * tergambar, dan gejalanya klik yang mengenai baris tetangga.
+   */
+  panelView.current = {
+    contentTop: (onSplash ? 0 : headerHeight) + 2,
+    ...(panels.left > 0
+      ? { left: { from: 1, to: panels.left, rows: Math.max(0, available - PANEL_CHROME_ROWS) } }
+      : {}),
+    ...(panels.right > 0
+      ? {
+          right: {
+            from: size.columns - panels.right + 1,
+            to: size.columns,
+            rows: Math.max(0, available - PANEL_CHROME_ROWS),
+          },
+        }
+      : {}),
+  }
+
   const panelProps = (side: "left" | "right") => {
     const extension = extensions.find((entry) => entry.side === side)
     const content = panelContent[side]
@@ -2006,7 +2153,7 @@ export function App({
   })
 
   // Layar pembuka: belum ada percakapan sama sekali.
-  if (state.messages.length === 0 && state.permission === undefined) {
+  if (onSplash) {
     return (
       <Box height={size.rows} flexDirection="column">
         {/* Panel ikut digambar DI SINI juga, bukan hanya sesudah percakapan

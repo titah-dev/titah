@@ -267,7 +267,7 @@ function mount(
       // Wajib: `checkEngine` membandingkan `engines.titah` extension terhadap
       // angka ini, dan `undefined` membuat setiap extension ditolak dengan
       // sebab yang menunjuk versi, bukan menunjuk harness.
-      version: "0.3.0",
+      version: "0.4.0",
       config: Config.parse({
         agent: { plan: { description: "Plan only" }, build: { description: "Build" } },
         externalAgent: { claude: { command: process.execPath } },
@@ -2447,7 +2447,7 @@ function writePanelExtension(): string {
       name: "uji-panel",
       type: "module",
       version: "1.0.0",
-      engines: { titah: "^0.3.0" },
+      engines: { titah: "^0.4.0" },
       titah: { panel: "./panel.mjs" },
     }),
   )
@@ -2561,6 +2561,220 @@ test("fokus tanpa satu pun panel terbuka mengatakannya, bukan menelan tombol", a
     h.stdin.press("f")
     await tick()
     assert.match(h.frame(), /no side panel is open/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+/** Extension dengan onClick, untuk menguji pemetaan koordinat klik. */
+function writeClickableExtension(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-click-ext-"))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({
+      name: "uji-klik",
+      type: "module",
+      version: "1.0.0",
+      engines: { titah: "^0.4.0" },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `let hit = -1
+     export default function () {
+       return {
+         title: "Klik",
+         side: "left",
+         render() {
+           return { kind: "rows", rows: ["nol", "satu", "dua", "tiga"].map((t, i) => ({
+             text: hit === i ? "HIT-" + t : t,
+           })) }
+         },
+         onClick({ row }) { hit = row; return { refresh: true } },
+       }
+     }`,
+  )
+  return directory
+}
+
+test("klik pada baris panel memanggil onClick dengan indeks baris yang BENAR", async () => {
+  /*
+   * Pemetaan koordinat inilah yang paling mudah meleset satu baris: kotak panel
+   * memakai satu baris bingkai dan satu baris judul sebelum isinya, dan angka
+   * itu harus sama dengan yang dipakai render. Meleset satu berarti setiap klik
+   * memilih baris tetangganya — bug yang terlihat seperti "kliknya tidak
+   * akurat", bukan seperti perhitungan yang salah.
+   */
+  const h = mount({ extension: { [writeClickableExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /nol/)
+
+    /*
+     * Yang diuji di sini PENYAMBUNGANNYA, bukan aritmetikanya: indeks baris
+     * sudah diuji tuntas oleh `panelHit` sebagai fungsi murni, dan menebak
+     * koordinat dari keluaran akumulatif Ink menguji harness, bukan produk.
+     *
+     * Jadi seluruh kolom panel disapu, dan yang dituntut adalah SATU di
+     * antaranya sampai ke onClick.
+     */
+    for (let y = 1; y <= 12; y++) {
+      h.mouse.emit({ kind: "press", x: 4, y })
+      await tick(2)
+      if (/HIT-/.test(h.frame())) break
+    }
+    assert.match(h.frame(), /HIT-/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("klik di luar kolom panel TIDAK memanggil onClick", async () => {
+  // Panel dan riwayat membaca `event.y` yang sama. Tanpa pemeriksaan kolom,
+  // klik di tengah layar akan dicocokkan ke baris panel pada baris yang sama.
+  const h = mount({ extension: { [writeClickableExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+    h.mouse.emit({ kind: "press", x: 70, y: 5 })
+    await tick()
+    assert.doesNotMatch(h.frame(), /HIT-/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+/** Panel yang selalu memenuhi lebarnya, supaya lebar bisa DIUKUR dari teks. */
+function writeWideExtension(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-wide-ext-"))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({ name: "uji-lebar", type: "module", version: "1.0.0", engines: { titah: "^0.4.0" }, titah: { panel: "./panel.mjs" } }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `export default function () {
+       return { title: "W", side: "left", render() { return { kind: "rows", rows: [{ text: "X".repeat(80) }] } } }
+     }`,
+  )
+  return directory
+}
+
+test("+ dan - mengubah lebar panel, = mengembalikannya ke lebar config", async () => {
+  /*
+   * Lebar diukur dari TEKS, bukan dari bingkai.
+   *
+   * Keluaran harness adalah akumulasi tulisan Ink dengan escape dibuang, jadi
+   * batas barisnya tidak bisa dipercaya untuk mengukur kotak. Yang bisa: isi
+   * panel dipotong ke `lebar - 4`, jadi panjang deretan X yang terlihat adalah
+   * lebar panel dikurangi bingkai dan padding — dan itu justru angka yang
+   * benar-benar penting bagi extension.
+   */
+  const h = mount({ extension: { [writeWideExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+
+    /*
+     * Deretan X = lebar - 4 - 1: empat kolom untuk bingkai dan padding, satu
+     * lagi karena elipsis MENGGANTIKAN karakter terakhir yang masih muat
+     * (`truncate` di panels.ts) alih-alih ditambahkan sesudahnya. Yang diuji
+     * relasinya, bukan angkanya: setiap tekanan harus menggeser tepat dua.
+     */
+    const inner = () => {
+      // Yang TERAKHIR, bukan yang terpanjang: keluaran harness akumulatif, jadi
+      // `Math.max` akan terus melaporkan lebar sebelum panel menyempit.
+      const runs = [...h.frame().matchAll(/X+/g)].map((m) => m[0].length)
+      return runs[runs.length - 1] ?? 0
+    }
+    assert.equal(inner(), 15, "lebar awal dari config (20 kolom)")
+
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+
+    h.clear()
+    h.stdin.press("+")
+    await tick(3)
+    assert.equal(inner(), 17, "+ melebarkan dua kolom")
+
+    h.clear()
+    h.stdin.press("-")
+    await tick(2)
+    h.stdin.press("-")
+    await tick(3)
+    assert.equal(inner(), 13, "- menyempitkan dua kolom, dua kali")
+
+    h.clear()
+    h.stdin.press("=")
+    await tick(3)
+    assert.equal(inner(), 15, "= kembali ke lebar config")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("tombol resize TIDAK diteruskan ke onKey extension", async () => {
+  /*
+   * Tiga tombol itu dipesan Titah. Diteruskan, artinya bergantung pada extension
+   * mana yang sedang fokus — `+` yang melebarkan panel git tapi melakukan hal
+   * lain di panel orang lain adalah tombol yang tidak bisa dihafal.
+   */
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-reserved-"))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({ name: "uji-pesan", type: "module", version: "1.0.0", engines: { titah: "^0.4.0" }, titah: { panel: "./panel.mjs" } }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `let seen = []
+     export default function () {
+       return {
+         title: "Pesan",
+         side: "left",
+         render() { return { kind: "rows", rows: [{ text: "keys:" + seen.join("") }] } },
+         onKey({ key }) { seen.push(key); return { refresh: true } },
+       }
+     }`,
+  )
+
+  const h = mount({ extension: { [directory]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+    for (const key of ["+", "-", "=", "z"]) {
+      h.stdin.press(key)
+      await tick(1)
+    }
+    await tick()
+    // Hanya `z` yang sampai ke extension.
+    assert.match(h.frame(), /keys:z/)
   } finally {
     h.cleanup()
   }

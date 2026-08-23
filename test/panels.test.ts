@@ -3,7 +3,9 @@ import test from "node:test"
 import {
   droppedNotice,
   panelBody,
+  panelHit,
   plain,
+  resizePanel,
   type PanelLine,
   panelLayout,
   PANEL_CHROME_COLUMNS,
@@ -162,4 +164,83 @@ test("pemotongan memakai lebar tampilan, bukan jumlah karakter", () => {
 test("emoji tidak melewati bingkai", () => {
   const body = texts(panelBody([plain("🚀".repeat(20))], PANEL_WIDTH, 10))
   assert.ok(displayWidth(body[0] ?? "") <= PANEL_WIDTH - PANEL_CHROME_COLUMNS)
+})
+
+test("resize bergerak per langkah dan berhenti di lebar minimum", () => {
+  const base = { columns: 120, other: 0, floor: PANEL_FLOOR }
+  assert.equal(resizePanel({ ...base, current: 20, delta: 2 }), 22)
+  assert.equal(resizePanel({ ...base, current: 20, delta: -2 }), 18)
+  assert.equal(resizePanel({ ...base, current: 8, delta: -2 }), 8)
+  assert.equal(resizePanel({ ...base, current: 9, delta: -2 }), 8)
+})
+
+test("pelebaran TIDAK BISA menembus lantai", () => {
+  /*
+   * Tanpa batas ini, menekan `+` sekali lagi membuat panel yang sedang
+   * dilebarkan menutup sendiri — lantai bekerja seperti seharusnya, tapi dari
+   * tempat user itu terbaca sebagai panel yang hilang karena dilebarkan.
+   */
+  // 80 kolom, lantai 40, panel seberang tertutup → langit-langitnya 40.
+  const base = { columns: 80, other: 0, floor: PANEL_FLOOR }
+  assert.equal(resizePanel({ ...base, current: 38, delta: 2 }), 40)
+  assert.equal(resizePanel({ ...base, current: 40, delta: 2 }), 40)
+})
+
+test("panel seberang yang TERGAMBAR ikut mengurangi langit-langit", () => {
+  // Melebarkan kiri saat kanan terbuka tidak boleh memakan ruang kanan.
+  assert.equal(resizePanel({ current: 20, delta: 20, columns: 100, other: 20, floor: PANEL_FLOOR }), 40)
+  // Dan saat kanan tertutup, ruangnya boleh dipakai.
+  assert.equal(resizePanel({ current: 20, delta: 20, columns: 100, other: 0, floor: PANEL_FLOOR }), 40)
+  assert.equal(resizePanel({ current: 20, delta: 60, columns: 100, other: 0, floor: PANEL_FLOOR }), 60)
+})
+
+test("terminal yang lebih sempit dari lantainya tetap memberi lebar minimum", () => {
+  // Bukan nol dan bukan negatif: yang menutup panel adalah panelLayout, bukan
+  // resize, dan lebar negatif diteruskan ke pembungkus baris.
+  assert.equal(resizePanel({ current: 20, delta: 2, columns: 30, other: 0, floor: PANEL_FLOOR }), 8)
+})
+
+const GEOMETRY = {
+  contentTop: 6,
+  left: { from: 1, to: 20, rows: 5 },
+  right: { from: 81, to: 100, rows: 5 },
+}
+
+test("klik dipetakan ke sisi dan indeks baris yang benar", () => {
+  // contentTop 6 (0-basis) berarti baris isi pertama ada di baris layar 7
+  // (1-basis). Pergeseran satu di sini membuat SETIAP klik memilih tetangganya.
+  assert.deepEqual(panelHit(GEOMETRY, 5, 7), { side: "left", row: 0 })
+  assert.deepEqual(panelHit(GEOMETRY, 5, 8), { side: "left", row: 1 })
+  assert.deepEqual(panelHit(GEOMETRY, 5, 11), { side: "left", row: 4 })
+  assert.deepEqual(panelHit(GEOMETRY, 90, 9), { side: "right", row: 2 })
+})
+
+test("batas kolom panel eksklusif di kedua ujung yang benar", () => {
+  assert.deepEqual(panelHit(GEOMETRY, 1, 7), { side: "left", row: 0 })
+  assert.deepEqual(panelHit(GEOMETRY, 20, 7), { side: "left", row: 0 })
+  assert.equal(panelHit(GEOMETRY, 21, 7), undefined)
+  assert.equal(panelHit(GEOMETRY, 80, 7), undefined)
+  assert.deepEqual(panelHit(GEOMETRY, 81, 7), { side: "right", row: 0 })
+  assert.deepEqual(panelHit(GEOMETRY, 100, 7), { side: "right", row: 0 })
+  assert.equal(panelHit(GEOMETRY, 101, 7), undefined)
+})
+
+test("klik pada bingkai dan judul panel tidak mengenai baris apa pun", () => {
+  // Bingkai atas dan judul ada di kolom panel juga. Meneruskannya ke pencocokan
+  // riwayat akan membuka blok tool yang kebetulan sebaris dengan judul panel.
+  assert.equal(panelHit(GEOMETRY, 5, 5), undefined)
+  assert.equal(panelHit(GEOMETRY, 5, 6), undefined)
+  assert.equal(panelHit(GEOMETRY, 5, 12), undefined)
+  assert.equal(panelHit(GEOMETRY, 5, 99), undefined)
+})
+
+test("sisi yang tidak tergambar tidak pernah kena klik", () => {
+  const onlyLeft = { contentTop: 6, left: { from: 1, to: 20, rows: 5 } }
+  assert.equal(panelHit(onlyLeft, 90, 7), undefined)
+  assert.equal(panelHit({ contentTop: 6 }, 5, 7), undefined)
+})
+
+test("panel tanpa baris isi tidak bisa diklik", () => {
+  // Terjadi saat tinggi panel lebih kecil dari bingkai + judulnya.
+  assert.equal(panelHit({ contentTop: 6, left: { from: 1, to: 20, rows: 0 } }, 5, 7), undefined)
 })

@@ -84,6 +84,37 @@ function clampWidth(width: number, columns: number): number {
   return Math.min(Math.trunc(width), columns)
 }
 
+/** Lebar terkecil yang masih berguna. Sama dengan batas di skema config. */
+export const PANEL_MIN_WIDTH = 8
+
+/** Kolom per tekanan resize. */
+export const PANEL_RESIZE_STEP = 2
+
+/**
+ * Lebar baru sesudah satu tekanan resize.
+ *
+ * Dibatasi supaya pelebaran TIDAK BISA menembus lantai. Tanpa batas itu,
+ * menekan `+` sekali lagi membuat panel yang sedang kamu lebarkan menutup
+ * sendiri — lantai bekerja seperti seharusnya, tapi dari tempat user itu
+ * terbaca sebagai panel yang hilang karena dilebarkan.
+ *
+ * `other` adalah lebar panel seberang yang sedang TERGAMBAR, bukan yang
+ * dikonfigurasi: melebarkan panel kiri saat yang kanan tertutup boleh memakai
+ * ruangnya, dan menghitungnya dari config akan menyisakan ruang untuk panel
+ * yang tidak ada di layar.
+ */
+export function resizePanel(input: {
+  current: number
+  delta: number
+  columns: number
+  other: number
+  floor: number
+}): number {
+  const ceiling = Math.max(PANEL_MIN_WIDTH, input.columns - input.other - input.floor)
+  const wanted = Math.trunc(input.current + input.delta)
+  return Math.max(PANEL_MIN_WIDTH, Math.min(wanted, ceiling))
+}
+
 /**
  * Kolom yang habis dipakai bingkai dan padding satu panel.
  *
@@ -177,6 +208,53 @@ function truncate(line: string, inner: number): string {
     cut += character.length
   }
   return `${line.slice(0, cut)}…`
+}
+
+/** Di mana panel digambar di layar, untuk memetakan klik. */
+export interface PanelBox {
+  /** Kolom pertama dan terakhir, 1-basis seperti yang dikirim terminal. */
+  from: number
+  to: number
+  /** Berapa baris isi yang benar-benar digambar. */
+  rows: number
+}
+
+export interface PanelGeometry {
+  /** Baris layar 0-basis tempat baris ISI pertama digambar. */
+  contentTop: number
+  left?: PanelBox
+  right?: PanelBox
+}
+
+/**
+ * Sisi dan indeks baris yang dikenai sebuah klik, atau `undefined`.
+ *
+ * Fungsi murni, dan itu disengaja: pergeseran satu baris di sini membuat SETIAP
+ * klik memilih baris tetangganya — bug yang terlihat seperti "kliknya kurang
+ * akurat" alih-alih seperti perhitungan yang salah, dan karena itu bisa hidup
+ * lama tanpa ada yang mencurigainya.
+ *
+ * `x` dan `y` 1-basis, seperti yang dikirim terminal.
+ */
+export function panelHit(
+  geometry: PanelGeometry,
+  x: number,
+  y: number,
+): { side: PanelSide; row: number } | undefined {
+  const row = y - 1 - geometry.contentTop
+  for (const side of ["left", "right"] as const) {
+    const box = geometry[side]
+    if (!box || x < box.from || x > box.to) continue
+    /*
+     * Klik di dalam kolom panel tapi di luar barisnya mengembalikan undefined —
+     * dan pemanggil harus BERHENTI di situ, bukan lanjut mencocokkan ke riwayat.
+     * Bingkai dan judul panel ada di kolom itu juga, dan klik di sana tidak
+     * boleh membuka blok tool yang kebetulan sebaris.
+     */
+    if (row < 0 || row >= box.rows) return undefined
+    return { side, row }
+  }
+  return undefined
 }
 
 /**
