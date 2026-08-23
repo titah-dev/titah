@@ -4,6 +4,7 @@ import type { Key } from "ink"
 import type { Client } from "./client.ts"
 import {
   buildKeymap,
+  leaderMenu as buildLeaderMenu,
   describeKey,
   LEADER_ACTIONS,
   leaderKeyFor,
@@ -34,6 +35,17 @@ import {
   Working,
 } from "./components.tsx"
 import { SubagentPanel, SUBAGENT_PANEL_ROWS } from "./subagent-panel.tsx"
+import { Panel } from "./panel.tsx"
+import { droppedNotice, panelLayout, type PanelLine } from "./panels.ts"
+import { loadExtensions, type ExtensionFailure, type LoadedExtension } from "../core/extension.ts"
+import { errorLines, renderPanel } from "./extension-host.ts"
+import { checkUpdate, updateNotice } from "../core/update.ts"
+import { loadRegistry } from "../core/extension-registry.ts"
+import { installLabel, pickerRows } from "../core/extension-picker.ts"
+import { installedExtensions } from "../core/extension.ts"
+import { installExtension } from "../core/extension-install.ts"
+import { editConfigFile } from "../core/config-edit.ts"
+import { globalConfigFile } from "../core/paths.ts"
 import { LoginPanel, loginLines, type LoginProgress } from "./login.tsx"
 import {
   AccountError,
@@ -161,6 +173,8 @@ export interface AppProps {
   keybindOverrides?: Record<string, string>
   /** Dipakai autocomplete: daftar agent, command, skill, dan model. */
   config: Config
+  /** Versi Titah. Diperiksa terhadap `engines.titah` setiap extension. */
+  version: string
   /** Klik dan roda mouse. Kosong berarti terminal tanpa dukungan mouse. */
   mouse?: MouseSource
 }
@@ -174,6 +188,7 @@ export function App({
   defaultAgent,
   keybindOverrides,
   config,
+  version,
   mouse,
 }: AppProps) {
   const { exit } = useApp()
@@ -212,6 +227,34 @@ export function App({
   // Panel sub-agent: `selected` disimpan lepas dari `open` supaya menutup lalu
   // membuka lagi tidak melompat balik ke baris nol tanpa alasan.
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false)
+  /*
+   * Dua state terpisah, bukan satu enum sisi-yang-aktif.
+   *
+   * Kedua panel boleh terbuka bersamaan, dan yang menutup salah satunya saat
+   * terminal menyempit adalah LANTAI — bukan user. State di sini tetap menyala
+   * supaya panel muncul sendiri lagi begitu terminal dilebarkan; kalau lantai
+   * ikut mematikannya, melebarkan terminal tidak memulihkan apa pun.
+   */
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false)
+  const [rightPanelOpen, setRightPanelOpen] = useState(false)
+  const [extensions, setExtensions] = useState<LoadedExtension[]>([])
+  /**
+   * Isi panel per sisi, beserta error terakhirnya.
+   *
+   * Error DISIMPAN bersama barisnya dan bukan menggantikannya: panel yang
+   * berkedip ke kosong setiap kali satu refresh gagal lebih mengganggu daripada
+   * panel yang menampilkan keadaan sebelumnya dengan penanda gagal.
+   */
+  const [panelContent, setPanelContent] = useState<
+    Partial<Record<"left" | "right", { lines: PanelLine[]; error?: string }>>
+  >({})
+  /**
+   * Dinaikkan oleh keempat pemicu refresh Q26. Satu angka, bukan empat effect
+   * yang masing-masing memanggil render — empat pemanggil untuk satu pekerjaan
+   * berarti dua pemicu yang berdekatan menjalankan render dua kali.
+   */
+  const [refreshToken, setRefreshToken] = useState(0)
+  const [updateHint, setUpdateHint] = useState<string | undefined>(undefined)
   const [subagentSelected, setSubagentSelected] = useState(0)
   /**
    * Sesi anak yang `x`-nya sudah dipersenjatai dan menunggu tekanan kedua.
@@ -366,7 +409,31 @@ export function App({
     }
   }, [stdout])
 
-  const keymap = useRef<Keymap>(buildKeymap(keybindOverrides)).current
+  /*
+   * Aksi leader yang disumbang extension, mis. `extension:@titah/extension-git`.
+   *
+   * Berprefiks supaya tidak pernah bisa bertabrakan dengan nama aksi bawaan.
+   * Tombolnya sendiri masih bisa bertabrakan — itu diperiksa saat install, bukan
+   * di sini; yang termuat lebih dulu di config menang, sama seperti sisi.
+   */
+  const extensionBindings = useMemo(() => {
+    const bindings: Record<string, string> = {}
+    for (const entry of extensions) {
+      if (entry.key !== undefined) bindings[`extension:${entry.spec}`] = entry.key
+    }
+    return bindings
+  }, [extensions])
+
+  /*
+   * `useMemo` dan bukan `useRef`: extension dimuat secara asinkron, jadi keymap
+   * yang dibekukan pada render pertama tidak akan pernah memuat tombol mereka —
+   * dan tombol yang terdaftar tapi mati lebih buruk daripada tombol yang tidak
+   * ada.
+   */
+  const keymap = useMemo<Keymap>(
+    () => buildKeymap({ ...keybindOverrides, ...extensionBindings }),
+    [keybindOverrides, extensionBindings],
+  )
   // Petunjuk di layar dibaca DARI keymap, bukan ditulis tetap: user boleh
   // mengubah keybind lewat config, dan petunjuk yang menyebut tombol salah
   // lebih menyesatkan daripada tidak ada petunjuk.
@@ -656,6 +723,81 @@ export function App({
     [client, flash, session.id],
   )
 
+  /*
+   * Picker extension: satu tempat melihat status, mencari, dan memasang.
+   *
+   * Tiga keadaan dibedakan di labelnya, karena Enter berarti hal berbeda pada
+   * masing-masing — dan yang paling berbeda adalah `available`, yang MENULIS ke
+   * config user. Lihat `installLabel` di core/extension-picker.ts.
+   */
+  const openExtensionPicker = useCallback(() => {
+    void loadRegistry()
+      .then((snapshot) => {
+        const rows = pickerRows({
+          configured: Object.keys(config.extension),
+          installed: installedExtensions(),
+          registry: snapshot.entries,
+          proposedKeys: Object.fromEntries(
+            extensions.filter((entry) => entry.key !== undefined).map((entry) => [entry.spec, entry.key as string]),
+          ),
+          keymap,
+        })
+
+        if (rows.length === 0) {
+          return flash(
+            snapshot.stale
+              ? `no extensions listed — registry unreachable (${snapshot.reason ?? "offline"})`
+              : "no extensions listed yet",
+          )
+        }
+
+        setPopup({
+          // Keusangan disebut DI JUDUL, bukan disembunyikan. Daftar yang mungkin
+          // ketinggalan tetap berguna selama user tahu ia sedang melihat cache.
+          title: snapshot.stale ? "Extensions (offline — cached list)" : "Extensions",
+          items: rows.map((row) => ({
+            kind: "extension" as const,
+            value: row.packageName,
+            label: `${STATE_MARK[row.state]} ${row.title}`,
+            detail: [
+              installLabel(row),
+              row.version !== undefined ? `v${row.version}` : "",
+              row.keyConflict !== undefined ? `key ${row.key} is taken by ${row.keyConflict}` : "",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            disabled: row.state === "installed",
+          })),
+          selected: 0,
+          fromMenu: true,
+        })
+      })
+      .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
+  }, [config.extension, extensions, keymap, flash])
+
+  /*
+   * Memasang dari picker: unduh dulu, TULIS config sesudahnya.
+   *
+   * Urutan itu yang menentukan. Ditulis lebih dulu, unduhan yang gagal
+   * meninggalkan config yang menyebut extension yang tidak ada — dan sesi
+   * berikutnya membuka dengan notice kegagalan untuk sesuatu yang user tidak
+   * tahu pernah tercatat.
+   */
+  const installFromPicker = useCallback(
+    (packageName: string): void => {
+      flash(`installing ${packageName} …`)
+      void installExtension({ packageName })
+        .then((result) => {
+          if (config.extension[packageName] === undefined) {
+            editConfigFile(globalConfigFile(), ["extension", packageName], {})
+          }
+          flash(`${packageName}@${result.version} installed — restart Titah to load it`)
+        })
+        .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
+    },
+    [config.extension, flash],
+  )
+
   const openSessionPicker = useCallback(() => {
     // Disaring ke folder tempat Titah dijalankan. Riwayat percakapan terikat ke
     // kode yang sedang dikerjakan; mencampur seluruh proyek membuat sesi yang
@@ -688,9 +830,19 @@ export function App({
    * tombol yang tidak ada. Itu bisa terjadi kalau user mengganti binding-nya
    * jadi tombol polos lewat `keybinds`.
    */
+  const leaderMenuEntries = useMemo(
+    () =>
+      buildLeaderMenu(
+        extensions
+          .filter((entry) => entry.key !== undefined)
+          .map((entry) => ({ action: `extension:${entry.spec}`, describe: entry.panel.title })),
+      ),
+    [extensions],
+  )
+
   const leaderItems = useCallback((): Suggestion[] => {
     const prefix = leaderName(keymap)
-    return LEADER_ACTIONS.flatMap((entry) => {
+    return leaderMenuEntries.flatMap((entry) => {
       const key = leaderKeyFor(keymap, entry.action)
       if (key === undefined) return []
       return [
@@ -702,7 +854,7 @@ export function App({
         },
       ]
     })
-  }, [keymap])
+  }, [keymap, leaderMenuEntries])
 
   const openLeaderMenu = useCallback(() => {
     setPopup({ title: `${leaderName(keymap)} …`, items: leaderItems(), selected: 0, fromMenu: true })
@@ -771,6 +923,38 @@ export function App({
           // pilihan sengaja dipertahankan lewat tutup/buka.
           setSubagentPanelOpen((value) => !value)
           return
+        case "panel_left":
+          setLeftPanelOpen((value) => !value)
+          return
+        case "panel_right":
+          setRightPanelOpen((value) => !value)
+          return
+        case "panel_refresh":
+          setRefreshToken((value) => value + 1)
+          return
+        case "extension_picker":
+          openExtensionPicker()
+          return
+        default:
+          break
+      }
+
+      /*
+       * Tombol extension membuka sisi MILIKNYA, bukan sisi yang terakhir aktif.
+       *
+       * Panel git yang duduk di kiri harus dibuka oleh tombolnya sendiri di
+       * kiri; membukanya di sisi mana pun yang terakhir disentuh berarti tombol
+       * yang sama melakukan hal berbeda tergantung riwayat yang tidak terlihat.
+       */
+      if (action.startsWith("extension:")) {
+        const spec = action.slice("extension:".length)
+        const owner = extensions.find((entry) => entry.spec === spec)
+        if (owner?.side === "right") setRightPanelOpen((value) => !value)
+        else if (owner !== undefined) setLeftPanelOpen((value) => !value)
+        return
+      }
+
+      switch (action) {
         case "session_undo":
           void client
             .undo(session.id)
@@ -827,6 +1011,7 @@ export function App({
   const runSuggestion = useCallback(
     (item: Suggestion): void => {
       if (item.kind === "action") return runLeaderAction(item.value as Action)
+      if (item.kind === "extension") return installFromPicker(item.value)
       if (item.kind === "model") {
         setModel(item.value)
         return flash(`model: ${item.value}`)
@@ -1251,7 +1436,7 @@ export function App({
     }
 
     if (leaderActive) {
-      const action = resolve(keymap, press, true, LEADER_ACTIONS.map((entry) => entry.action))
+      const action = resolve(keymap, press, true, leaderMenuEntries.map((entry) => entry.action))
       setLeaderActive(false)
       clearTimeout(leaderTimer.current)
       clearTimeout(leaderMenuTimer.current)
@@ -1470,7 +1655,83 @@ export function App({
    * baris kosong hantu, dan baris hantu itu menggeser seluruh perhitungan
    * gulir sebanyak satu baris per paragraf.
    */
-  const textWidth = Math.max(20, size.columns - 2)
+  /*
+   * Pembagian kolom dihitung SEKALI, dan tiga pemakainya membaca hasil yang
+   * sama: lebar teks riwayat di bawah, lebar Box panel di render, dan notice
+   * yang menjelaskan panel yang hilang. Tiga ekspresi terpisah untuk satu
+   * pembagian adalah cara reservasi dan gambar menyimpang — catatan di
+   * `subagentPanelHeight` di bawah mencatat kejadian yang sama pada tinggi.
+   */
+  const panels = panelLayout({
+    columns: size.columns,
+    floor: config.panel.floor,
+    left: leftPanelOpen ? config.panel.left.width : 0,
+    right: rightPanelOpen ? config.panel.right.width : 0,
+  })
+  const textWidth = Math.max(20, panels.content - 2)
+
+  /*
+   * Notice, bukan error. Panel yang tertutup karena terminal sempit adalah
+   * keadaan yang bisa dibalik user dengan melebarkan jendelanya, dan satu baris
+   * merah untuk hal yang tidak merusak apa pun mengajari orang mengabaikan
+   * merah yang sungguhan.
+   *
+   * Kalimatnya datang dari `panels.ts`, satu tempat dengan yang MENUTUP panel:
+   * notice yang disusun di sini akan menyebut sisi yang salah begitu urutan
+   * penutupan di sana berubah. Dan karena ia string biasa, effect di bawah
+   * hanya menyala saat kalimatnya benar-benar berubah — bukan setiap resize.
+   */
+  const droppedMessage = droppedNotice(panels.dropped, config.panel.floor)
+  useEffect(() => {
+    if (droppedMessage) flash(droppedMessage)
+  }, [droppedMessage, flash])
+
+  /*
+   * Memuat extension sekali per sesi.
+   *
+   * Kegagalannya dilaporkan lewat notice dan tidak menjatuhkan apa pun — aturan
+   * yang sama dengan plugin dan dengan server MCP yang mati.
+   */
+  useEffect(() => {
+    let alive = true
+    void loadExtensions({ config, cwd, version }).then((result) => {
+      if (!alive) return
+      setExtensions(result.extensions)
+      if (result.failures.length > 0) flash(failureNotice(result.failures))
+    })
+    return () => {
+      alive = false
+    }
+  }, [config, cwd, version, flash])
+
+  /*
+   * Empat pemicu refresh Q26, dan tiga di antaranya gratis di sini.
+   *
+   * `state.status` memberi DUA tepi sekaligus: idle→working adalah prompt yang
+   * baru dikirim, working→idle adalah `session.idle`. Yang kedua yang paling
+   * penting dan paling mudah terlewat — panel diff paling usang justru SESUDAH
+   * agent menyunting berkas, bukan sebelum.
+   *
+   * Pemicu ketiga adalah panel yang dibuka. Yang keempat tombol manual, di
+   * penanganan aksi `panel_refresh`.
+   */
+  useEffect(() => {
+    setRefreshToken((value) => value + 1)
+  }, [state.status, leftPanelOpen, rightPanelOpen])
+
+  /*
+   * Pengecekan update: satu request, lewat cache enam jam, hasilnya satu baris.
+   * TIDAK pernah memasang apa pun — lihat `core/update.ts`.
+   */
+  useEffect(() => {
+    let alive = true
+    void checkUpdate({ current: version }).then((status) => {
+      if (alive) setUpdateHint(updateNotice(status))
+    })
+    return () => {
+      alive = false
+    }
+  }, [version])
 
   const usage = totalUsage(state.messages)
   const editorBox = <Editor value={draft} cursor={cursor} disabled={state.status === "working"} />
@@ -1588,6 +1849,56 @@ export function App({
   )
   const window = viewport(lines, available, scroll)
 
+  /*
+   * Props satu panel, dibangun dari SATU tempat untuk kedua sisi.
+   *
+   * Judulnya datang dari extension yang termuat, dan `PANEL_EMPTY` yang muncul
+   * kalau tidak ada — jadi sisi yang terbuka tanpa extension mengatakan
+   * keadaannya alih-alih menggambar kotak kosong yang terlihat seperti bug.
+   */
+  const panelProps = (side: "left" | "right") => {
+    const extension = extensions.find((entry) => entry.side === side)
+    const content = panelContent[side]
+    return {
+      side,
+      width: side === "left" ? panels.left : panels.right,
+      rows: available,
+      title: extension?.panel.title ?? (side === "left" ? "Left" : "Right"),
+      lines: content?.error !== undefined ? [...content.lines, ...errorLines(content.error)] : (content?.lines ?? []),
+    }
+  }
+
+  /*
+   * Menjalankan render untuk sisi yang benar-benar TERGAMBAR.
+   *
+   * Bergantung pada `panels.left`/`panels.right` dan bukan pada state buka/tutup
+   * milik user: panel yang ditutup lantai tidak digambar, dan menjalankan
+   * render-nya berarti membayar `git worktree list` untuk sesuatu yang tidak
+   * akan terlihat.
+   */
+  useEffect(() => {
+    let alive = true
+    for (const side of ["left", "right"] as const) {
+      const width = side === "left" ? panels.left : panels.right
+      const extension = extensions.find((entry) => entry.side === side)
+      if (width === 0 || extension === undefined) continue
+
+      void renderPanel({ extension, width, rows: available }).then((result) => {
+        if (!alive) return
+        setPanelContent((current) => ({
+          ...current,
+          // Baris lama dipertahankan saat render gagal. Lihat komentar
+          // deklarasi `panelContent`.
+          [side]: result.error === undefined ? result : { lines: current[side]?.lines ?? [], error: result.error },
+        }))
+      })
+    }
+    return () => {
+      alive = false
+    }
+  }, [extensions, panels.left, panels.right, available, refreshToken])
+
+
 
   // Peta baris layar → baris riwayat, disegarkan tiap render.
   //
@@ -1651,12 +1962,25 @@ export function App({
         {...(accountName ? { account: accountName } : {})}
       />
 
-      <History
-        lines={window.lines}
-        hiddenAbove={window.hiddenAbove}
-        hiddenBelow={window.hiddenBelow}
-        jumpHint={jumpKey}
-      />
+      {/* Baris, bukan kolom: `flexGrow` di sini mengambil sisa TINGGI dari
+          kolom luar, sementara `flexGrow` milik History mengambil sisa LEBAR di
+          dalam baris ini. Panel punya lebar eksplisit dan `flexShrink={0}`,
+          jadi yang mengalah saat ruang kurang selalu riwayat — dan lantai yang
+          memastikan ia tidak mengalah terlalu jauh.
+
+          Dialog izin, editor, dan footer sengaja TIDAK ikut ke dalam baris ini:
+          dialog izin yang menyempit ke lebar riwayat akan memotong perintah
+          yang justru sedang diminta persetujuannya. */}
+      <Box flexDirection="row" flexGrow={1}>
+        {panels.left > 0 ? <Panel {...panelProps("left")} /> : null}
+        <History
+          lines={window.lines}
+          hiddenAbove={window.hiddenAbove}
+          hiddenBelow={window.hiddenBelow}
+          jumpHint={jumpKey}
+        />
+        {panels.right > 0 ? <Panel {...panelProps("right")} /> : null}
+      </Box>
 
       {/* Ruang tunggu tetap: dua baris, selalu, apa pun panjang percakapannya
           dan di mana pun posisi gulirnya. `flexShrink={0}` yang menjaganya —
@@ -1690,5 +2014,28 @@ export function App({
     </Box>
   )
 }
+
+/**
+ * Satu baris notice untuk extension yang gagal dimuat.
+ *
+ * Menyebut spec-nya, bukan hanya jumlahnya: "1 extension failed" menyuruh orang
+ * mencari yang mana, dan pada dua sisi terpasang itu berarti menebak. Sisanya
+ * dihitung karena satu baris footer tidak bisa memuat tiga pesan penuh.
+ */
+function failureNotice(failures: ExtensionFailure[]): string {
+  const first = failures[0]
+  const rest = failures.length - 1
+  const tail = rest > 0 ? ` (+${rest} more)` : ""
+  return `extension ${first?.spec}: ${first?.message}${tail}`
+}
+
+/**
+ * Penanda tiga keadaan picker.
+ *
+ * Dibedakan secara VISUAL dan bukan hanya di teks keterangan: Enter berarti hal
+ * berbeda pada masing-masing, dan tombol yang artinya berubah tanpa tampilan
+ * yang membedakan barisnya adalah tombol yang orang tekan lalu menyesal.
+ */
+const STATE_MARK = { installed: "✓", configured: "↓", available: "+" } as const
 
 export type { TuiState }

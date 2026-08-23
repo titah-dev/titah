@@ -574,6 +574,77 @@ export const PluginConfig = z.object({
   enabled: z.boolean().default(true),
 })
 
+/**
+ * Satu extension, dikenali dari apa yang user tulis sebagai kuncinya.
+ *
+ * Bentuk kuncinya sama dengan `plugin` — npm, path berkas, atau `market:<id>`.
+ * Lihat `parseExtensionSpec`.
+ *
+ * `side` dan `key` di sini MENIMPA usulan extension. Pembuat extension yang
+ * memilih tombol dan sisi adalah orang yang paling tahu panelnya; user yang
+ * menimpanya adalah orang yang paling tahu terminalnya. Keduanya benar, dan
+ * yang kedua menang.
+ */
+export const ExtensionConfig = z.object({
+  /** Diteruskan apa adanya ke factory; bentuknya milik extension itu. */
+  options: z.record(z.string(), z.unknown()).default({}),
+  enabled: z.boolean().default(true),
+  side: z.enum(["left", "right"]).optional(),
+  /**
+   * Menimpa tombol yang diusulkan extension, mis. `"<leader>g"`.
+   *
+   * Di sinilah tabrakan berakhir: picker menuliskannya ke config saat memasang,
+   * jadi pemenangnya adalah keputusan yang user lihat sekali — bukan urutan key
+   * di objek JSON.
+   */
+  key: z.string().optional(),
+  /** Menimpa lebar sisi ini untuk panel ini saja. */
+  width: z.number().int().min(8).optional(),
+})
+
+/**
+ * Bawaan geometri panel, satu tempat.
+ *
+ * `.default()` di zod menuntut nilai lengkap, jadi angka ini akan muncul di
+ * beberapa posisi di berkas ini. Sebagai konstanta ia muncul beberapa kali dari
+ * SATU sumber; sebagai literal ia jadi dua angka yang akan menyimpang, yaitu
+ * kelas bug yang paling sering menggigit repo ini.
+ */
+export const PANEL_FLOOR = 40
+export const PANEL_WIDTH = 20
+
+/**
+ * Satu sisi panel. Objek dan bukan angka telanjang karena sisi akan tumbuh
+ * pilihan lain (panel mana yang terbuka pertama, misalnya), dan menaikkan
+ * `left: 20` jadi `left: { width: 20 }` belakangan memutus config orang.
+ */
+const PanelSide = z.object({
+  /**
+   * Di bawah delapan kolom satu nama branch pun tidak selesai terbaca, jadi
+   * lebar sekecil itu bukan pilihan yang sedang dibuat user — itu salah tulis.
+   */
+  width: z.number().int().min(8).default(PANEL_WIDTH),
+})
+
+/**
+ * Geometri panel samping.
+ *
+ * Angkanya ada di config dan bukan di dalam kode karena berapa yang benar belum
+ * diketahui: ia bergantung pada lebar terminal orang dan seberapa sering ia
+ * membaca diff. Angka yang di-hardcode dari tebakan hari ini adalah angka yang
+ * berubah lewat release, bukan lewat config.
+ */
+export const Panel = z.object({
+  /**
+   * Kolom minimum untuk riwayat. Di bawahnya panel DITUTUP, bukan dipersempit —
+   * fitur samping yang membuat percakapan tidak terbaca merugikan orang yang
+   * menyalakannya, dan menyebutnya pilihan user tidak mengubah itu.
+   */
+  floor: z.number().int().min(0).default(PANEL_FLOOR),
+  left: PanelSide.default({ width: PANEL_WIDTH }),
+  right: PanelSide.default({ width: PANEL_WIDTH }),
+})
+
 export const Config = z.object({
   $schema: z.string().optional(),
   model: z
@@ -629,6 +700,23 @@ export const Config = z.object({
    * "terpasang" tidak pernah berarti "dipercaya".
    */
   plugin: z.record(z.string(), PluginConfig).default({}),
+  /*
+   * Geometri panel samping. Terpisah dari daftar extension yang akan mengisinya:
+   * lebar dan lantai adalah selera user tentang terminalnya sendiri, dan tidak
+   * boleh ikut hilang saat ia mencabut satu extension.
+   */
+  panel: Panel.default({
+    floor: PANEL_FLOOR,
+    left: { width: PANEL_WIDTH },
+    right: { width: PANEL_WIDTH },
+  }),
+  /*
+   * Extension disebut SATU PER SATU, sama seperti plugin. Extension berjalan di
+   * dalam proses TUI tanpa sandbox, dan "terpasang" tidak pernah berarti
+   * "dipercaya" — memasangnya lewat picker adalah keputusan yang user ambil
+   * sekali, bukan penemuan otomatis.
+   */
+  extension: z.record(z.string(), ExtensionConfig).default({}),
   /**
    * Kapan pekerjaan diserahkan ke sub-agent.
    *

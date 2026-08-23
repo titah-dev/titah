@@ -16,6 +16,19 @@ import {
   planImport,
 } from "./core/portable.ts"
 import { loadPlugins } from "./core/plugin.ts"
+import {
+  checkEngine,
+  entryFile,
+  extensionDir,
+  installedExtensions,
+  loadExtensions,
+  parseExtensionSpec,
+  parseInstallTarget,
+  readManifest,
+} from "./core/extension.ts"
+import { installExtension, removeExtension } from "./core/extension-install.ts"
+import { editConfigFile } from "./core/config-edit.ts"
+import { checkUpdate } from "./core/update.ts"
 import { collectStats } from "./core/stats.ts"
 import { available as sandboxAvailable } from "./core/sandbox.ts"
 import {
@@ -161,6 +174,10 @@ Configuration:
   bg list                  Background turns, and whether each is still running
   bg logs <id> [-f]        Read what a background turn has written so far
   bg stop <id>             Stop a background turn and everything it started
+  extension list           Configured side panels — loaded for real, not just read
+  extension install <pkg>  Download a panel and add it to your config
+  extension remove <pkg>   Remove a panel and drop it from your config
+  upgrade                  Check npm for a newer Titah and print how to install it
   mcp list                 Configured MCP servers, their transport, and sign-in state
   mcp login <server>       Sign in to a remote MCP server with OAuth
   mcp logout <server>      Forget a remote server's stored token
@@ -288,6 +305,11 @@ async function main(argv: string[]): Promise<void> {
     case "plugin":
     case "plugins":
       return cmdPlugin(rest)
+    case "extension":
+    case "extensions":
+      return cmdExtension(rest)
+    case "upgrade":
+      return cmdUpgrade()
     case "mcp":
       return cmdMcp(rest, values["no-browser"] !== true)
     case "auth":
@@ -503,6 +525,183 @@ function cmdImport(source: string | undefined, yes: boolean): void {
  * kalau yang dicetak hanya daftar dari berkas — dan justru selisih itu yang
  * dicari orang ketika kaitnya tidak berjalan.
  */
+/**
+ * `titah extension` — daftar, pasang, cabut.
+ *
+ * `list` memuatnya SUNGGUHAN, tidak sekadar membaca config: extension yang
+ * tertulis tapi tidak bisa di-import terlihat sama dengan yang bekerja kalau
+ * yang dilaporkan hanya isi config. Aturan yang sama dengan `titah plugin list`.
+ */
+async function cmdExtension(args: string[]): Promise<void> {
+  const sub = args[0] ?? "list"
+  const loaded = loadConfig()
+
+  if (sub === "list") {
+    const installed = installedExtensions()
+    const specs = Object.keys(loaded.config.extension)
+    if (specs.length === 0 && installed.length === 0) {
+      out("No extensions configured.")
+      out("")
+      out("An extension is an npm package that contributes a side panel — a git")
+      out("branch list, a diff view, a scratchpad. Declare one like this:")
+      out('  {"extension": {"@titah/extension-git": {"side": "left", "key": "<leader>g"}}}')
+      out("")
+      out("Extensions run in this process with no sandbox, so naming one is the same")
+      out("trust decision as npm install. Nothing is ever discovered automatically.")
+      out("")
+      out("Browse and install:  titah extension install <package>")
+      return
+    }
+
+    const { extensions, failures } = await loadExtensions({
+      config: loaded.config,
+      cwd: process.cwd(),
+      version: VERSION,
+    })
+
+    for (const extension of extensions) {
+      out(`✓ ${extension.spec}`)
+      out(`    title   ${extension.panel.title}`)
+      out(`    side    ${extension.side}`)
+      out(`    key     ${extension.key ?? "(none — reachable from the leader menu)"}`)
+      out(`    version ${extension.version ?? "(unknown)"}`)
+    }
+    for (const failure of failures) {
+      out(`✗ ${failure.spec}`)
+      for (const line of failure.message.split("\n")) out(`    ${line}`)
+    }
+
+    // Terpasang tapi tidak disebut config: bukan kegagalan, tapi juga bukan
+    // sesuatu yang berjalan. Tidak menyebutkannya membuat orang bertanya-tanya
+    // ke mana panel yang ia pasang kemarin.
+    const named = new Set(extensions.map((entry) => entry.spec))
+    const orphans = installed.filter((name) => !named.has(name) && !specs.includes(name))
+    for (const orphan of orphans) out(`· ${orphan} — downloaded but not in your config`)
+    return
+  }
+
+  if (sub === "install" || sub === "add") {
+    const spec = args[1]
+    if (!spec) fail("Usage: titah extension install <package>[@version] | <path>")
+
+    const source = parseExtensionSpec(spec)
+
+    /*
+     * Path lokal TIDAK lewat npm.
+     *
+     * Tidak ada yang perlu diunduh — berkasnya sudah ada di disk, dan
+     * `extensionDir` meresolusi spec `./x` relatif cwd sesi, bukan dari
+     * `node_modules`. Menyerahkannya ke `npm install` akan menyalinnya ke
+     * `node_modules` milik Titah, tempat loader tidak akan pernah mencarinya:
+     * pemasangan yang "berhasil" lalu panel yang tidak pernah muncul.
+     *
+     * Yang tetap dilakukan: manifestnya DIBACA sekarang, supaya path yang salah
+     * tulis gagal di sini — bukan sebagai notice saat sesi berikutnya dibuka.
+     */
+    if (source.kind === "file") {
+      const directory = extensionDir(source, process.cwd())
+      try {
+        const manifest = readManifest(directory)
+        checkEngine(manifest, VERSION)
+        entryFile(directory, manifest)
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error))
+      }
+      const target = projectConfigFile()
+      editConfigFile(target, ["extension", spec], {})
+      out(`Added ${spec} to ${target}`)
+      out("")
+      out("Nothing was downloaded — a local path is loaded straight from disk.")
+      out("Restart Titah to load it.")
+      return
+    }
+
+    if (source.kind === "market") {
+      fail(
+        `The extension registry is not wired for install yet, so "${spec}" cannot be resolved. ` +
+          "Name the npm package directly for now.",
+      )
+    }
+
+    const { packageName, version } = parseInstallTarget(spec)
+
+    let result
+    try {
+      result = await installExtension({ packageName, ...(version ? { version } : {}) })
+    } catch (error) {
+      /*
+       * Ditangkap dan dilaporkan lewat `fail`, bukan dibiarkan naik.
+       *
+       * Dibiarkan naik, stderr npm yang justru berguna — `E404`, `EACCES`,
+       * `ETARGET` — terkubur di dalam stack trace Node, dan yang terbaca
+       * pertama oleh user adalah nomor baris di dalam Titah. Seluruh alasan
+       * meneruskan stderr npm hilang di situ.
+       */
+      fail(error instanceof Error ? error.message : String(error))
+    }
+
+    out(result.changed ? `Installed ${packageName}@${result.version}` : `${packageName}@${result.version} already installed`)
+    if (result.integrity) out(`  integrity ${result.integrity}`)
+
+    /*
+     * Config ditulis SESUDAH unduhan berhasil, bukan sebelum.
+     *
+     * Ditulis lebih dulu, unduhan yang gagal meninggalkan config yang menyebut
+     * extension yang tidak ada — dan sesi berikutnya membuka dengan notice
+     * kegagalan untuk sesuatu yang user tidak tahu pernah tercatat.
+     */
+    if (loaded.config.extension[packageName] === undefined) {
+      const target = globalConfigFile()
+      editConfigFile(target, ["extension", packageName], {})
+      out(`  added to ${target}`)
+    }
+    out("")
+    out("Restart Titah to load it. Nothing is imported until then.")
+    return
+  }
+
+  if (sub === "remove" || sub === "uninstall") {
+    const packageName = args[1]
+    if (!packageName) fail("Usage: titah extension remove <package>")
+    // Path lokal tidak pernah diunduh, jadi tidak ada yang perlu dicabut dari
+    // npm — hanya entri config-nya yang dibuang di bawah.
+    if (parseExtensionSpec(packageName).kind === "npm") await removeExtension({ packageName })
+    const target = globalConfigFile()
+    editConfigFile(target, ["extension", packageName], undefined)
+    out(`Removed ${packageName}`)
+    out(`  updated ${target}`)
+    return
+  }
+
+  fail(`Unknown extension subcommand: "${sub}". Options: list, install, remove.`)
+}
+
+/**
+ * `titah upgrade` — memasang versi terbaru, dengan sengaja lewat perintah.
+ *
+ * TIDAK pernah otomatis. Yang di-update adalah proses yang memegang auth.json,
+ * menjalankan bash, dan menyunting berkas; memasangnya sendiri tanpa bertanya
+ * berarti eksekusi kode arbitrer setiap kali ada `npm publish`.
+ */
+async function cmdUpgrade(): Promise<void> {
+  const status = await checkUpdate({ current: VERSION })
+  if (status.latest === undefined) {
+    out("Could not reach the npm registry. Try again, or run: npm install -g titah-code@latest")
+    return
+  }
+  if (!status.newer) {
+    out(`Already on the newest version (${VERSION}).`)
+    return
+  }
+  out(`${VERSION} → ${status.latest}`)
+  out("")
+  // Perintahnya DICETAK, bukan dijalankan. Titah tidak tahu bagaimana ia
+  // dipasang — global npm, npx, bun, atau volta — dan menebak salah berarti
+  // memasang salinan kedua di tempat yang tidak dipakai siapa pun.
+  out("Run the installer you used for Titah, for example:")
+  out(`  npm install -g titah-code@${status.latest}`)
+}
+
 async function cmdPlugin(args: string[]): Promise<void> {
   const sub = args[0] ?? "list"
   if (sub !== "list") fail(`Unknown plugin subcommand: "${sub}". Options: list.`)

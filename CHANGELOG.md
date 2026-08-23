@@ -3,6 +3,51 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
+## Unreleased
+
+### Extension — panel samping yang disumbang paket npm
+
+Titah punya `plugin` dan `hooks` untuk mengubah **perilaku**. Yang belum tertutup
+adalah hal yang tidak berbentuk perilaku sama sekali: melihat branch git tanpa
+keluar dari sesi, membaca daftar worktree, menengok diff yang baru ditulis agent.
+Sebelum ini, semuanya berarti terminal kedua.
+
+- **`extension` di config**, bentuk kunci yang sama dengan `plugin` (npm, path,
+  `market:<id>`). Disebut satu per satu; tidak ada penemuan otomatis.
+- **Panel kiri dan kanan**, `<leader>←` / `<leader>→`, dengan lantai: di bawah
+  `panel.floor` kolom panel tertutup sendiri alih-alih membuat riwayat tidak
+  terbaca. `<leader>e` menyegarkan, `<leader>x` membuka picker.
+- **Permukaan publik `titah-code/extension`** — hanya tipe dan pemeriksa versi.
+  `exports` di `package.json` menolak jalur lain, jadi `core/permission.js` dan
+  `core/auth.js` tidak bisa di-`import` extension sama sekali. Batasnya
+  ditegakkan resolver Node, bukan dokumen.
+- **`engines.titah` diperiksa saat load.** Extension tanpa itu ditolak: selama
+  API 0.x, paket yang tidak menyatakan versi targetnya tidak bisa dibedakan dari
+  paket yang ditulis dua rilis lalu.
+- **Dipasang ke `~/.local/share/titah/extension/`**, bukan ke `node_modules`
+  proyek user — extension adalah preferensi orang, bukan dependency proyek.
+  Lockfile di `~/.config/titah/extension-lock.json` mengunci versi persis dan
+  integrity hash, dan ia berkas yang memang ingin dibawa ke dotfiles.
+- **Kegagalan tidak menjatuhkan TUI.** Panel yang melempar menampilkan pesannya
+  di tempatnya; yang menggantung dibatalkan pada dua detik. Aturan yang sama
+  dengan `plugin`.
+- **`titah extension list|install|remove`**, dan `titah upgrade` yang MENCETAK
+  perintah pemasangan alih-alih menjalankannya.
+
+Batas yang disengaja: extension hanya sisi TUI, jadi `attach`, `serve`, dan `web`
+tidak punya panel. `titah.panel` adalah satu field di antara beberapa yang
+mungkin, supaya sisi server nanti jadi field baru — bukan perubahan bentuk yang
+memutus config orang.
+
+Rujukan implementasi: `@titah/extension-git`, repo terpisah, memakai hanya
+permukaan publik. Index picker: `titah-dev/titah-extensions`.
+
+### Diperbaiki
+
+- String menu leader yang masih Bahasa Indonesia diterjemahkan. `AGENTS.md` sudah
+  mewajibkan UI berbahasa Inggris; sembilan baris `LEADER_ACTIONS` tertinggal.
+
+
 ## [Unreleased]
 
 ## [0.2.1] — 2026-08-22

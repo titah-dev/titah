@@ -703,6 +703,8 @@ const KIND_COLOR: Record<Suggestion["kind"], string> = {
   session: "green",
   // Kuning seperti model: keduanya mengubah keadaan aplikasi, bukan teks prompt.
   action: "yellow",
+  // Magenta seperti agent luar: keduanya menjalankan kode yang bukan kode Titah.
+  extension: "magenta",
 }
 
 /**

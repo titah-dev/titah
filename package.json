@@ -7,6 +7,12 @@
   "bin": {
     "titah": "./dist/cli.js"
   },
+  "exports": {
+    "./extension": {
+      "types": "./dist/extension.d.ts",
+      "import": "./dist/extension.js"
+    }
+  },
   "engines": {
     "node": ">=22.6"
   },

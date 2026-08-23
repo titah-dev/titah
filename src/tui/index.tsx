@@ -145,6 +145,7 @@ export async function start(options: StartOptions): Promise<void> {
       cwd={options.cwd}
       model={options.model}
       config={options.config}
+      version={options.version}
       {...(options.agents ? { agents: options.agents } : {})}
       {...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {})}
       {...(options.keybinds ? { keybindOverrides: options.keybinds } : {})}

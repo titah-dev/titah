@@ -25,6 +25,15 @@ export type SuggestionKind =
   | "session"
   /** Aksi leader (ctrl+x …). `value` adalah nama aksinya, bukan teks prompt. */
   | "action"
+  /**
+   * Satu baris picker extension. `value` adalah nama paketnya.
+   *
+   * Terpisah dari `"action"` karena memilihnya MENGUNDUH dan MENULIS ke config
+   * — bukan menjalankan sesuatu yang sudah ada. Menumpangkannya di `"action"`
+   * berarti satu cabang penanganan melakukan dua hal dengan akibat yang sangat
+   * berbeda.
+   */
+  | "extension"
 
 export interface Suggestion {
   kind: SuggestionKind

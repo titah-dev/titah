@@ -81,6 +81,31 @@ export const DEFAULT_KEYBINDS = {
   subagents_panel: "<leader>down",
 
   /*
+   * Panel samping, mengikuti arah panahnya: kiri untuk yang kiri, kanan untuk
+   * yang kanan. Sepasang dengan `<leader>down` di atas, jadi ketiga panel
+   * Titah dijangkau lewat satu pola yang sama — leader lalu arah.
+   *
+   * Panel yang disumbang extension TIDAK ikut di sini. Ia mengusulkan tombolnya
+   * sendiri dan tabrakannya diselesaikan saat install; menaruhnya di daftar ini
+   * berarti daftar bawaan berubah tergantung apa yang terpasang.
+   */
+  panel_left: "<leader>left",
+  panel_right: "<leader>right",
+
+  /*
+   * Pemicu refresh keempat (Q26). Tiga yang lain gratis — prompt dikirim,
+   * giliran selesai, panel dibuka — dan ketiganya tidak menolong saat kamu
+   * `git checkout` di terminal lain lalu hanya ingin melihat hasilnya.
+   */
+  panel_refresh: "<leader>e",
+
+  /*
+   * Picker extension. `x` karena huruf itu satu-satunya yang tersisa dan masih
+   * bisa dihubungkan ke "extension" oleh orang yang membaca menunya.
+   */
+  extension_picker: "<leader>x",
+
+  /*
    * Mematikan pelacakan mouse supaya seleksi teks bawaan terminal hidup lagi.
    *
    * Keduanya TIDAK BISA menyala bersamaan: begitu terminal melaporkan klik ke
@@ -126,15 +151,19 @@ export type Action = keyof typeof DEFAULT_KEYBINDS
  * pertama yang masuk akal.
  */
 export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
-  { action: "tool_details", describe: "Buka/tutup semua keluaran tool" },
-  { action: "effort_cycle", describe: "Panjang kesimpulan: default → low → medium → high" },
-  { action: "subagents_panel", describe: "Panel sub-agent" },
-  { action: "session_list", describe: "Pindah ke sesi lain" },
-  { action: "session_new", describe: "Mulai sesi baru" },
-  { action: "session_undo", describe: "Batalkan perubahan giliran terakhir" },
-  { action: "messages_last", describe: "Lompat ke pesan terbaru" },
-  { action: "mouse_toggle", describe: "Matikan pelacakan mouse agar teks bisa diseleksi" },
-  { action: "app_help", describe: "Bantuan singkat" },
+  { action: "tool_details", describe: "Expand or collapse all tool output" },
+  { action: "effort_cycle", describe: "Reasoning effort: default → low → medium → high" },
+  { action: "subagents_panel", describe: "Sub-agent panel" },
+  { action: "panel_left", describe: "Left panel" },
+  { action: "panel_right", describe: "Right panel" },
+  { action: "panel_refresh", describe: "Refresh side panels" },
+  { action: "extension_picker", describe: "Extensions — search and install" },
+  { action: "session_list", describe: "Switch to another session" },
+  { action: "session_new", describe: "Start a new session" },
+  { action: "session_undo", describe: "Undo the last turn's changes" },
+  { action: "messages_last", describe: "Jump to the newest message" },
+  { action: "mouse_toggle", describe: "Release the mouse so the terminal can select text" },
+  { action: "app_help", describe: "Quick help" },
 ]
 
 /**
@@ -142,8 +171,13 @@ export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
  *
  * `undefined` kalau aksi itu tidak punya chord ber-leader sama sekali — yang
  * berarti ia tidak boleh muncul di menu leader, betapapun bergunanya.
+ *
+ * `action` bertipe `string` dan bukan `Action` karena extension menyumbang aksi
+ * yang namanya tidak diketahui saat kompilasi. Jaminan bahwa aksi BAWAAN benar-
+ * benar ada tidak hilang: ia dijaga oleh tipe `LEADER_ACTIONS`, bukan oleh
+ * tanda tangan di sini.
  */
-export function leaderKeyFor(keymap: Keymap, action: Action): string | undefined {
+export function leaderKeyFor(keymap: Keymap, action: string): string | undefined {
   const chord = (keymap[action] ?? []).find((entry) => entry.leader)
   if (!chord) return undefined
   const mods = [chord.ctrl ? "ctrl" : "", chord.alt ? "alt" : ""].filter(Boolean)
@@ -242,6 +276,64 @@ export function chordMatches(chord: Chord, press: KeyPress, leaderActive: boolea
 
 export function matches(keymap: Keymap, action: string, press: KeyPress, leaderActive: boolean): boolean {
   return (keymap[action] ?? []).some((chord) => chordMatches(chord, press, leaderActive))
+}
+
+/**
+ * Bentuk kanonik satu chord, untuk dibandingkan.
+ *
+ * `"<leader>d"` dan `"<leader>D"` adalah tombol yang SAMA — terminal mengirim
+ * huruf besar sebagai huruf besar, dan `chordMatches` sudah menurunkannya. Dua
+ * chord yang cocok dengan tekanan yang sama harus punya id yang sama, atau
+ * pemeriksa tabrakan akan meloloskan tombol yang sungguh bertabrakan.
+ */
+export function chordId(chord: Chord): string {
+  return [chord.leader ? "leader" : "", chord.ctrl ? "ctrl" : "", chord.alt ? "alt" : "", chord.key]
+    .filter(Boolean)
+    .join("+")
+}
+
+/**
+ * Aksi yang sudah memakai salah satu chord dalam `spec`, kalau ada.
+ *
+ * Dipakai saat memasang extension: tombol yang diusulkan pembuat extension
+ * diperiksa di sini, dan tabrakannya diselesaikan SEKALI di picker. Tanpa ini
+ * pemenangnya ditentukan urutan key di objek config — perilaku yang tidak bisa
+ * dijelaskan ke siapa pun.
+ *
+ * Yang diperiksa adalah setiap alternatif, bukan hanya yang pertama: sebuah
+ * aksi boleh punya beberapa tombol (`"ctrl+r,<leader>r"`), dan bertabrakan
+ * dengan alternatif kedua sama merugikannya.
+ */
+export function chordOwner(keymap: Keymap, spec: string): string | undefined {
+  const wanted = new Set(parseBinding(spec).map(chordId))
+  if (wanted.size === 0) return undefined
+  for (const [action, chords] of Object.entries(keymap)) {
+    // `leader` bukan aksi: ia prefiks untuk aksi lain, dan mencocokkannya di
+    // sini membuat setiap chord ber-leader terlihat bertabrakan dengannya.
+    if (action === "leader") continue
+    if (chords.some((chord) => wanted.has(chordId(chord)))) return action
+  }
+  return undefined
+}
+
+/**
+ * Satu baris menu leader. Aksinya `string` dan bukan `Action` karena extension
+ * ikut menyumbang baris, dan namanya tidak diketahui saat kompilasi.
+ */
+export interface LeaderEntry {
+  action: string
+  describe: string
+}
+
+/**
+ * Menu leader lengkap: bawaan lalu sumbangan extension.
+ *
+ * Urutannya disengaja dan bukan alfabetis — aksi bawaan yang sering dipakai
+ * tetap di atas, dan panel yang dipasang orang tidak menggeser tombol yang
+ * sudah dihafal jarinya.
+ */
+export function leaderMenu(extra: LeaderEntry[] = []): LeaderEntry[] {
+  return [...LEADER_ACTIONS, ...extra]
 }
 
 /** Aksi pertama yang cocok, supaya penanganan tombol tidak jadi rantai if panjang. */

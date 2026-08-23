@@ -11,6 +11,8 @@ import {
   LEADER_ACTIONS,
   leaderKeyFor,
   leaderName,
+  chordOwner,
+  leaderMenu,
 } from "../src/tui/keybinds.ts"
 
 test("parseChord memahami modifier bertumpuk", () => {
@@ -201,4 +203,53 @@ test("keluar punya SATU tombol, bukan empat jalan", () => {
     false,
     "menu leader tidak boleh menawarkan tombol yang sudah dilepas",
   )
+})
+
+test("chordOwner menemukan tombol yang sudah terpakai, termasuk lewat alternatif kedua", () => {
+  const keymap = buildKeymap()
+  // `effort_cycle` adalah "ctrl+r,<leader>r" — tabrakan pada alternatif kedua
+  // sama merugikannya dengan pada yang pertama.
+  assert.equal(chordOwner(keymap, "<leader>r"), "effort_cycle")
+  assert.equal(chordOwner(keymap, "ctrl+r"), "effort_cycle")
+  assert.equal(chordOwner(keymap, "<leader>d"), "tool_details")
+  assert.equal(chordOwner(keymap, "<leader>left"), "panel_left")
+})
+
+test("chordOwner membiarkan tombol yang benar-benar bebas", () => {
+  const keymap = buildKeymap()
+  assert.equal(chordOwner(keymap, "<leader>g"), undefined)
+  assert.equal(chordOwner(keymap, "<leader>w"), undefined)
+})
+
+test("tombol leader itu sendiri tidak dihitung bertabrakan dengan chord ber-leader", () => {
+  // `leader` adalah "ctrl+x", prefiks untuk aksi lain. Kalau ia ikut diperiksa,
+  // setiap chord ber-leader akan terlihat bertabrakan dengannya dan tidak ada
+  // extension yang pernah bisa memakai leader.
+  const keymap = buildKeymap()
+  assert.equal(chordOwner(keymap, "<leader>g"), undefined)
+  assert.equal(chordOwner(keymap, "ctrl+x"), undefined)
+})
+
+test("tabrakan dilihat lewat bentuk kanonik, bukan lewat string yang ditulis", () => {
+  const keymap = buildKeymap()
+  // Huruf besar adalah tombol yang sama: chordMatches sudah menurunkannya, jadi
+  // pemeriksa yang membandingkan string mentah akan meloloskan tabrakan nyata.
+  assert.equal(chordOwner(keymap, "<leader>D"), "tool_details")
+  assert.equal(chordOwner(keymap, "  <leader>D  "), "tool_details")
+})
+
+test("chordOwner memperhitungkan override user, bukan hanya bawaan", () => {
+  // Tombol yang bebas di bawaan bisa terpakai di config seseorang. Memeriksa
+  // terhadap bawaan berarti extension terpasang dengan tombol yang bekerja di
+  // mesin penulisnya dan mati di mesin user.
+  const keymap = buildKeymap({ session_new: "<leader>g" })
+  assert.equal(chordOwner(keymap, "<leader>g"), "session_new")
+  assert.equal(chordOwner(keymap, "<leader>n"), undefined)
+})
+
+test("menu leader menerima sumbangan extension tanpa menggeser yang bawaan", () => {
+  const menu = leaderMenu([{ action: "extension:git", describe: "Git" }])
+  assert.equal(menu.length, LEADER_ACTIONS.length + 1)
+  assert.deepEqual(menu.slice(0, LEADER_ACTIONS.length), LEADER_ACTIONS)
+  assert.deepEqual(menu.at(-1), { action: "extension:git", describe: "Git" })
 })

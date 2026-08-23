@@ -753,6 +753,93 @@
         }
       }
     },
+    "panel": {
+      "default": {
+        "floor": 40,
+        "left": {
+          "width": 20
+        },
+        "right": {
+          "width": 20
+        }
+      },
+      "type": "object",
+      "properties": {
+        "floor": {
+          "default": 40,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "left": {
+          "default": {
+            "width": 20
+          },
+          "type": "object",
+          "properties": {
+            "width": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 8,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "right": {
+          "default": {
+            "width": 20
+          },
+          "type": "object",
+          "properties": {
+            "width": {
+              "default": 20,
+              "type": "integer",
+              "minimum": 8,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "extension": {
+      "default": {},
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "options": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 8,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    },
     "delegation": {
       "default": "ask",
       "description": "When to hand work to sub-agents. ask: analyse after planning and ask you. auto: the model decides silently. always: hand over matching work. never: off.",
