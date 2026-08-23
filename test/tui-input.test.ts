@@ -227,6 +227,8 @@ function mount(
     defaultAgent?: string
     /** discover: [] tetap wajib — kalau tidak, test ini membaca ~/.claude sungguhan. */
     skillPaths?: { path: string; as: string }[]
+    /** Blok `extension` config, untuk test panel samping. */
+    extension?: Record<string, unknown>
   } = {},
 ): Harness {
   const stdin = new FakeStdin()
@@ -262,6 +264,10 @@ function mount(
       session,
       cwd: "/proyek",
       model: "uji/model",
+      // Wajib: `checkEngine` membandingkan `engines.titah` extension terhadap
+      // angka ini, dan `undefined` membuat setiap extension ditolak dengan
+      // sebab yang menunjuk versi, bukan menunjuk harness.
+      version: "0.3.0",
       config: Config.parse({
         agent: { plan: { description: "Plan only" }, build: { description: "Build" } },
         externalAgent: { claude: { command: process.execPath } },
@@ -276,6 +282,7 @@ function mount(
         // menambah skill ke satu test tidak diam-diam membuat SEMUA test lain
         // mulai membaca ~/.claude atau ~/.config/opencode sungguhan.
         skills: { discover: [], paths: options.skillPaths ?? [] },
+        ...(options.extension ? { extension: options.extension } : {}),
       }),
       ...(options.agents ? { agents: options.agents } : {}),
       ...(options.defaultAgent ? { defaultAgent: options.defaultAgent } : {}),
@@ -2417,6 +2424,143 @@ test("/exit menutup Titah tanpa konfirmasi kedua", async () => {
 
     assert.equal(h.exited, true)
     assert.deepEqual(h.recorded.sent, [], "/exit tidak boleh dikirim ke server")
+  } finally {
+    h.cleanup()
+  }
+})
+
+/**
+ * Menulis satu extension yang bisa dimuat sungguhan, dengan `onKey` yang
+ * mengubah isi panel.
+ *
+ * Extension sungguhan dan bukan mock: yang pernah rusak di sini adalah
+ * PENYAMBUNGANNYA — `onKey` ada di API dan diimplementasikan extension
+ * referensi, tapi `app.tsx` tidak pernah memanggilnya, jadi panel git
+ * menampilkan "b branches · r refresh" dengan kedua tombol mati. Mock yang
+ * dipanggil langsung tidak akan pernah menangkap itu.
+ */
+function writePanelExtension(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-panel-ext-"))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({
+      name: "uji-panel",
+      type: "module",
+      version: "1.0.0",
+      engines: { titah: "^0.3.0" },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `let mode = "ringkas"
+     export default function () {
+       return {
+         title: "Uji",
+         side: "left",
+         render() {
+           return { kind: "rows", rows: [{ text: mode === "ringkas" ? "RINGKAS" : "PENUH" }] }
+         },
+         onKey({ key }) {
+           if (key === "b") { mode = mode === "ringkas" ? "penuh" : "ringkas"; return { refresh: true } }
+         },
+       }
+     }`,
+  )
+  return directory
+}
+
+test("panel samping terbuka menampilkan isi dari extension yang dimuat", async () => {
+  const h = mount({ extension: { [writePanelExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /Uji/)
+    assert.match(h.frame(), /RINGKAS/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("onKey extension BENAR-BENAR dipanggil saat panelnya fokus", async () => {
+  /*
+   * Pin untuk cacat yang sudah pernah dikirim: `onKey` ada di permukaan publik,
+   * extension referensi mengimplementasikannya, dan `app.tsx` tidak pernah
+   * memanggilnya — jadi panel mengiklankan tombol yang mati. Yang diuji di sini
+   * adalah penyambungannya, bukan `onKey` extension-nya.
+   */
+  const h = mount({ extension: { [writePanelExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /RINGKAS/)
+
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+    h.clear()
+    h.stdin.press("b")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /PENUH/)
+    // Dan `b` TIDAK boleh ikut terkirim sebagai prompt: tombol yang kadang
+    // mengubah panel dan kadang mengetik ke editor tidak bisa dipakai siapa pun.
+    assert.deepEqual(h.recorded.sent, [])
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("Esc mengembalikan papan tombol tanpa menutup panelnya", async () => {
+  // Yang diminta user saat menekan Esc adalah bisa mengetik lagi, bukan
+  // kehilangan panel yang baru saja ia buka.
+  const h = mount({ extension: { [writePanelExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+    h.stdin.press("\u001b")
+    await tick()
+    h.stdin.press("b")
+    await tick()
+    await tick()
+    const frame = h.frame()
+    // Panelnya masih tergambar, dan isinya TIDAK berubah — `b` mendarat di
+    // editor, bukan di panel.
+    assert.match(frame, /Uji/)
+    assert.match(frame, /RINGKAS/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("fokus tanpa satu pun panel terbuka mengatakannya, bukan menelan tombol", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+    assert.match(h.frame(), /no side panel is open/)
   } finally {
     h.cleanup()
   }

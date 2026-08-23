@@ -106,6 +106,16 @@ export const DEFAULT_KEYBINDS = {
   extension_picker: "<leader>x",
 
   /*
+   * Menyerahkan papan tombol ke panel samping, dan Esc mengambilnya kembali.
+   *
+   * Panel samping BUKAN modal seperti panel sub-agent: ia dibuka untuk dilihat
+   * sambil bekerja, jadi ia tidak boleh memakan tombol begitu terbuka. Tanpa
+   * pemisahan buka/fokus ini, membuka panel git berarti tidak bisa mengetik
+   * prompt lagi — dan itu bukan tukar yang mau diambil siapa pun.
+   */
+  panel_focus: "<leader>f",
+
+  /*
    * Mematikan pelacakan mouse supaya seleksi teks bawaan terminal hidup lagi.
    *
    * Keduanya TIDAK BISA menyala bersamaan: begitu terminal melaporkan klik ke
@@ -157,6 +167,7 @@ export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
   { action: "panel_left", describe: "Left panel" },
   { action: "panel_right", describe: "Right panel" },
   { action: "panel_refresh", describe: "Refresh side panels" },
+  { action: "panel_focus", describe: "Give the keyboard to a side panel (Esc returns it)" },
   { action: "extension_picker", describe: "Extensions — search and install" },
   { action: "session_list", describe: "Switch to another session" },
   { action: "session_new", describe: "Start a new session" },

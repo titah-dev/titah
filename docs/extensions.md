@@ -176,6 +176,19 @@ extension harus menguranginya sendiri, setiap extension menebak berapa yang
 diambil bingkai — dan tebakan yang salah muncul sebagai teks yang membungkus,
 dengan Titah yang disalahkan.
 
+`onKey` hanya dipanggil saat panel ini yang sedang **fokus** — `<leader>f`
+menyerahkan papan tombol, `Esc` mengambilnya kembali tanpa menutup panelnya.
+
+Pemisahan buka/fokus itu bukan hiasan: panel samping dibuka untuk dilihat sambil
+bekerja, tidak seperti panel sub-agent yang memakan tombol selama terbuka. Kalau
+membuka panel langsung berarti memakan tombol, membuka panel git berarti tidak
+bisa mengetik prompt lagi — dan itu bukan tukar yang mau diambil siapa pun.
+
+Selama fokus, tombol POLOS pergi ke panel dan tidak diteruskan ke editor.
+Modifier tetap lolos, jadi ctrl+c, ctrl+d, dan gulir riwayat bekerja tanpa harus
+melepas fokus lebih dulu — kalau tidak, memfokuskan panel mengunci user keluar
+dari cara menghentikan giliran.
+
 `signal` dibatalkan saat timeout dua detik habis atau panel ditutup. Teruskan ke
 subprocess dan `fetch`: extension yang mengabaikannya tetap bekerja untuk hasil
 yang tidak akan dipakai, dan pekerjaan itu bersaing dengan giliran agent di
@@ -218,6 +231,7 @@ berarti mengirim API yang lebih besar dari yang bisa dijaga.
 | `<leader>←` | buka/tutup panel kiri |
 | `<leader>→` | buka/tutup panel kanan |
 | `<leader>e` | segarkan kedua panel |
+| `<leader>f` | serahkan papan tombol ke panel samping; `Esc` mengambilnya kembali |
 | `<leader>x` | picker extension — cari dan pasang |
 
 Ketiga panel Titah dijangkau lewat satu pola yang sama: leader lalu arah —

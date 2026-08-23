@@ -239,6 +239,28 @@ export function App({
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const [extensions, setExtensions] = useState<LoadedExtension[]>([])
   /**
+   * Panel yang sedang memegang papan tombol, kalau ada.
+   *
+   * Terpisah dari "terbuka", dan itu yang menentukan: panel samping dibuka
+   * untuk DILIHAT sambil bekerja, tidak seperti panel sub-agent yang memakan
+   * tombol selama terbuka. Menyatukan keduanya berarti membuka panel git
+   * membuat prompt tidak bisa diketik lagi.
+   */
+  const [panelFocus, setPanelFocus] = useState<"left" | "right" | undefined>(undefined)
+  /**
+   * Sisi yang benar-benar TERGAMBAR, disegarkan tiap render.
+   *
+   * Ref dan bukan nilai di dep array, karena `panels` dihitung jauh di bawah
+   * `runLeaderAction` — menaruhnya di deps callback itu akan membacanya sebelum
+   * ia diinisialisasi. Dan tanpa jembatan apa pun, callback itu menutup atas
+   * `extensions` dari render PERTAMA, yang masih kosong: `<leader>f` lalu selalu
+   * menjawab "no side panel is open" meski panelnya jelas ada di layar.
+   *
+   * Pola yang sama dengan `view.current` di bawah: hanya render yang tahu apa
+   * yang sedang terlihat, dan penanganan tombol datang belakangan.
+   */
+  const drawnPanels = useRef<("left" | "right")[]>([])
+  /**
    * Isi panel per sisi, beserta error terakhirnya.
    *
    * Error DISIMPAN bersama barisnya dan bukan menggantikannya: panel yang
@@ -932,6 +954,24 @@ export function App({
         case "panel_refresh":
           setRefreshToken((value) => value + 1)
           return
+        case "panel_focus":
+          /*
+           * Berputar hanya di antara sisi yang benar-benar TERGAMBAR.
+           *
+           * Memfokuskan sisi yang ditutup lantai berarti tombol menghilang ke
+           * panel yang tidak ada di layar, dan satu-satunya jalan keluarnya Esc
+           * yang tidak diketahui user sedang ia butuhkan.
+           */
+          setPanelFocus((current) => {
+            const drawn = drawnPanels.current
+            if (drawn.length === 0) {
+              flash("no side panel is open")
+              return undefined
+            }
+            const index = current === undefined ? -1 : drawn.indexOf(current)
+            return drawn[index + 1]
+          })
+          return
         case "extension_picker":
           openExtensionPicker()
           return
@@ -994,6 +1034,7 @@ export function App({
       flash,
       mouse,
       mouseCapture,
+      openExtensionPicker,
       openLeaderMenu,
       openSessionPicker,
       session.id,
@@ -1262,6 +1303,39 @@ export function App({
     //    padahal seharusnya mempersenjatai menu leader. Cabang panah kena
     //    lubang yang sama: ctrl+↑/shift+↑ (utk gulir riwayat) akan tertelan
     //    jadi navigasi baris kalau modifier-nya tidak diperiksa.
+    /*
+     * Panel yang fokus menerima tombol POLOS, dan hanya itu.
+     *
+     * Modifier dilewatkan supaya ctrl+c, ctrl+d, dan gulir riwayat tetap
+     * bekerja tanpa harus melepas fokus lebih dulu — kalau tidak, memfokuskan
+     * panel akan mengunci user keluar dari cara menghentikan giliran.
+     *
+     * Esc mengembalikan papan tombol tanpa menutup panelnya: yang diminta user
+     * saat menekan Esc adalah bisa mengetik lagi, bukan kehilangan panel yang
+     * baru saja ia buka.
+     */
+    if (panelFocus !== undefined && !state.permission && !state.question && !leaderActive) {
+      const owner = extensions.find((entry) => entry.side === panelFocus)
+      const plain = press.ctrl !== true && press.alt !== true
+      if (owner === undefined) {
+        setPanelFocus(undefined)
+      } else if (press.key === "escape" && plain) {
+        setPanelFocus(undefined)
+        return
+      } else if (plain) {
+        const verdict = owner.panel.onKey?.({ key: press.key })
+        if (verdict?.refresh === true) setRefreshToken((value) => value + 1)
+        /*
+         * Ditelan apa pun jawabannya, selama panel sedang fokus.
+         *
+         * Meneruskan tombol yang tidak dipakai panel ke editor berarti `b` di
+         * panel git kadang berpindah tampilan dan kadang mengetik "b" ke prompt
+         * — tergantung isi panel saat itu, yang user tidak bisa lihat.
+         */
+        return
+      }
+    }
+
     if (subagentPanelOpen && !state.permission && !leaderActive) {
       const plainKey = press.ctrl !== true && press.alt !== true && press.shift !== true
       if (press.key === "escape" && plainKey) {
@@ -1681,6 +1755,23 @@ export function App({
    * penutupan di sana berubah. Dan karena ia string biasa, effect di bawah
    * hanya menyala saat kalimatnya benar-benar berubah — bukan setiap resize.
    */
+  /*
+   * Fokus dilepas kalau panelnya tidak lagi tergambar — ditutup user, ditutup
+   * lantai, atau extension-nya gagal dimuat. Fokus yang tertinggal pada panel
+   * yang hilang menelan setiap tombol polos tanpa ada apa pun di layar yang
+   * menjelaskan kenapa.
+   */
+  useEffect(() => {
+    if (panelFocus === undefined) return
+    const width = panelFocus === "left" ? panels.left : panels.right
+    if (width === 0 || !extensions.some((entry) => entry.side === panelFocus)) setPanelFocus(undefined)
+  }, [panelFocus, panels.left, panels.right, extensions])
+
+  drawnPanels.current = (["left", "right"] as const).filter(
+    (side) =>
+      (side === "left" ? panels.left : panels.right) > 0 && extensions.some((entry) => entry.side === side),
+  )
+
   const droppedMessage = droppedNotice(panels.dropped, config.panel.floor)
   useEffect(() => {
     if (droppedMessage) flash(droppedMessage)
@@ -1864,6 +1955,7 @@ export function App({
       width: side === "left" ? panels.left : panels.right,
       rows: available,
       title: extension?.panel.title ?? (side === "left" ? "Left" : "Right"),
+      focused: panelFocus === side,
       lines: content?.error !== undefined ? [...content.lines, ...errorLines(content.error)] : (content?.lines ?? []),
     }
   }
@@ -1917,8 +2009,18 @@ export function App({
   if (state.messages.length === 0 && state.permission === undefined) {
     return (
       <Box height={size.rows} flexDirection="column">
+        {/* Panel ikut digambar DI SINI juga, bukan hanya sesudah percakapan
+            dimulai. Layar pembuka adalah tempat orang pertama kali mencoba
+            tombolnya — panel yang tidak muncul di situ terbaca sebagai
+            extension yang gagal dipasang, bukan sebagai layar yang berbeda.
+
+            `columns` yang diteruskan ke Splash adalah kolom TENGAH, supaya
+            logo dan prompt terpusat di ruang yang benar-benar tersisa. */}
+        <Box flexDirection="row" flexGrow={1}>
+          {panels.left > 0 ? <Panel {...panelProps("left")} /> : null}
+          <Box flexDirection="column" flexGrow={1}>
         <Splash
-          columns={size.columns}
+          columns={panels.content}
           rows={size.rows}
           showLogo={shouldShowLogo(size.columns, size.rows)}
           cwd={cwd}
@@ -1933,6 +2035,9 @@ export function App({
             </>
           }
         />
+          </Box>
+          {panels.right > 0 ? <Panel {...panelProps("right")} /> : null}
+        </Box>
         {/* Footer juga di sini: ia satu-satunya tempat keadaan leader dan pesan
             flash terlihat, dan layar pembuka adalah tempat orang pertama kali
             mencoba keybinding. */}
@@ -1942,7 +2047,7 @@ export function App({
           usage={usage}
           leaderActive={leaderActive}
           exitArmed={exitArmed}
-          {...(notice ? { hint: notice } : {})}
+          {...(notice ? { hint: notice } : updateHint ? { hint: updateHint } : {})}
           mouseCapture={mouseCapture}
         />
       </Box>
