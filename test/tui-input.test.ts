@@ -2779,3 +2779,109 @@ test("tombol resize TIDAK diteruskan ke onKey extension", async () => {
     h.cleanup()
   }
 })
+
+/** Panel yang memenuhi lebarnya, di sisi yang diminta. */
+function writeWideSide(side: "left" | "right", fill: string): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `titah-${side}-ext-`))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({ name: `uji-${side}`, type: "module", version: "1.0.0", engines: { titah: "^0.4.0" }, titah: { panel: "./panel.mjs" } }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `export default function () {
+       return { title: "${side}", side: "${side}", render() { return { kind: "rows", rows: [{ text: "${fill}".repeat(80) }] } } }
+     }`,
+  )
+  return directory
+}
+
+test("panel KANAN juga bisa di-resize, bukan hanya yang kiri", async () => {
+  /*
+   * Test resize sebelumnya hanya menguji sisi kiri, jadi asimetri apa pun di
+   * cabang `side === "left" ? … : …` akan lolos. Yang diuji di sini: `+`, `-`,
+   * dan `=` bekerja pada sisi kanan DAN tidak menyentuh sisi kiri.
+   */
+  const h = mount({
+    extension: { [writeWideSide("left", "L")]: {}, [writeWideSide("right", "R")]: {} },
+  })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[C")
+    await tick()
+    await tick()
+
+    const lastRun = (character: string) => {
+      const runs = [...h.frame().matchAll(new RegExp(`${character}+`, "g"))].map((m) => m[0].length)
+      return runs[runs.length - 1] ?? 0
+    }
+    assert.equal(lastRun("L"), 15, "kiri terbuka pada lebar config")
+    assert.equal(lastRun("R"), 15, "kanan terbuka pada lebar config")
+
+    // `<leader>f` berputar none → kiri → kanan, jadi dua kali sampai di kanan.
+    for (let press = 0; press < 2; press++) {
+      h.stdin.press("\u0018")
+      await tick(1)
+      h.stdin.press("f")
+      await tick(1)
+    }
+
+    h.clear()
+    h.stdin.press("+")
+    await tick(3)
+    assert.equal(lastRun("R"), 17, "+ melebarkan panel kanan")
+    assert.equal(lastRun("L"), 15, "dan tidak menyentuh panel kiri")
+
+    h.clear()
+    h.stdin.press("-")
+    await tick(2)
+    h.stdin.press("-")
+    await tick(3)
+    assert.equal(lastRun("R"), 13, "- menyempitkan panel kanan")
+
+    h.clear()
+    h.stdin.press("=")
+    await tick(3)
+    assert.equal(lastRun("R"), 15, "= mengembalikan panel kanan ke lebar config")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("sisi yang terbuka tanpa extension TIDAK bisa difokuskan, jadi tidak bisa di-resize", async () => {
+  /*
+   * Ini yang membuat resize TERASA hanya untuk kiri: extension git menyatakan
+   * `side: "left"`, jadi `Ctrl+X →` membuka panel kanan yang kosong — dan panel
+   * kosong tidak punya apa pun untuk menerima tombol.
+   *
+   * Perilakunya benar; yang perlu ditahan adalah PESANNYA, supaya orang tahu
+   * sebabnya bukan "resize hanya untuk kiri".
+   */
+  const h = mount({ extension: { [writeWideSide("left", "L")]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[C")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /No extension/, "panel kanan kosong mengatakan keadaannya")
+
+    h.stdin.press("\u0018")
+    await tick(2)
+    h.stdin.press("f")
+    await tick(4)
+    // Kiri belum dibuka, jadi tidak ada sisi mana pun yang bisa difokuskan.
+    assert.match(h.frame(), /no side panel is open/)
+  } finally {
+    h.cleanup()
+  }
+})

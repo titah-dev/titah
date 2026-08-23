@@ -273,6 +273,18 @@ Diperiksa sebelum `onKey` karena kebalikannya membuat artinya bergantung pada
 extension mana yang sedang fokus — `+` yang melebarkan panel git tapi melakukan
 hal lain di panel orang lain adalah tombol yang tidak bisa dihafal.
 
+Keduanya berlaku untuk **kedua sisi**. Yang menentukan sisi mana yang berubah
+adalah panel mana yang sedang fokus — `<leader>f` berputar `none → kiri → kanan
+→ none`, dan hanya melewati sisi yang benar-benar **tergambar**.
+
+Karena itu sisi yang terbuka tapi **tidak diisi extension mana pun tidak bisa
+difokuskan**, jadi tidak bisa di-resize. Panel yang menampilkan `No extension`
+tidak punya apa pun untuk menerima tombol, dan memfokuskannya hanya membuat
+tombol menghilang ke kotak yang tidak menjawab. Kalau resize terasa hanya untuk
+kiri, hampir pasti inilah sebabnya: extension yang terpasang menyatakan
+`side: "left"`, jadi `<leader>→` membuka kotak kosong. Perbaikannya di config —
+`"side": "right"` — atau pasang extension kedua.
+
 Pelebaran **tidak bisa menembus lantai**: `+` berhenti saat riwayat mencapai
 `panel.floor`. Tanpa batas itu, satu tekanan lagi membuat panel yang sedang kamu
 lebarkan menutup sendiri — lantai bekerja seperti seharusnya, tapi dari tempat
