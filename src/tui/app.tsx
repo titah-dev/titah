@@ -2022,7 +2022,11 @@ export function App({
         <Splash
           columns={panels.content}
           rows={size.rows}
-          showLogo={shouldShowLogo(size.columns, size.rows)}
+          /* Diputuskan dari kolom TENGAH, bukan dari lebar terminal.
+             Dengan panel terbuka, `size.columns` menjanjikan ruang yang sudah
+             diambil panel — jadi Titah memilih logo besar lalu menggambarnya di
+             kolom yang lebih sempit, dan huruf pertamanya terpotong. */
+          showLogo={shouldShowLogo(panels.content, size.rows)}
           cwd={cwd}
           model={model}
           {...(activeAgent ? { agent: activeAgent } : {})}
