@@ -3,6 +3,13 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
+## 0.4.2
+
+### Account server
+
+- Default login/account server diganti dari `https://titah.akil.co.id` ke `https://titah.dev`.
+- Dokumentasi default server disesuaikan agar mengikuti domain baru.
+
 ## 0.4.1
 
 ### `titah extension update`
