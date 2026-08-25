@@ -150,7 +150,7 @@ you type eight characters.
 
 titah-web is ordinary Django and plenty of people will run their own. The server
 is taken from `TITAH_ACCOUNT_SERVER`, then `account.server` in the config, then
-the default — `https://titah.akil.co.id`:
+the default — `https://titah.dev`:
 
 ```jsonc
 { "account": { "server": "https://titah.internal" } }

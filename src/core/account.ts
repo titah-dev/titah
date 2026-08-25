@@ -51,7 +51,7 @@ import type { Config } from "./schema.ts"
  * `account.server` dan $TITAH_ACCOUNT_SERVER tetap menutupi semua orang yang
  * menjalankan instance mereka sendiri, termasuk pengembangan lokal.
  */
-export const DEFAULT_SERVER = "https://titah.akil.co.id"
+export const DEFAULT_SERVER = "https://titah.dev"
 
 const CLIENT_ID = "titah-cli"
 const FILE_MODE = 0o600
