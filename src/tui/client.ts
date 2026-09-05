@@ -56,6 +56,11 @@ export class Client {
     return this.#json(`/session${query}`)
   }
 
+  /** Sesi anak yang dijalankan sub-agent, terlama lebih dulu. */
+  children(sessionID: string): Promise<Session[]> {
+    return this.#json(`/session/${sessionID}/children`)
+  }
+
   messages(sessionID: string): Promise<Message[]> {
     return this.#json(`/session/${sessionID}/message`)
   }

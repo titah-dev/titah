@@ -253,3 +253,26 @@ test("menu leader menerima sumbangan extension tanpa menggeser yang bawaan", () 
   assert.deepEqual(menu.slice(0, LEADER_ACTIONS.length), LEADER_ACTIONS)
   assert.deepEqual(menu.at(-1), { action: "extension:git", describe: "Git" })
 })
+
+test("lompat per kata tidak mengambil tombol milik aksi lain", () => {
+  // Enam chord baru sekaligus, dan tiga di antaranya bertetangga dekat dengan
+  // yang sudah ada: ctrl+↑/↓ menggulir riwayat, dan ctrl+alt+b/f membalik
+  // halaman. Kalau salah satu benar-benar bertabrakan, yang kalah adalah aksi
+  // yang urutannya lebih belakang di `resolve` — kegagalan yang tidak
+  // menghasilkan pesan apa pun, hanya tombol yang berhenti bekerja.
+  const keymap = buildKeymap()
+  for (const spec of ["ctrl+left", "alt+left", "alt+b"]) {
+    assert.equal(chordOwner(keymap, spec), "input_move_word_left", spec)
+  }
+  for (const spec of ["ctrl+right", "alt+right", "alt+f"]) {
+    assert.equal(chordOwner(keymap, spec), "input_move_word_right", spec)
+  }
+})
+
+test("lompat per kata dan gulir riwayat tetap tombol yang berbeda", () => {
+  const keymap = buildKeymap()
+  assert.equal(chordOwner(keymap, "ctrl+up"), "messages_line_up")
+  assert.equal(chordOwner(keymap, "ctrl+alt+b"), "messages_page_up")
+  assert.equal(chordOwner(keymap, "ctrl+alt+f"), "messages_page_down")
+  assert.equal(chordOwner(keymap, "<leader>left"), "panel_left", "chord ber-leader tetap terpisah")
+})

@@ -705,6 +705,10 @@ const KIND_COLOR: Record<Suggestion["kind"], string> = {
   action: "yellow",
   // Magenta seperti agent luar: keduanya menjalankan kode yang bukan kode Titah.
   extension: "magenta",
+  // Magenta juga, dan sewarna dengan bingkai halamannya: satu warna untuk satu
+  // gagasan, jadi baris yang dipilih di sini dan layar yang dibukanya terbaca
+  // sebagai hal yang sama.
+  subagent: "magenta",
 }
 
 /**

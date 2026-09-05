@@ -13,6 +13,7 @@ import {
   deleteSession,
   discardIfEmpty,
   getSession,
+  listChildSessions,
   listMessages,
   listSessions,
 } from "../core/storage/session.ts"
@@ -172,6 +173,21 @@ async function handle(
     if (method === "GET") return json(res, 200, session)
     if (method === "DELETE") return json(res, 200, { deleted: deleteSession(sessionID) })
     throw new HttpError(405, `Method ${method} is not supported`)
+  }
+
+  /*
+   * /session/:id/children — sesi anak yang dijalankan sub-agent giliran ini.
+   *
+   * Panel sub-agent hanya bercerita tentang giliran yang SEDANG berjalan: ia
+   * dikosongkan setiap prompt baru. Tanpa daftar ini, pekerjaan sub-agent dari
+   * giliran kemarin tersimpan lengkap di database tapi tidak punya satu pun
+   * jalan masuk dari layar.
+   *
+   * Tidak disaring `isRunning`: yang sudah selesai justru yang paling sering
+   * dibuka orang — untuk membaca apa yang sebenarnya dikerjakan atas namanya.
+   */
+  if (segments[2] === "children" && method === "GET") {
+    return json(res, 200, listChildSessions(sessionID))
   }
 
   // /session/:id/abort

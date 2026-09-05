@@ -34,6 +34,15 @@ export type SuggestionKind =
    * berbeda.
    */
   | "extension"
+  /**
+   * Satu sesi anak milik sub-agent. `value` adalah sessionID anaknya.
+   *
+   * Terpisah dari `"session"` meski isinya sama-sama `Session`: memilih yang
+   * satu MEMBUKA halaman baca-saja, memilih yang lain MENGGANTI sesi aktif —
+   * dan prompt berikutnya ikut pindah. Menumpangkan keduanya di satu kind
+   * berarti satu salah-cabang mengirim pekerjaan ke sesi anak.
+   */
+  | "subagent"
 
 export interface Suggestion {
   kind: SuggestionKind
@@ -227,6 +236,25 @@ export function agentPickerItems(
     label: id ?? "(default)",
     ...(id && config.agent[id]?.description ? { detail: config.agent[id].description } : {}),
   }))
+}
+
+/**
+ * Daftar sesi anak sub-agent, terlama lebih dulu.
+ *
+ * Urutannya mengikuti urutan JALAN, bukan urutan sentuh terakhir seperti daftar
+ * sesi biasa: sub-agent dibaca untuk memahami sebuah giliran, dan giliran itu
+ * punya urutan yang benar hanya dalam satu arah.
+ */
+export function subagentSuggestions(sessions: Session[]): Suggestion[] {
+  return sessions.map((session) => {
+    const when = new Date(session.created).toISOString().slice(11, 16)
+    return {
+      kind: "subagent" as const,
+      value: session.id,
+      label: session.title || "(unnamed agent)",
+      detail: `started ${when}`,
+    }
+  })
 }
 
 /** Daftar sesi tersimpan, terbaru lebih dulu. */

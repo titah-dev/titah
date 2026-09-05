@@ -81,6 +81,16 @@ export const DEFAULT_KEYBINDS = {
   subagents_panel: "<leader>down",
 
   /*
+   * Daftar sub-agent SESI INI, termasuk giliran yang sudah lewat.
+   *
+   * Panel di atas hanya bercerita tentang giliran yang sedang berjalan — ia
+   * dikosongkan setiap prompt baru. `s` karena ia satu-satunya huruf yang masih
+   * bebas dan masih bisa dihubungkan ke "sub-agent" oleh orang yang membaca
+   * menunya.
+   */
+  subagent_list: "<leader>s",
+
+  /*
    * Panel samping, mengikuti arah panahnya: kiri untuk yang kiri, kanan untuk
    * yang kanan. Sepasang dengan `<leader>down` di atas, jadi ketiga panel
    * Titah dijangkau lewat satu pola yang sama — leader lalu arah.
@@ -134,6 +144,19 @@ export const DEFAULT_KEYBINDS = {
   input_line_home: "ctrl+a",
   input_line_end: "ctrl+e",
 
+  /*
+   * Lompat per kata. TIGA tombol per arah, dan itu bukan kemewahan: tidak ada
+   * satu sekuens yang dikirim semua terminal. ctrl+← mengirim `\x1b[1;5D`,
+   * alt+← mengirim `\x1b[1;3D`, dan Terminal.app dengan "Option as Meta"
+   * mengirim `\x1bb` — mengikat satu saja berarti tombolnya mati di sebagian
+   * mesin tanpa pesan apa pun.
+   *
+   * alt+b/alt+f BUKAN ctrl+alt+b/f: pasangan ber-ctrl itu sudah milik
+   * `messages_page_up`/`messages_page_down`.
+   */
+  input_move_word_left: "ctrl+left,alt+left,alt+b",
+  input_move_word_right: "ctrl+right,alt+right,alt+f",
+
   // Pada draft multi-baris, kedua tombol ini memindahkan kursor antar baris
   // lebih dulu; histori baru terpanggil di baris paling atas/bawah.
   // Tanpa alias ctrl+p/ctrl+n: ctrl+p sudah milik command palette, dan pasangan
@@ -161,9 +184,10 @@ export type Action = keyof typeof DEFAULT_KEYBINDS
  * pertama yang masuk akal.
  */
 export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
-  { action: "tool_details", describe: "Expand or collapse all tool output" },
+  { action: "tool_details", describe: "Collapse or expand all tool output" },
   { action: "effort_cycle", describe: "Reasoning effort: default → low → medium → high" },
   { action: "subagents_panel", describe: "Sub-agent panel" },
+  { action: "subagent_list", describe: "Open a sub-agent's transcript — this session, any turn" },
   { action: "panel_left", describe: "Left panel" },
   { action: "panel_right", describe: "Right panel" },
   { action: "panel_refresh", describe: "Refresh side panels" },

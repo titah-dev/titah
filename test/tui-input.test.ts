@@ -70,6 +70,8 @@ interface Recorded {
   sent: { text: string; agent?: string; sessionID: string }[]
   created: number
   messagesFor: string[]
+  /** Jawaban /session/:id/children yang dipalsukan. */
+  children: Session[]
   aborted: string[]
   undone: string[]
   permissions: { id: string; decision: string }[]
@@ -91,8 +93,22 @@ function fakeClient(recorded: Recorded, emit: (push: (event: Event) => void) => 
         { ...session, id: "ses_lama", title: "sesi lama", updated: 2 },
       ]
     },
+    async children() {
+      return recorded.children
+    },
     async messages(sessionID: string) {
       recorded.messagesFor.push(sessionID)
+      if (sessionID === "anak") {
+        return [
+          {
+            id: "m-anak",
+            sessionID,
+            role: "assistant" as const,
+            created: 1,
+            parts: [{ type: "text" as const, text: "hasil kerja sub-agent" }],
+          },
+        ]
+      }
       if (sessionID !== "ses_lama") return []
       return [
         {
@@ -251,10 +267,22 @@ function mount(
     permissions: [],
     created: 0,
     messagesFor: [],
+    children: [],
   }
-  let push: (event: Event) => void = () => {}
+  /*
+   * Semua langganan, bukan hanya yang terakhir.
+   *
+   * Sejak ada halaman sub-agent, App membuka stream KEDUA selama halaman itu
+   * terbuka. Dengan satu variabel, langganan kedua menimpa yang pertama dan
+   * event berhenti sampai ke percakapan induk — kegagalan harness yang akan
+   * terbaca persis seperti kegagalan produk.
+   */
+  const pushers: ((event: Event) => void)[] = []
+  const push = (event: Event) => {
+    for (const fn of pushers) fn(event)
+  }
   const client = fakeClient(recorded, (fn) => {
-    push = fn
+    pushers.push(fn)
   })
 
   let exited = false
@@ -1077,7 +1105,7 @@ function pushRunningTool(h: Harness) {
   })
 }
 
-test("ctrl+x d memperlihatkan rincian tool yang MASIH berjalan", async () => {
+test("rincian tool yang MASIH berjalan terlihat tanpa ditekan apa pun", async () => {
   const h = mount()
   try {
     await tick()
@@ -1089,22 +1117,61 @@ test("ctrl+x d memperlihatkan rincian tool yang MASIH berjalan", async () => {
     })
     await tick()
     assert.match(h.frame(), /working/, "giliran memang sedang berjalan")
+    assert.match(h.frame(), /npm run build/, "argumennya terlihat sejak awal")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("ctrl+x d MENUTUP rincian tool, dan tekanan kedua membukanya lagi", async () => {
+  const h = mount()
+  try {
+    await tick()
+    pushRunningTool(h)
+    await tick()
+    assert.match(h.frame(), /npm run build/, "terbuka sejak awal")
 
     h.clear()
     h.stdin.press("\u0018")
     await tick(1)
     h.stdin.press("d")
 
-    // Menunggu KONDISI, bukan durasi: `await tick()` di sini pernah membaca frame
-    // saat leader `ctrl+x` masih menyala — tombol `d` belum diproses — dan
-    // gagal secara acak. Lihat `frameEventually`.
-    await frameEventually(h, /npm run build/, "argumennya terlihat tanpa menunggu selesai")
+    /*
+     * Menunggu KONDISI, bukan durasi: `await tick()` di sini pernah membaca
+     * frame saat leader `ctrl+x` masih menyala — tombol `d` belum diproses — dan
+     * gagal secara acak. Lihat `frameEventually`.
+     *
+     * Yang ditunggu adalah tanda `⋯`, bukan hilangnya `npm run build`.
+     * `frameEventually` hanya bisa menunggu sesuatu MUNCUL, dan menunggu
+     * hilangnya sesuatu lewat `tick()` mengembalikan persis kelas kegagalan itu:
+     * frame yang terbaca terlalu dini kosong dari pola apa pun, jadi
+     * `doesNotMatch` lolos tanpa membuktikan blok benar-benar tertutup. `⋯`
+     * hanya digambar untuk blok berjalan yang TERTUTUP dan punya argumen —
+     * lihat `toolLines` — jadi ia bukti positif, bukan ketiadaan bukti.
+     */
+    await frameEventually(h, /⋯/, "ctrl+x d menutup blok yang tadinya terbuka")
+
+    // Dua tombol berarti dua frame, dan yang PERTAMA (leader menyala) masih
+    // memperlihatkan blok terbuka. `h.frame()` mengembalikan seluruh buffer,
+    // jadi `doesNotMatch` di atas frame gabungan itu akan gagal karena bingkai
+    // yang basi. Bersihkan, lalu paksa satu render baru dan periksa yang itu.
+    h.clear()
+    h.stdin.press("z")
+    await tick(1)
+    assert.match(h.frame(), /› z/, "bingkai ini benar-benar hasil render baru")
+    assert.doesNotMatch(h.frame(), /npm run build/, "argumennya ikut tersembunyi")
+
+    h.clear()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("d")
+    await frameEventually(h, /npm run build/, "tekanan kedua mengembalikannya")
   } finally {
     h.cleanup()
   }
 })
 
-test("mengklik baris tool membuka rinciannya, dan tidak membatalkan giliran", async () => {
+test("mengklik baris tool MENUTUP rinciannya, dan tidak membatalkan giliran", async () => {
   const h = mount()
   try {
     await tick()
@@ -1121,16 +1188,11 @@ test("mengklik baris tool membuka rinciannya, dan tidak membatalkan giliran", as
       ? headerLines({ columns: 100, logo: markLines(), cwd: process.cwd(), model: "m" }).length
       : markLines().length + 2
     const barisPertama = tinggiHeader + 1
-    h.clear()
-    h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
-    await tick()
+    assert.match(h.frame(), /npm run build/, "terbuka sebelum diklik sama sekali")
 
-    assert.match(h.frame(), /npm run build/, "klik membuka blok yang diklik")
-    assert.deepEqual(h.recorded.aborted, [], "klik TIDAK boleh terbaca sebagai Escape")
-
-    // Tanda yang HARUS tetap terlihat -- kalau toggle kedua mengembalikan
-    // referensi `Set` yang SAMA (lupa `.delete`), React membatalkan render
-    // karena referensinya identik, dan bingkai KOSONG lolos begitu saja dari
+    // Tanda yang HARUS tetap terlihat -- kalau toggle mengembalikan referensi
+    // `Set` yang SAMA (lupa `.delete`/`.add`), React membatalkan render karena
+    // referensinya identik, dan bingkai KOSONG lolos begitu saja dari
     // `doesNotMatch` di bawah tanpa membuktikan blok benar-benar tertutup.
     for (const ch of "zzz") h.stdin.press(ch)
     await tick(1)
@@ -1138,8 +1200,15 @@ test("mengklik baris tool membuka rinciannya, dan tidak membatalkan giliran", as
     h.clear()
     h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
     await tick()
+
     assert.match(h.frame(), /zzz/, "bingkai ini harus benar-benar hasil render baru")
-    assert.doesNotMatch(h.frame(), /npm run build/, "klik kedua menutupnya lagi")
+    assert.doesNotMatch(h.frame(), /npm run build/, "klik menutup blok yang diklik")
+    assert.deepEqual(h.recorded.aborted, [], "klik TIDAK boleh terbaca sebagai Escape")
+
+    h.clear()
+    h.mouse.emit({ kind: "press", x: 6, y: barisPertama })
+    await tick()
+    assert.match(h.frame(), /npm run build/, "klik kedua membukanya lagi")
   } finally {
     h.cleanup()
   }
@@ -2308,8 +2377,9 @@ test("memilih dari menu leader menjalankan aksinya", async () => {
     h.stdin.press("\r")
     await tick()
 
-    // Baris pertama menu adalah `tool_details` — blok tool jadi terbuka.
-    await frameEventually(h, /npm run build/, "aksi dari menu benar-benar jalan")
+    // Baris pertama menu adalah `tool_details` — blok tool jadi TERTUTUP, dan
+    // `⋯` adalah tandanya. Lihat alasan memilih tanda itu di test ctrl+x d.
+    await frameEventually(h, /⋯/, "aksi dari menu benar-benar jalan")
   } finally {
     h.cleanup()
   }
@@ -2881,6 +2951,262 @@ test("sisi yang terbuka tanpa extension TIDAK bisa difokuskan, jadi tidak bisa d
     await tick(4)
     // Kiri belum dibuka, jadi tidak ada sisi mana pun yang bisa difokuskan.
     assert.match(h.frame(), /no side panel is open/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+/*
+ * Lompat per kata diuji lewat SEKUENS MENTAH, bukan lewat `toKeyPress`.
+ *
+ * Yang mudah salah di sini bukan aritmetika kursornya — itu sudah dipatok di
+ * `editing.test.ts` — melainkan apakah `\x1b[1;5D` benar-benar sampai sebagai
+ * `{key:"left", ctrl:true}` setelah melewati pengurai Ink, penyaring mouse, dan
+ * `toKeyPress`. Menguji fungsinya langsung akan lulus meski seluruh rantai itu
+ * putus.
+ */
+
+test("ctrl+← memindahkan kursor satu kata, bukan satu huruf", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("satu dua")
+    await tick(1)
+    h.stdin.press("\x1b[1;5D")
+    await tick(1)
+    h.stdin.press("z")
+    await tick()
+
+    assert.match(h.frame(), /satu zdua/, "kursor harus mendarat di awal `dua`")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("alt+→ memindahkan kursor ke akhir kata berikutnya", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("satu dua")
+    await tick(1)
+    // Ke awal teks dulu lewat ctrl+a, supaya ada kata di sebelah kanan kursor.
+    h.stdin.press("\x01")
+    await tick(1)
+    h.stdin.press("\x1b[1;3C")
+    await tick(1)
+    h.stdin.press("z")
+    await tick()
+
+    assert.match(h.frame(), /satuz dua/, "kursor harus berhenti di akhir `satu`")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("alt+b dari Option-as-Meta juga lompat per kata", async () => {
+  // Terminal.app dengan "Use Option as Meta key" tidak pernah mengirim
+  // `\x1b[1;3D`; ia mengirim `\x1bb`. Tanpa alias ini tombolnya mati di sana
+  // tanpa pesan apa pun.
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("satu dua")
+    await tick(1)
+    h.stdin.press("\x1bb")
+    await tick(1)
+    h.stdin.press("z")
+    await tick()
+
+    assert.match(h.frame(), /satu zdua/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("ctrl+a berhenti di awal BARIS, bukan di awal seluruh draft", async () => {
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("atas")
+    await tick(1)
+    h.stdin.press("\n") // ctrl+j
+    await tick(1)
+    h.stdin.press("bawah")
+    await tick(1)
+    h.stdin.press("\x01") // ctrl+a
+    await tick(1)
+    h.stdin.press("z")
+    await tick()
+
+    const frame = h.frame()
+    assert.match(frame, /zbawah/, "kursor harus di awal baris kedua")
+    assert.doesNotMatch(frame, /zatas/, "bukan di awal seluruh draft")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("panah atas menelusuri baris terbungkus dulu, tidak langsung mengganti draft", async () => {
+  // Draft satu baris logis yang jauh lebih panjang dari layar palsu (100 kolom)
+  // pasti terbungkus. Sebelum perbaikan ini, ia dihitung sebagai SATU baris,
+  // jadi satu tekanan panah atas menukar seluruh ketikan dengan entri histori.
+  const h = mount()
+  try {
+    await tick()
+    h.stdin.press("seed")
+    await tick(1)
+    h.stdin.press("\r")
+    await tick()
+
+    h.stdin.press("MULAI " + "b".repeat(200))
+    await tick()
+    h.stdin.press("\x1b[A")
+    await tick()
+
+    assert.match(h.frame(), /MULAI/, "draft harus bertahan, bukan diganti `seed`")
+  } finally {
+    h.cleanup()
+  }
+})
+
+
+// ---------- halaman transkrip sub-agent ----------
+
+const CTRL_X = "\u0018"
+const ARROW_DOWN = "\u001b[B"
+const ESC_KEY = "\u001b"
+
+/** Satu sub-agent berjalan, cukup untuk mengisi panel. */
+function pushSubagent(h: Harness, sessionID = "anak", agent = "explore"): void {
+  h.push({
+    type: "subagent.updated",
+    sessionID: session.id,
+    child: { sessionID, agent, status: "running", startedAt: Date.now(), note: "reading" },
+  })
+}
+
+/** ctrl+x lalu panah bawah — membuka panel sub-agent. */
+async function openSubagentPanel(h: Harness): Promise<void> {
+  h.stdin.press(CTRL_X)
+  await tick(1)
+  h.stdin.press(ARROW_DOWN)
+  await tick()
+}
+
+test("Enter di panel sub-agent membuka halaman transkripnya, esc kembali", async () => {
+  const h = mount()
+  try {
+    await tick()
+    pushSubagent(h)
+    await openSubagentPanel(h)
+
+    h.clear()
+    h.stdin.press("\r")
+    await tick()
+
+    const frame = h.frame()
+    assert.match(frame, /sub-agent . explore/, "judul halaman menyebut agent-nya")
+    assert.match(frame, /hasil kerja sub-agent/, "transkrip sesi ANAK yang dimuat")
+    assert.ok(
+      h.recorded.messagesFor.includes("anak"),
+      "riwayat diambil untuk sesi anak, bukan induk",
+    )
+
+    h.clear()
+    h.stdin.press(ESC_KEY)
+    await tick()
+    assert.doesNotMatch(h.frame(), /sub-agent . explore/, "esc menutup halaman")
+    assert.match(h.frame(), /› /, "penyunting kembali digambar")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("mengklik baris panel sub-agent membuka halamannya juga", async () => {
+  const h = mount()
+  try {
+    await tick()
+    // Keluar dari layar pembuka lebih dulu. Peta klik panel ini sengaja hanya
+    // dipasang di layar KERJA — di layar pembuka panelnya digambar di dalam
+    // `Splash`, di baris yang tidak bisa diturunkan dari tumpukan yang sama.
+    // Dalam pemakaian sungguhan urutannya memang begitu: sub-agent baru ada
+    // setelah satu giliran mulai, dan giliran yang mulai berarti sudah ada pesan.
+    h.push({
+      type: "message.updated",
+      sessionID: session.id,
+      message: { id: "u1", sessionID: session.id, role: "user", created: 1, parts: [] },
+    })
+    await tick()
+    pushSubagent(h)
+    await openSubagentPanel(h)
+
+    /*
+     * Baris layarnya DICARI di bingkai, bukan dihitung ulang dari tinggi
+     * penyunting, popup, dan panel.
+     *
+     * Menghitungnya di sini berarti test ini menyalin rumus yang justru sedang
+     * ia uji: keduanya bisa salah dengan cara yang sama, dan test-nya tetap
+     * hijau. Mencari barisnya di bingkai membuat peta klik diuji terhadap apa
+     * yang benar-benar tergambar.
+     */
+    h.clear()
+    h.stdin.press("z")
+    await tick()
+    const rows = h.frame().split("\n")
+    const row = rows.findIndex((line) => line.includes("explore"))
+    assert.ok(row >= 0, "baris panel harus ada di bingkai sebelum diklik")
+
+    h.clear()
+    h.mouse.emit({ kind: "press", x: 4, y: row + 1 })
+    await tick()
+
+    assert.match(h.frame(), /sub-agent . explore/)
+    assert.deepEqual(h.recorded.aborted, [], "klik TIDAK boleh membatalkan sub-agent")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("ctrl+x s membuka daftar sub-agent sesi ini, termasuk giliran yang sudah lewat", async () => {
+  // Panel dikosongkan setiap prompt baru, jadi daftar inilah satu-satunya jalan
+  // masuk ke pekerjaan sub-agent giliran kemarin.
+  const h = mount()
+  try {
+    await tick()
+    h.recorded.children = [{ ...session, id: "anak", title: "explore", created: 1 }]
+
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press("s")
+    await tick()
+    assert.match(h.frame(), /Sub-agent transcript/, "picker terbuka")
+    assert.match(h.frame(), /explore/)
+
+    h.clear()
+    h.stdin.press("\r")
+    await tick()
+    assert.match(h.frame(), /sub-agent . explore/, "Enter membuka halamannya")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("sesi anak tanpa transkrip mengatakan sebabnya, bukan menggambar layar hampa", async () => {
+  // Super agent menjalankan CLI di luar Titah: hanya jawaban akhirnya yang
+  // kembali, jadi sesi anaknya ada tapi kosong. Layar hampa di situ terbaca
+  // sebagai gagal memuat.
+  const h = mount()
+  try {
+    await tick()
+    pushSubagent(h, "anak-kosong", "claude")
+    await openSubagentPanel(h)
+
+    h.clear()
+    h.stdin.press("\r")
+    await tick()
+
+    assert.match(h.frame(), /sub-agent . claude/)
+    assert.match(h.frame(), /No transcript here/)
   } finally {
     h.cleanup()
   }

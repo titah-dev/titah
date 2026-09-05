@@ -45,6 +45,19 @@ export function panelLines(subagents: SubagentState[], now: number): string[] {
  */
 export const SUBAGENT_PANEL_ROWS = 8
 
+/**
+ * Baris pertama yang tampil ketika daftarnya lebih panjang dari jendelanya.
+ *
+ * Diekspor karena DUA pihak membacanya: komponen ini saat menggambar, dan peta
+ * klik di app.tsx saat menerjemahkan baris layar jadi indeks sub-agent. Dua
+ * ekspresi terpisah untuk satu jendela berarti klik mengenai baris tetangga
+ * begitu daftarnya cukup panjang untuk mulai bergulir — kegagalan yang tidak
+ * pernah muncul pada tiga sub-agent dan selalu muncul pada sepuluh.
+ */
+export function panelWindowStart(total: number, selected: number, height: number): number {
+  return Math.max(0, Math.min(selected - Math.floor(height / 2), Math.max(0, total - height)))
+}
+
 export function SubagentPanel({
   subagents,
   selected,
@@ -82,7 +95,7 @@ export function SubagentPanel({
   // Jendela berpusat pada baris terpilih, sama seperti Popup di components.tsx.
   // Tanpa ini, ↓ bisa memindahkan pilihan ke baris yang TIDAK ditampilkan, dan
   // `x` akan membatalkan sub-agent yang usernya sendiri tidak bisa lihat.
-  const start = Math.max(0, Math.min(selected - Math.floor(height / 2), Math.max(0, lines.length - height)))
+  const start = panelWindowStart(lines.length, selected, height)
   const visible = lines.slice(start, start + height)
 
   return (

@@ -18,11 +18,16 @@ import { initialState, promptHistory, reduce, totalUsage, type TuiState } from "
 import {
   browseHistory,
   DRAFT,
-  moveCursorLine,
-  onFirstLine,
-  onLastLine,
+  lineEnd,
+  lineStart,
+  moveCursorVisualLine,
+  onFirstVisualLine,
+  onLastVisualLine,
   pushHistory,
+  wordLeft,
+  wordRight,
 } from "./editing.ts"
+import { ChildPage } from "./child-page.tsx"
 import {
   Editor,
   Footer,
@@ -34,7 +39,7 @@ import {
   Splash,
   Working,
 } from "./components.tsx"
-import { SubagentPanel, SUBAGENT_PANEL_ROWS } from "./subagent-panel.tsx"
+import { SubagentPanel, SUBAGENT_PANEL_ROWS, panelWindowStart } from "./subagent-panel.tsx"
 import { Panel } from "./panel.tsx"
 import {
   droppedNotice,
@@ -70,6 +75,7 @@ import {
   detectTrigger,
   modelSuggestions,
   skillSuggestions,
+  subagentSuggestions,
   suggest,
   type Suggestion,
 } from "./complete.ts"
@@ -78,6 +84,7 @@ import type { Config } from "../core/schema.ts"
 import { nextEffort, type EffortChoice } from "../core/prompt.ts"
 import {
   allLines,
+  editorColumns,
   editorRows,
   historyRows,
   RESERVED_ROWS,
@@ -117,6 +124,23 @@ const WHEEL_LINES = 3
 
 /** Aksi yang mengubah isi prompt — dan karenanya mengakhiri telusur histori. */
 const MUTATES_DRAFT = new Set(["input_newline", "input_backspace", "input_delete_to_line_start"])
+
+/**
+ * Event dari sesi anak yang boleh masuk ke halaman transkripnya.
+ *
+ * Daftar putih, bukan daftar hitam. Halaman itu baca-saja dan tidak punya satu
+ * pun tombol untuk menjawab dialog: event yang MEMINTA sesuatu — izin,
+ * pertanyaan — akan menggantung di sana tanpa jalan keluar. Daftar hitam berarti
+ * setiap event baru yang ditambahkan ke `event.ts` otomatis lolos ke halaman ini
+ * sampai seseorang ingat memperbaruinya.
+ */
+const VIEWABLE_CHILD_EVENTS = new Set([
+  "message.updated",
+  "text.delta",
+  "reasoning.delta",
+  "session.idle",
+  "session.error",
+])
 
 /** Menerjemahkan event tombol Ink ke bentuk netral yang dipahami keybinds.ts. */
 export function toKeyPress(input: string, key: Key): KeyPress {
@@ -224,17 +248,37 @@ export function App({
   const [exitArmed, setExitArmed] = useState(false)
   const exitTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const leaderMenuTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  // Dua lapis: `expandAll` dari ctrl+x d, dan himpunan tool yang dibuka satu per
-  // satu lewat klik. Dipisah supaya menutup "semua" tidak ikut menutup blok yang
-  // sengaja dibuka user, dan sebaliknya.
   // Pelacakan mouse bisa dimatikan supaya terminal boleh menyorot teks lagi.
   const [mouseCapture, setMouseCapture] = useState(true)
-  const [expandAll, setExpandAll] = useState(false)
-  const [openTools, setOpenTools] = useState<ReadonlySet<string>>(() => new Set())
-  const expandTools: Expansion = expandAll ? true : openTools
+  /*
+   * Dua lapis: `collapseAll` dari ctrl+x d, dan himpunan blok yang dibalik satu
+   * per satu lewat klik. Dipisah supaya menutup "semua" tidak ikut menghapus
+   * pilihan yang sengaja dibuat user, dan sebaliknya.
+   *
+   * Bawaannya TERBUKA — himpunannya berisi yang dibalik dari bawaan, bukan yang
+   * terbuka. Blok tool yang harus diklik dulu sebelum isinya terlihat berarti
+   * hasil kerja yang baru saja diminta tersembunyi di balik satu tekanan lagi,
+   * dan yang paling sering dibuka orang justru blok yang paling baru.
+   */
+  const [collapseAll, setCollapseAll] = useState(false)
+  const [flippedTools, setFlippedTools] = useState<ReadonlySet<string>>(() => new Set())
+  const expandTools: Expansion = collapseAll ? false : flippedTools
   // Panel sub-agent: `selected` disimpan lepas dari `open` supaya menutup lalu
   // membuka lagi tidak melompat balik ke baris nol tanpa alasan.
   const [subagentPanelOpen, setSubagentPanelOpen] = useState(false)
+  /*
+   * Halaman transkrip sub-agent — layar penuh, bukan overlay.
+   *
+   * `childState` memakai `reduce` yang SAMA dengan sesi induk, bukan reducer
+   * kedua. Sesi anak adalah sesi biasa: pesan, delta teks, delta penalaran, dan
+   * idle-nya berbentuk persis sama, dan reducer kedua yang menangani bentuk yang
+   * sama adalah dua tempat yang akan menyimpang begitu salah satunya diperbaiki.
+   */
+  const [childView, setChildView] = useState<{ sessionID: string; agent: string } | undefined>(
+    undefined,
+  )
+  const [childState, childDispatch] = useReducer(reduce, initialState)
+  const [childScroll, setChildScroll] = useState(0)
   /*
    * Dua state terpisah, bukan satu enum sisi-yang-aktif.
    *
@@ -300,6 +344,24 @@ export function App({
    * terbaru saat ia dipanggil.
    */
   const extensionsRef = useRef<LoadedExtension[]>([])
+
+  /*
+   * Dua ref lagi untuk alasan yang sama dengan `extensionsRef`: penangan mouse
+   * didaftarkan sekali (`[mouse]`) dan menutupi nilai render PERTAMA. Membaca
+   * `state.subagents` langsung dari sana berarti klik selalu mengenai daftar
+   * yang kosong — daftar saat aplikasi baru menyala.
+   */
+  const subagentsRef = useRef<TuiState["subagents"]>([])
+  const openChildRef = useRef<(sessionID: string, agent: string) => void>(() => {})
+
+  /**
+   * Geometri panel sub-agent untuk klik, diisi saat render dari angka yang SAMA
+   * dengan yang menggambarnya. `undefined` berarti panelnya memang tidak ada di
+   * layar, dan klik di mana pun tidak boleh mengenainya.
+   */
+  const subagentView = useRef<{ contentTop: number; rows: number; start: number } | undefined>(
+    undefined,
+  )
 
   const panelView = useRef<{
     /** Baris layar (0-basis) tempat baris ISI pertama panel digambar. */
@@ -549,6 +611,68 @@ export function App({
     return () => controller.abort()
   }, [client, session.id])
 
+  /*
+   * Stream KEDUA, hidup hanya selama halaman sub-agent terbuka.
+   *
+   * Bukan langganan seumur aplikasi seperti yang di atas: sesi anak bisa
+   * berjumlah puluhan dalam satu giliran, dan berlangganan semuanya berarti
+   * puluhan koneksi SSE menganggur untuk halaman yang mungkin tidak pernah
+   * dibuka. Dibuka saat halamannya dibuka, di-abort saat ditutup.
+   */
+  useEffect(() => {
+    if (!childView) return
+    const controller = new AbortController()
+    const id = childView.sessionID
+
+    /*
+     * Dikosongkan LEBIH DULU, bukan menunggu muatannya datang.
+     *
+     * `childState` bertahan lintas pembukaan halaman. Tanpa baris ini, membuka
+     * sub-agent kedua memperlihatkan transkrip sub-agent PERTAMA selama satu
+     * putaran jaringan — dan transkrip yang salah, walau sekejap, adalah bentuk
+     * kesalahan yang paling sulit disadari orang.
+     */
+    childDispatch({ type: "messages.loaded", messages: [], running: true })
+    setChildScroll(0)
+
+    void (async () => {
+      try {
+        for await (const event of client.events(id, controller.signal)) {
+          /*
+           * Disaring, bukan diteruskan semuanya.
+           *
+           * Izin sub-agent memang disiarkan ke stream INDUK (`streamSessionID`
+           * di permission.ts), jadi seharusnya tidak pernah sampai ke sini. Tapi
+           * "seharusnya" bukan jaminan, dan dialog izin yang muncul di halaman
+           * baca-saja tidak punya tombol untuk dijawab: ia akan menggantung
+           * sampai sesi induk membatalkannya.
+           */
+          if (VIEWABLE_CHILD_EVENTS.has(event.type)) childDispatch(event)
+        }
+      } catch {
+        // abort saat halaman ditutup — bukan error yang perlu ditampilkan
+      }
+    })()
+
+    void (async () => {
+      const messages = await client.messages(id).catch(() => [])
+      const running = await client
+        .status(id)
+        .then((result) => result.running)
+        .catch(() => false)
+      childDispatch({ type: "messages.loaded", messages, running })
+    })()
+
+    return () => controller.abort()
+  }, [client, childView])
+
+  const openChild = useCallback((sessionID: string, agent: string) => {
+    setSubagentPanelOpen(false)
+    setCancelArmed(undefined)
+    setPopup(undefined)
+    setChildView({ sessionID, agent })
+  }, [])
+
   useEffect(() => {
     if (state.status !== "working") return
     setStartedAt(Date.now())
@@ -583,6 +707,27 @@ export function App({
         return
       }
       if (event.kind !== "press") return
+
+      /*
+       * Klik pada baris panel sub-agent membuka halaman transkripnya.
+       *
+       * Diperiksa paling awal: panel ini digambar DI ATAS penyunting, di baris
+       * layar yang juga dilewati pencocokan riwayat, dan tanpa cabang ini klik
+       * di situ akan melipat blok tool yang kebetulan sebaris dengannya.
+       */
+      {
+        const box = subagentView.current
+        if (box !== undefined) {
+          const row = event.y - 1 - box.contentTop
+          if (row >= 0 && row < box.rows) {
+            const target = subagentsRef.current[box.start + row]
+            if (target) {
+              openChildRef.current(target.sessionID, target.agent)
+              return
+            }
+          }
+        }
+      }
 
       /*
        * Klik panel diperiksa LEBIH DULU daripada klik baris riwayat.
@@ -626,10 +771,10 @@ export function App({
       if (!line?.toolID) return
       const id = line.toolID
 
-      // Klik saat ctrl+x d sedang membuka SEMUANYA berarti "cukup yang ini":
-      // sisanya menutup, yang diklik tetap terbuka.
-      setExpandAll(false)
-      setOpenTools((current) => {
+      // Klik saat ctrl+x d sedang menutup SEMUANYA berarti "semua kecuali yang
+      // ini": yang diklik mempertahankan keadaannya, sisanya kembali ke bawaan.
+      setCollapseAll(false)
+      setFlippedTools((current) => {
         const next = new Set(current)
         if (next.has(id)) next.delete(id)
         else next.add(id)
@@ -922,6 +1067,21 @@ export function App({
       .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
   }, [client, cwd, flash, session.id])
 
+  const openSubagentPicker = useCallback(() => {
+    client
+      .children(session.id)
+      .then((children) => {
+        if (children.length === 0) return flash("no sub-agents have run in this session")
+        setPopup({
+          title: "Sub-agent transcript",
+          items: subagentSuggestions(children),
+          selected: 0,
+          fromMenu: true,
+        })
+      })
+      .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
+  }, [client, flash, session.id])
+
   const startNewSession = useCallback(() => {
     client
       .createSession(cwd)
@@ -1017,13 +1177,16 @@ export function App({
           )
         }
         case "tool_details":
-          // Menutup "semua" juga membersihkan yang dibuka lewat klik, supaya
-          // satu tekanan benar-benar mengembalikan riwayat ke bentuk ringkas.
-          setExpandAll((value) => {
-            if (value) setOpenTools(new Set())
+          // Membuka "semua" lagi juga membersihkan yang dibalik lewat klik,
+          // supaya satu tekanan benar-benar mengembalikan riwayat ke bentuk
+          // bawaannya.
+          setCollapseAll((value) => {
+            if (value) setFlippedTools(new Set())
             return !value
           })
           return
+        case "subagent_list":
+          return openSubagentPicker()
         case "subagents_panel":
           // TIDAK mereset `subagentSelected`: komentar di deklarasinya bilang
           // pilihan sengaja dipertahankan lewat tutup/buka.
@@ -1121,6 +1284,7 @@ export function App({
       openExtensionPicker,
       openLeaderMenu,
       openSessionPicker,
+      openSubagentPicker,
       session.id,
       startNewSession,
     ],
@@ -1146,6 +1310,13 @@ export function App({
         setAgentIndex(index === -1 ? 0 : index)
         return flash(`agent: ${item.value || "(default)"}`)
       }
+      if (item.kind === "subagent") {
+        // `label` sudah berisi nama agent — `createChildSession` menyimpannya
+        // sebagai judul sesi anak, jadi tidak ada permintaan kedua ke server
+        // hanya untuk memberi judul pada halamannya.
+        return openChild(item.value, item.label)
+      }
+
       if (item.kind === "session") {
         void client
           .listSessions(cwd)
@@ -1371,6 +1542,37 @@ export function App({
       clearTimeout(exitTimer.current)
     }
 
+    /*
+     * Halaman sub-agent MEMILIKI papan ketik selama terbuka.
+     *
+     * Ia layar penuh tanpa penyunting, jadi tidak ada yang perlu berbagi tombol
+     * dengannya — dan tombol polos yang lolos ke bawah akan menyunting draft
+     * yang tidak sedang digambar, lalu muncul kembali entah dari mana begitu
+     * halaman ditutup.
+     *
+     * Modifier sengaja DILEWATKAN: ctrl+c dan ctrl+d harus tetap menutup Titah
+     * dari halaman mana pun, kalau tidak halaman ini jadi perangkap.
+     */
+    if (childView) {
+      const plain = press.ctrl !== true && press.alt !== true
+      if (!plain) {
+        // jatuh ke penanganan global di bawah
+      } else if (press.key === "escape") {
+        return setChildView(undefined)
+      } else {
+        const page = Math.max(1, size.rows - 6)
+        const maxScroll = Math.max(0, childLines.length - 1)
+        const clamp = (value: number) => Math.max(0, Math.min(value, maxScroll))
+        if (press.key === "up") return setChildScroll((v) => clamp(v + 1))
+        if (press.key === "down") return setChildScroll((v) => clamp(v - 1))
+        if (press.key === "pageup") return setChildScroll((v) => clamp(v + page))
+        if (press.key === "pagedown") return setChildScroll((v) => clamp(v - page))
+        if (press.key === "home") return setChildScroll(maxScroll)
+        if (press.key === "end") return setChildScroll(0)
+        return
+      }
+    }
+
     // Panel sub-agent memakan navigasi SEBELUM popup — kalau tidak, keduanya
     // berebut panah yang sama begitu keduanya sama-sama terbuka.
     //
@@ -1465,6 +1667,15 @@ export function App({
           return total === 0 ? 0 : (current + step + total) % total
         })
       }
+      if (press.key === "return" && plainKey) {
+        // Enter MEMBUKA, `x` membatalkan. Dua tombol yang berjauhan di papan
+        // ketik untuk dua akibat yang berjauhan: satu bisa dibatalkan dengan
+        // Esc, satunya menghapus pekerjaan yang sudah berjalan.
+        const target = state.subagents[clampedSubagentSelected]
+        if (!target) return
+        return openChild(target.sessionID, target.agent)
+      }
+
       if (press.key === "x" && plainKey) {
         const target = state.subagents[clampedSubagentSelected]
         if (!target) return
@@ -1731,8 +1942,15 @@ export function App({
       // Pada draft multi-baris, panah memindahkan kursor dulu; histori baru
       // terpanggil dari baris paling atas (↑) atau paling bawah (↓). Tanpa
       // syarat ini, menyunting teks beberapa baris berubah jadi membuangnya.
-      const atEdge = step === -1 ? onFirstLine(draft, cursor) : onLastLine(draft, cursor)
-      if (!atEdge) return setCursor(moveCursorLine(draft, cursor, step))
+      //
+      // Baris VISUAL, bukan baris logis: satu kalimat panjang yang dibungkus
+      // terminal terlihat sebagai beberapa baris, dan panah yang melompatinya
+      // sekaligus terbaca sebagai panah yang rusak.
+      const atEdge =
+        step === -1
+          ? onFirstVisualLine(draft, cursor, editorWidth)
+          : onLastVisualLine(draft, cursor, editorWidth)
+      if (!atEdge) return setCursor(moveCursorVisualLine(draft, cursor, step, editorWidth))
 
       if (historyIndex === DRAFT) stash.current = draft
       const next = browseHistory(history, historyIndex, step)
@@ -1787,6 +2005,8 @@ export function App({
       "input_delete_to_line_start",
       "input_move_left",
       "input_move_right",
+      "input_move_word_left",
+      "input_move_word_right",
       "input_line_home",
       "input_line_end",
     ])
@@ -1813,10 +2033,17 @@ export function App({
         return setCursor((value) => Math.max(0, value - 1))
       case "input_move_right":
         return setCursor((value) => Math.min(draft.length, value + 1))
+      case "input_move_word_left":
+        return setCursor(wordLeft(draft, cursor))
+      case "input_move_word_right":
+        return setCursor(wordRight(draft, cursor))
+      // Baris LOGIS, tidak seperti panah atas/bawah di atas: ctrl+a yang
+      // berhenti di tengah kalimat karena kalimat itu kebetulan terbungkus
+      // lebih membingungkan daripada membantu.
       case "input_line_home":
-        return setCursor(0)
+        return setCursor(lineStart(draft, cursor))
       case "input_line_end":
-        return setCursor(draft.length)
+        return setCursor(lineEnd(draft, cursor))
       default:
         break
     }
@@ -1858,6 +2085,18 @@ export function App({
   const textWidth = Math.max(20, panels.content - 2)
 
   /*
+   * Lebar teks di dalam kotak editor, diputuskan SEKALI.
+   *
+   * Layar pembuka memberi editor kolom tengah (`panels.content`), layar kerja
+   * memberinya lebar penuh terminal — dan kursor harus membungkus di kolom yang
+   * sama dengan yang benar-benar digambar. Dua pembacanya, gerak kursor di
+   * penangan tombol dan tinggi kotak di bawah, mengambil angka yang sama di
+   * sini; dua ekspresi terpisah adalah cara keduanya menyimpang.
+   */
+  const onSplash = state.messages.length === 0 && state.permission === undefined
+  const editorWidth = editorColumns(onSplash ? panels.content : size.columns)
+
+  /*
    * Notice, bukan error. Panel yang tertutup karena terminal sempit adalah
    * keadaan yang bisa dibalik user dengan melebarkan jendelanya, dan satu baris
    * merah untuk hal yang tidak merusak apa pun mengajari orang mengabaikan
@@ -1881,6 +2120,8 @@ export function App({
   }, [panelFocus, panels.left, panels.right, extensions])
 
   extensionsRef.current = extensions
+  subagentsRef.current = state.subagents
+  openChildRef.current = openChild
 
   drawnPanels.current = (["left", "right"] as const).filter(
     (side) =>
@@ -2008,7 +2249,20 @@ export function App({
     () => allLines(state.messages, expandTools, textWidth, tick),
     [state.messages, expandTools, textWidth, tick],
   )
-  const editorHeight = editorRows(draft, size.rows)
+
+  /*
+   * Baris halaman sub-agent, lewat `allLines` yang SAMA dengan percakapan induk.
+   *
+   * Transkrip anak berbentuk persis sama — pesan, blok tool, penalaran — dan
+   * perender kedua untuk bentuk yang sama berarti setiap perbaikan pada yang
+   * satu harus diingat untuk yang lain. Kosong saat halamannya tertutup supaya
+   * riwayat anak tidak diurai ulang tiap detak di layar yang tidak menampilkannya.
+   */
+  const childLines = useMemo(
+    () => (childView ? allLines(childState.messages, expandTools, textWidth, tick) : []),
+    [childView, childState.messages, expandTools, textWidth, tick],
+  )
+  const editorHeight = editorRows(draft, size.rows, editorWidth)
   const permissionHeight = state.permission ? Math.min(14, state.permission.detail.split("\n").length + 4) : 0
   // Pertanyaan memakan tinggi juga, kalau tidak riwayat digambar di atasnya.
   const questionHeight = state.question
@@ -2071,13 +2325,38 @@ export function App({
    * kondisi berarti peta klik dan render bisa tidak sepakat sedang di layar
    * mana kita berada.
    */
-  const onSplash = state.messages.length === 0 && state.permission === undefined
 
   /*
    * Geometri panel untuk klik, dari angka yang SAMA dengan yang dirender.
    * Menghitungnya terpisah adalah cara peta klik menyimpang dari apa yang
    * tergambar, dan gejalanya klik yang mengenai baris tetangga.
    */
+  /*
+   * Geometri panel sub-agent, dihitung dari BAWAH layar.
+   *
+   * Panel ini tidak duduk di bawah header seperti panel samping; ia ditumpuk di
+   * atas penyunting, jadi barisnya bergeser setiap kali penyunting tumbuh atau
+   * popup muncul. Angkanya diambil dari tinggi yang sama dengan yang dipakai
+   * reservasi di atas, bukan dihitung ulang.
+   *
+   * Hanya di layar KERJA: di layar pembuka panel ini digambar di dalam `Splash`,
+   * di baris yang tidak bisa diturunkan dari tumpukan ini, dan peta klik yang
+   * menebak lebih buruk daripada peta klik yang mengaku tidak tahu.
+   */
+  subagentView.current =
+    subagentPanelOpen && !onSplash && state.subagents.length > 0
+      ? {
+          // Bingkai atas + judul sebelum baris isi pertama.
+          contentTop: size.rows - 1 - editorHeight - workingHeight - popupHeight - subagentPanelHeight + 2,
+          rows: Math.min(SUBAGENT_PANEL_ROWS, state.subagents.length),
+          start: panelWindowStart(
+            state.subagents.length,
+            clampedSubagentSelected,
+            SUBAGENT_PANEL_ROWS,
+          ),
+        }
+      : undefined
+
   panelView.current = {
     contentTop: (onSplash ? 0 : headerHeight) + 2,
     ...(panels.left > 0
@@ -2151,6 +2430,41 @@ export function App({
       total: lines.length,
     }
   })
+
+  /*
+   * Halaman sub-agent: layar penuh, menggantikan percakapan induk.
+   *
+   * Diperiksa SEBELUM layar pembuka. Sub-agent giliran kemarin bisa dibuka dari
+   * sesi yang riwayatnya baru saja dikosongkan, dan halaman yang kalah oleh
+   * logo Titah adalah halaman yang tidak bisa dibuka justru di sesi paling baru.
+   */
+  if (childView) {
+    // Satu bingkai judul (dua baris bingkai + satu baris isi) dan satu footer.
+    const childAvailable = Math.max(1, size.rows - 4)
+    const childWindow = viewport(childLines, childAvailable, childScroll)
+    return (
+      <Box height={size.rows} flexDirection="column">
+        <ChildPage
+          agent={childView.agent}
+          working={childState.status === "working"}
+          messages={childState.messages.length}
+          lines={childWindow.lines}
+          hiddenAbove={childWindow.hiddenAbove}
+          hiddenBelow={childWindow.hiddenBelow}
+        />
+        {/* Footer yang SAMA: pemakaian token dihitung dari sesi anak, bukan
+            induk, supaya angka di layar selalu menerangkan yang sedang dibaca. */}
+        <Footer
+          status={childState.status}
+          model={statusLabel}
+          usage={totalUsage(childState.messages)}
+          leaderActive={false}
+          hint="esc to go back"
+          mouseCapture={mouseCapture}
+        />
+      </Box>
+    )
+  }
 
   // Layar pembuka: belum ada percakapan sama sekali.
   if (onSplash) {
