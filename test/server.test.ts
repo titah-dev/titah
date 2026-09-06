@@ -206,3 +206,52 @@ test("GET /session?directory= hanya mengembalikan sesi proyek itu", async () => 
   assert.ok(semua.some((entry) => entry.id === a.id))
   assert.ok(semua.some((entry) => entry.id === b.id))
 })
+
+
+test("GET /session/:id/children mendaftar sesi anak, dan sesi anak TIDAK muncul di /session", async () => {
+  /*
+   * Dua sifat sekaligus, dan keduanya harus benar bersamaan.
+   *
+   * Sesi anak sengaja disembunyikan dari daftar sesi biasa — memilihnya di sana
+   * akan MENGGANTI sesi aktif, dan prompt berikutnya ikut masuk ke sesi milik
+   * sub-agent. Tapi menyembunyikannya saja membuat pekerjaannya tidak punya satu
+   * pun jalan masuk; rute ini yang menyediakannya.
+   */
+  const { createChildSession } = await import("../src/core/storage/session.ts")
+
+  const parent = (await (await api("POST", "/session", { directory: "/tmp/anak" })).json()) as {
+    id: string
+  }
+  await api("POST", `/session/${parent.id}/message`, { text: "/agents" })
+
+  assert.deepEqual(
+    (await (await api("GET", `/session/${parent.id}/children`)).json()),
+    [],
+    "belum ada sub-agent yang jalan",
+  )
+
+  const child = createChildSession(parent.id, "/tmp/anak", "explore")
+
+  const children = (await (await api("GET", `/session/${parent.id}/children`)).json()) as {
+    id: string
+    title: string
+    parentID?: string
+  }[]
+  assert.equal(children.length, 1)
+  assert.equal(children[0]?.id, child.id)
+  assert.equal(children[0]?.title, "explore", "judulnya adalah nama agent-nya")
+  assert.equal(children[0]?.parentID, parent.id)
+
+  const daftar = (await (await api("GET", "/session")).json()) as { id: string }[]
+  assert.ok(
+    !daftar.some((entry) => entry.id === child.id),
+    "sesi anak tidak boleh bisa dipilih sebagai sesi aktif",
+  )
+})
+
+test("GET /session/:id/children pada sesi yang tidak ada tetap 404", async () => {
+  // Rute baru mewarisi penjaga yang sama dengan saudara-saudaranya: id yang
+  // tidak dikenal dijawab 404, bukan daftar kosong yang terbaca seperti
+  // "sesinya ada, sub-agent-nya belum".
+  assert.equal((await api("GET", "/session/ses_tidak_ada/children")).status, 404)
+})

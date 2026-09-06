@@ -407,23 +407,25 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+J` | Newline inside the prompt |
 | `Esc` | **Cancel the running turn** |
 | `Ctrl+P` | Open the command palette |
-| `↑` / `↓` | Recall the previous / next prompt (moves the cursor first on a multi-line draft) |
+| `↑` / `↓` | Recall the previous / next prompt — on a draft that spans more than one row, these move the cursor between rows first, wrapped rows included |
+| `Ctrl+←` / `Ctrl+→` | Move the cursor a word at a time. `Alt+←` / `Alt+→` and `Alt+B` / `Alt+F` do the same, because no single sequence reaches every terminal |
 | `Shift+↑` / `Shift+↓` | Scroll the history one line |
 | `Tab` / `Shift+Tab` | Switch agent forwards / backwards (or select inside a popup) |
 | `Ctrl+R` / `Ctrl+X` `R` | Cycle effort: default → low → medium → high → default |
 | `Ctrl+X` `N` | New session |
 | `Ctrl+X` `L` | List sessions |
-| `Ctrl+X` `D` | Expand/collapse every tool block — works mid-turn, and a running tool shows its arguments |
+| `Ctrl+X` `D` | Collapse every tool block, and again to bring them back — works mid-turn, and a running tool shows its arguments |
 | `End` / `Ctrl+X` `B` | Jump to the newest message |
 | `Ctrl+X` `M` | Toggle mouse capture — turn it **off** to select and copy text |
-| `Ctrl+X` `↓` | Toggle the sub-agent panel — it owns the keyboard while open: `↑`/`↓` select, `x` `x` cancels the selected sub-agent, `Esc` closes |
+| `Ctrl+X` `↓` | Toggle the sub-agent panel — it owns the keyboard while open: `↑`/`↓` select, `Enter` (or a click) opens that sub-agent's transcript, `x` `x` cancels it, `Esc` closes |
+| `Ctrl+X` `S` | Open a sub-agent's transcript — every sub-agent this session has run, including turns already finished |
 | `Ctrl+X` `←` / `→` | Toggle the left / right side panel — below `panel.floor` columns of history they close themselves rather than squeeze the conversation |
 | `Ctrl+X` `E` | Refresh both side panels. They also refresh when you send a prompt, when a turn ends, and when a panel opens |
 | `Ctrl+X` `F` | Give the keyboard to a side panel so its own keys work — `Esc` returns it without closing the panel |
 | `+` / `-` / `=` | While a panel has the keyboard: widen, narrow, or reset it to the width in config. Widening stops at `panel.floor` |
 | Click a panel row | Reaches the extension's `onClick` and moves the keyboard to that panel |
 | `Ctrl+X` `X` | Extensions — search the registry, install with `Enter` |
-| Click a tool line | Expand/collapse just that block |
+| Click a tool line | Collapse/expand just that block |
 | Mouse wheel | Scroll the history |
 | `Ctrl+X` `U` | Undo the last turn's changes |
 | `Ctrl+X` `?` | Short help |
@@ -434,14 +436,24 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+G` / `Home` | Jump to the start |
 | `y` / `a` / `n` | Answer a permission dialog: once / always / deny |
 
-Inside the prompt the usual readline keys work: `Ctrl+A` / `Ctrl+E` for line
-start and end, `Ctrl+B` / `Ctrl+F` to move a character, `Ctrl+U` to delete to the
-start of the line.
+Inside the prompt the usual readline keys work: `Ctrl+A` / `Ctrl+E` for the
+start and end of the current line, `Ctrl+B` / `Ctrl+F` to move a character,
+`Ctrl+U` to delete to the start of the line.
 
 There is deliberately **no `<leader>q`**. Four ways out — `Ctrl+C` twice,
 `Ctrl+D`, `<leader>q`, `/exit` — meant three had to be remembered without ever
 being used, and each was a key that could be hit by accident. What is left:
 `Ctrl+D` for fingers, `/exit` for people who type, `Ctrl+C` twice for reflex.
+
+**Reading what a sub-agent did.** A sub-agent runs in its own session, so its
+transcript is a real one: `Enter` on a row of the sub-agent panel — or `Ctrl+X S`
+for any sub-agent this session has run — opens it as a full page, following along
+live while the work is still going. The page is read-only and `Esc` returns; a
+prompt box there would promise messages you could send into a session the
+coordinator is already driving.
+
+Super agents are the exception. They run a CLI outside Titah and only send their
+final answer back, so their page says so rather than drawing an empty screen.
 
 **Selecting text to copy.** While Titah tracks the mouse, the terminal stops
 using clicks to highlight text — the two cannot both be on. `Ctrl+X` `M` turns
@@ -462,6 +474,10 @@ Two honest notes about "1:1 with opencode":
 - `tool_details` is left **unbound** by opencode. Titah binds it to `Ctrl+X D`,
   because a collapsible tool block with no key to collapse it is a feature
   nobody can find.
+- Tool blocks open **by default** — the work you just asked for should not sit
+  behind one more keypress. Reasoning blocks stay folded, because they are
+  usually far longer than the answer they lead to; both use the same mechanism,
+  only the default differs.
 
 `input_newline` in opencode is `shift+return,ctrl+return,alt+return,ctrl+j`.
 Most terminals cannot tell `Shift+Enter` from `Enter`, so the one that actually

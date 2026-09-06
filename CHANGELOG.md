@@ -3,6 +3,44 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
+## 0.5.0
+
+### Kursor prompt
+
+- Panah atas/bawah menelusuri baris **visual**, bukan hanya `\n`. Satu kalimat
+  panjang yang dibungkus terminal tidak lagi dilompati sekaligus — sebelumnya
+  satu tekanan panah di draft seperti itu menukar seluruh ketikan dengan entri
+  histori.
+- `ctrl+←`/`ctrl+→` melompat per kata, dengan `alt+←`/`alt+→` dan `alt+b`/`alt+f`
+  sebagai alias: tidak ada satu sekuens yang dikirim semua terminal.
+- `ctrl+a`/`ctrl+e` berhenti di awal/akhir **baris**, bukan di ujung seluruh
+  draft — sesuai namanya, dan sesuai readline.
+- Tinggi kotak penyunting dihitung dari baris visual yang sama. Sebelumnya ia
+  dihitung dari jumlah `\n` sementara Ink menggambarnya terbungkus, jadi draft
+  satu baris yang panjang memakan baris riwayat paling bawah tanpa jejak.
+
+### Blok tool
+
+- Blok tool **terbuka sejak awal**; klik menutupnya, `ctrl+x d` menutup semuanya
+  dan tekanan kedua mengembalikannya. Hasil kerja yang baru saja diminta tidak
+  lagi bersembunyi di balik satu tekanan lagi.
+- Blok penalaran tetap terlipat: ia biasanya jauh lebih panjang daripada
+  jawabannya. Keduanya memakai mekanisme lipat yang sama — yang berbeda hanya
+  bawaannya, dan himpunan `Expansion` kini berarti "yang dibalik dari bawaan".
+
+### Halaman transkrip sub-agent
+
+- `Enter` atau klik pada baris panel sub-agent membuka transkrip sub-agent itu
+  sebagai halaman penuh, mengalir langsung selagi pekerjaannya berjalan.
+- `ctrl+x s` membuka daftar seluruh sub-agent sesi ini, termasuk giliran yang
+  sudah selesai — panel sendiri dikosongkan setiap prompt baru.
+- Rute baru `GET /session/:id/children`. Sesi anak tetap disembunyikan dari
+  `GET /session`: memilihnya di sana akan mengganti sesi aktif, dan prompt
+  berikutnya ikut masuk ke sesi milik sub-agent.
+- Halamannya baca-saja. Super agent menjalankan CLI di luar Titah dan hanya
+  mengirim jawaban akhirnya, jadi halamannya mengatakan itu alih-alih
+  menggambar layar hampa.
+
 ## 0.4.2
 
 ### Account server

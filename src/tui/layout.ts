@@ -1,5 +1,6 @@
 import type { Message, Part } from "../core/message.ts"
 import { renderMarkdown, type Span } from "./markdown.ts"
+import { visualRows } from "./editing.ts"
 import { splitLines } from "../core/tool/types.ts"
 
 /**
@@ -37,12 +38,30 @@ export interface Line {
 
 /**
  * Mana yang sedang dibuka: `true`/`false` untuk semuanya sekaligus (`ctrl+x d`),
- * atau himpunan `callID` untuk tool yang dibuka satu per satu lewat klik.
+ * atau himpunan `callID` untuk yang DIBALIK dari bawaannya lewat klik.
+ *
+ * Himpunannya berisi "yang berbeda dari bawaan", bukan "yang terbuka". Bawaan
+ * kedua pemakainya tidak sama — blok tool terbuka sejak awal, penalaran tidak —
+ * dan himpunan yang berarti "terbuka" memaksa salah satunya punya mekanisme
+ * lipat sendiri. Dua tombol untuk satu gagasan, dan yang kedua tidak akan
+ * ditemukan siapa pun.
  */
 export type Expansion = boolean | ReadonlySet<string>
 
-function isOpen(expanded: Expansion, callID: string): boolean {
-  return typeof expanded === "boolean" ? expanded : expanded.has(callID)
+/** Blok tool terbuka sejak awal: isinya yang dicari orang, bukan judulnya. */
+const TOOL_OPEN = true
+
+/**
+ * Penalaran TIDAK, meski memakai mekanisme yang sama.
+ *
+ * Ia biasanya jauh lebih panjang daripada jawabannya; dibiarkan terbuka sejak
+ * awal ia menenggelamkan yang sebenarnya dicari orang.
+ */
+const REASONING_OPEN = false
+
+function isOpen(expansion: Expansion, callID: string, byDefault: boolean): boolean {
+  if (typeof expansion === "boolean") return expansion
+  return expansion.has(callID) ? !byDefault : byDefault
 }
 
 /**
@@ -105,7 +124,7 @@ function toolLines(
 ): Line[] {
   const state = part.state
   const base = part.callID
-  const expanded = isOpen(expansion, base)
+  const expanded = isOpen(expansion, base, TOOL_OPEN)
 
   const body = (lines: string[]): Line[] =>
     lines.slice(0, 40).map((line, index) => ({
@@ -297,6 +316,9 @@ function trimSpans(spans: NonNullable<Line["spans"]>): NonNullable<Line["spans"]
  * menenggelamkan yang sebenarnya dicari orang. Yang dipakai `Expansion` yang
  * SAMA dengan blok tool (`ctrl+x d`) — mekanisme kedua berarti dua tombol untuk
  * satu gagasan, dan yang kedua tidak akan ditemukan.
+ *
+ * Yang berbeda hanya BAWAANNYA: blok tool terbuka sejak awal, penalaran tidak.
+ * Lihat `REASONING_OPEN`.
  */
 export function reasoningLines(
   text: string,
@@ -304,7 +326,7 @@ export function reasoningLines(
   options: { live: boolean; expansion: Expansion; width?: number },
 ): Line[] {
   const body = splitLines(text)
-  const open = options.live || isOpen(options.expansion, base)
+  const open = options.live || isOpen(options.expansion, base, REASONING_OPEN)
   const width = options.width ?? 0
   const room = width > 0 ? Math.max(8, width - GUTTER - 2) : 0
 
@@ -599,8 +621,30 @@ export function historyRows(totalRows: number, editorRows: number, headerRows = 
   return Math.max(1, totalRows - headerRows - FOOTER - editorRows - RESERVED_ROWS)
 }
 
-/** Tinggi kotak editor: isi + dua baris bingkai, dibatasi supaya tidak menelan layar. */
-export function editorRows(draft: string, totalRows: number): number {
-  const content = draft === "" ? 1 : draft.split("\n").length
+/**
+ * Lebar teks di dalam kotak editor, dari lebar yang tersedia untuk kotaknya.
+ *
+ * Enam kolom hilang sebelum huruf pertama: dua bingkai, dua `paddingX`, dan dua
+ * untuk awalan `"› "` (lihat `Editor` di `components.tsx`). Angkanya
+ * disebut SEKALI di sini karena tiga pihak membacanya — tinggi yang direservasi,
+ * titik bungkus yang dipakai kursor, dan kotak yang benar-benar digambar. Tiga
+ * ekspresi terpisah untuk satu pembagian adalah cara ketiganya menyimpang.
+ */
+export function editorColumns(outerColumns: number): number {
+  const CHROME = 6
+  return Math.max(1, outerColumns - CHROME)
+}
+
+/**
+ * Tinggi kotak editor: isi + dua baris bingkai, dibatasi supaya tidak menelan
+ * layar.
+ *
+ * Isinya dihitung dari baris VISUAL, bukan dari jumlah `\n`. Ink membungkus
+ * baris panjang, jadi menghitung `\n` saja membuat draft satu baris yang
+ * panjang digambar lebih tinggi daripada yang direservasi di sini — dan
+ * selisihnya memakan baris riwayat paling bawah tanpa jejak.
+ */
+export function editorRows(draft: string, totalRows: number, columns: number): number {
+  const content = draft === "" ? 1 : visualRows(draft, columns).length
   return Math.min(content, Math.max(1, Math.floor(totalRows / 3))) + 2
 }

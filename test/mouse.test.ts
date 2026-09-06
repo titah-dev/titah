@@ -102,13 +102,15 @@ test("teks user dan asisten tidak bisa diklik", () => {
   assert.equal(messageLines(message, false)[0]?.toolID, undefined)
 })
 
-test("himpunan callID hanya membuka tool yang disebut", () => {
-  const dibuka = messageLines(running("c1"), new Set(["c1"]))
-  const tertutup = messageLines(running("c2"), new Set(["c1"]))
+test("himpunan callID hanya MENUTUP tool yang disebut", () => {
+  // Blok tool terbuka sejak awal, jadi himpunannya berisi yang DIBALIK dari
+  // bawaan — bukan yang terbuka. Yang tidak disebut tetap terbuka.
+  const tertutup = messageLines(running("c1"), new Set(["c1"]))
+  const dibuka = messageLines(running("c2"), new Set(["c1"]))
 
   // Judul selalu memuat perintahnya, jadi yang diperiksa baris RINCIAN-nya.
-  assert.ok(dibuka.some((line) => line.kind === "detail"))
   assert.ok(!tertutup.some((line) => line.kind === "detail"))
+  assert.ok(dibuka.some((line) => line.kind === "detail"))
 })
 
 // ---------- rincian saat masih berjalan ----------

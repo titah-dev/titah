@@ -3,6 +3,7 @@ import test from "node:test"
 import {
   RESERVED_ROWS,
   allLines,
+  editorColumns,
   editorRows,
   historyRows,
   isBlank,
@@ -85,6 +86,64 @@ test("tool selesai diringkas satu baris, isinya hanya muncul saat dibuka", () =>
   const terbuka = messageLines(withTool, true).filter((line) => line.kind !== "blank")
   assert.equal(terbuka.length, 4, "judul + tiga baris isi")
   assert.match(terbuka[1]?.text ?? "", /│ baris1/)
+})
+
+const toolSelesai = () =>
+  message("m", {
+    parts: [
+      {
+        type: "tool",
+        callID: "c1",
+        tool: "read",
+        state: {
+          status: "completed",
+          input: {},
+          title: "read a.ts (10 baris)",
+          output: "baris1\nbaris2\nbaris3",
+          truncated: false,
+          started: 1,
+          ended: 2,
+        },
+      },
+    ],
+  })
+
+test("blok tool terbuka sejak awal, tanpa satu pun klik", () => {
+  // Bawaan yang tertutup berarti hasil kerja yang baru saja diminta bersembunyi
+  // di balik satu tekanan lagi, dan yang paling sering dibuka orang justru blok
+  // yang paling baru.
+  const isi = messageLines(toolSelesai(), new Set<string>()).filter((line) => line.kind !== "blank")
+  assert.equal(isi.length, 4, "judul + tiga baris isi")
+})
+
+test("himpunan berisi yang DIBALIK dari bawaan, bukan yang terbuka", () => {
+  // Dua pemakai `Expansion` punya bawaan yang berlawanan. Himpunan yang berarti
+  // "terbuka" akan memaksa salah satunya punya mekanisme lipat sendiri — dan
+  // tombol kedua untuk satu gagasan tidak akan ditemukan siapa pun.
+  const isi = messageLines(toolSelesai(), new Set(["c1"])).filter((line) => line.kind !== "blank")
+  assert.equal(isi.length, 1, "callID di himpunan berarti TERTUTUP untuk blok tool")
+  assert.match(isi[0]?.text ?? "", /…$/)
+})
+
+test("penalaran tetap tertutup sejak awal, meski blok tool tidak", () => {
+  // Penalaran biasanya jauh lebih panjang daripada jawabannya; ia ikut terbuka
+  // berarti riwayat berhenti bisa dibaca sekilas.
+  //
+  // Part penalaran sengaja BUKAN yang terakhir: part terakhir dipaksa terbuka
+  // karena model masih berpikir, dan itu akan menutupi bawaan yang diuji.
+  const pesan = message("m", {
+    parts: [
+      { type: "reasoning", text: "langkah satu\nlangkah dua" },
+      { type: "text", text: "jawaban" },
+    ],
+  })
+
+  const bawaan = messageLines(pesan, new Set<string>()).filter((line) => line.kind === "reasoning")
+  assert.equal(bawaan.length, 1, "terlipat jadi satu baris")
+  assert.match(bawaan[0]?.text ?? "", /✻ thinking \(2 lines\)/)
+
+  const dibuka = messageLines(pesan, new Set(["m:0"])).filter((line) => line.kind === "reasoning")
+  assert.equal(dibuka.length, 3, "judul + dua baris penalaran")
 })
 
 test("tool ditolak dan gagal menampilkan alasannya", () => {
@@ -312,9 +371,23 @@ test("tinggi nol atau negatif tetap menghasilkan minimal satu baris", () => {
 // ---------- pembagian tinggi ----------
 
 test("editor tumbuh mengikuti isi tapi tidak menelan layar", () => {
-  assert.equal(editorRows("", 30), 3, "satu baris isi + dua bingkai")
-  assert.equal(editorRows("a\nb\nc", 30), 5)
-  assert.equal(editorRows("a\n".repeat(50), 30), 12, "dibatasi sepertiga layar + bingkai")
+  assert.equal(editorRows("", 30, 40), 3, "satu baris isi + dua bingkai")
+  assert.equal(editorRows("a\nb\nc", 30, 40), 5)
+  assert.equal(editorRows("a\n".repeat(50), 30, 40), 12, "dibatasi sepertiga layar + bingkai")
+})
+
+test("tinggi editor menghitung baris yang dibungkus, bukan hanya `\\n`", () => {
+  // Yang direservasi di sini harus sama dengan yang digambar Ink. Selama
+  // tingginya dihitung dari `split("\\n")`, draft satu baris yang panjang
+  // digambar lebih tinggi daripada jatahnya, dan selisihnya memakan baris
+  // riwayat paling bawah tanpa jejak.
+  assert.equal(editorRows("x".repeat(25), 30, 10), 5, "tiga baris terbungkus + dua bingkai")
+})
+
+test("lebar teks editor dikurangi bingkai, padding, dan awalan prompt", () => {
+  // Enam kolom: dua bingkai, dua padding, dua untuk `"› "`.
+  assert.equal(editorColumns(100), 94)
+  assert.equal(editorColumns(4), 1, "terminal sempit tidak pernah menghasilkan lebar nol")
 })
 
 test("area riwayat menyusut saat editor membesar, dan tidak pernah nol", () => {
