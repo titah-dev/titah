@@ -191,6 +191,32 @@ export class RpcPeer {
       for (const entry of this.#waiting.values()) entry.reject(error)
       this.#waiting.clear()
     }
+
+    /*
+     * Kegagalan menulis ke stdin anak DICATAT, bukan dijadikan sebab kematian.
+     *
+     * `#write` sudah memeriksa `#dead` sebelum menulis, tapi itu potret sesaat:
+     * anaknya bisa mati di antara pemeriksaan dan tulisan yang mendarat, dan
+     * muatan yang lebih besar dari buffer pipa 64 KB — hasil tool MCP, `didOpen`
+     * yang membawa satu berkas utuh — pasti mendarat sesudahnya. EPIPE-nya lalu
+     * datang ASINKRON sebagai event `error` di stream, dan tanpa listener ini
+     * Node memperlakukannya sebagai `error` tak tertangani lalu menjatuhkan
+     * SELURUH proses Titah karena satu server MCP mati.
+     *
+     * Sengaja tidak memanggil `die` sendiri. EPIPE tiba lebih dulu daripada
+     * `close` — diukur, bukan ditebak — sementara yang berguna bagi pembacanya
+     * justru kode keluar dan stderr yang hanya dibawa `close`. "write EPIPE"
+     * menjelaskan gejala; `"server" exited (3): ...` menjelaskan sebabnya. Yang
+     * ini hanya menahan lemparannya dan menyerahkan kalimatnya ke bawah.
+     *
+     * Kalau `close` tidak pernah datang — server yang menutup stdin tapi tetap
+     * hidup — yang menahannya timeout per permintaan yang sudah ada, dan
+     * kalimatnya ("did not answer in time") memang benar untuk keadaan itu.
+     */
+    let writeFailed = false
+    child.stdin?.on("error", () => {
+      writeFailed = true
+    })
     child.on("error", (error) =>
       die(new RpcError(`Could not start "${this.#options.command}": ${error.message}`)),
     )
@@ -198,6 +224,11 @@ export class RpcPeer {
       die(
         new RpcError(
           `"${this.#options.command}" exited (${code})` +
+            // Disebut karena bedanya nyata bagi yang membacanya: server yang
+            // mati di antara dua permintaan kehilangan tidak apa-apa, sedangkan
+            // yang mati saat sedang ditulisi kehilangan permintaan yang sedang
+            // berjalan — dan itu menjelaskan kenapa jawabannya tidak pernah datang.
+            (writeFailed ? ", with a request still being written to it" : "") +
             (this.#stderr.trim() === "" ? "" : `:\n${this.#stderr.trim()}`),
         ),
       ),
