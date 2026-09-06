@@ -9,15 +9,17 @@ bring the answer back into the conversation. Including **consensus mode**: one
 question fanned out to several agents at once, synthesised, with the
 disagreements marked.
 
-> **Status: 0.5.0, usable.** All milestones M0–M6 are done. 0.2.0 closed six
+> **Status: 0.6.0, usable.** All milestones M0–M6 are done. 0.2.0 closed six
 > gaps measured against `opencode` 1.18.4 and Claude Code 2.1.233 rather than
 > guessed: structured output, cost and limits, hooks, background turns, a web
 > client, and a bash sandbox. 0.3.0–0.4.x added the extension system: side
 > panels contributed by npm packages, a registry to find them, and a version
-> check that refuses the ones that would not load. 0.5.0 is about moving
+> check that refuses the ones that would not load. 0.5.0 was about moving
 > around the terminal — a cursor that walks visual rows and words, tool blocks
-> that open by default, and a full-page transcript for any sub-agent. Every new
-> axis is off or absent by default.
+> that open by default, and a full-page transcript for any sub-agent. 0.6.0
+> turns each side panel into a stack: as many extensions per side as you list,
+> each in its own box, foldable to a single line. Every new axis is off or
+> absent by default.
 >
 > What remains before tagging `v1.0.0` is not code: using Titah to build Titah
 > for a full week. See [DESIGN.md](./DESIGN.md) and [CHANGELOG.md](./CHANGELOG.md).
@@ -426,7 +428,8 @@ Keybindings follow **opencode's defaults**, with `ctrl+x` as the leader:
 | `Ctrl+X` `S` | Open a sub-agent's transcript — every sub-agent this session has run, including turns already finished |
 | `Ctrl+X` `←` / `→` | Toggle the left / right side panel — below `panel.floor` columns of history they close themselves rather than squeeze the conversation |
 | `Ctrl+X` `E` | Refresh both side panels. They also refresh when you send a prompt, when a turn ends, and when a panel opens |
-| `Ctrl+X` `F` | Give the keyboard to a side panel so its own keys work — `Esc` returns it without closing the panel |
+| `Ctrl+X` `F` | Cycle the keyboard through the side panels — `Esc` returns it without closing anything |
+| `Ctrl+X` `Z` | Fold or unfold the focused panel. Clicking its title row does the same |
 | `+` / `-` / `=` | While a panel has the keyboard: widen, narrow, or reset it to the width in config. Widening stops at `panel.floor` |
 | Click a panel row | Reaches the extension's `onClick` and moves the keyboard to that panel |
 | `Ctrl+X` `X` | Extensions — search the registry, install with `Enter` |
@@ -449,6 +452,14 @@ There is deliberately **no `<leader>q`**. Four ways out — `Ctrl+C` twice,
 `Ctrl+D`, `<leader>q`, `/exit` — meant three had to be remembered without ever
 being used, and each was a key that could be hit by accident. What is left:
 `Ctrl+D` for fingers, `/exit` for people who type, `Ctrl+C` twice for reflex.
+
+**More than one extension per side.** A side is a stack: extensions listed for
+the same side are drawn as separate boxes, top to bottom in config order. Height
+runs out faster than width does, so a box can be folded to a single title line —
+with `Ctrl+X Z`, by clicking its title, or by setting `"collapsed": true`. A
+folded panel is not rendered at all, so folding a git panel also stops it running
+`git status` on every refresh. When a side runs out of rows, the bottom box folds
+itself and says so.
 
 **Reading what a sub-agent did.** A sub-agent runs in its own session, so its
 transcript is a real one: `Enter` on a row of the sub-agent panel — or `Ctrl+X S`

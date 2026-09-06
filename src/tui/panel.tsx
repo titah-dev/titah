@@ -21,9 +21,31 @@ export interface PanelProps {
   lines: PanelLine[]
   /** Panel yang sedang menerima tombol. Hanya satu yang boleh menyala. */
   focused?: boolean
+  /** Terlipat: satu baris judul, tanpa bingkai, tanpa isi. */
+  collapsed?: boolean
 }
 
-export function Panel({ width, rows, title, lines, focused }: PanelProps) {
+export function Panel({ width, rows, title, lines, focused, collapsed }: PanelProps) {
+  /*
+   * Box terlipat digambar sebagai SATU `Text`, bukan sebagai `Box` berbingkai
+   * yang isinya kosong.
+   *
+   * Bingkai memakan dua baris untuk tidak menampilkan apa pun, dan tiga box
+   * terlipat akan menghabiskan sembilan baris sidebar — melipat lalu berhenti
+   * jadi jalan keluar dari sidebar yang penuh, yang justru satu-satunya
+   * gunanya. Segitiganya menghadap KANAN, arah yang sama dengan blok tool
+   * terlipat di riwayat: satu bentuk untuk satu gagasan.
+   */
+  if (collapsed === true) {
+    return (
+      <Box width={width} flexShrink={0}>
+        <Text dimColor={!focused} bold={focused}>
+          {panelTitle(`▸ ${title}`, width)}
+        </Text>
+      </Box>
+    )
+  }
+
   const body = panelBody(lines, width, rows)
   return (
     <Box

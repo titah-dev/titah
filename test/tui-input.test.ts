@@ -2695,7 +2695,15 @@ test("klik pada baris panel memanggil onClick dengan indeks baris yang BENAR", a
      * Jadi seluruh kolom panel disapu, dan yang dituntut adalah SATU di
      * antaranya sampai ke onClick.
      */
-    for (let y = 1; y <= 12; y++) {
+    /*
+     * Disapu dari BAWAH ke atas.
+     *
+     * Baris judul kini punya arti sendiri — ia melipat box-nya — dan sapuan
+     * dari atas akan mengenainya lebih dulu, melipat panelnya, lalu tidak
+     * pernah menemukan satu pun baris isi untuk diklik. Baris isi selalu ada di
+     * BAWAH judul, jadi arah ini menemukannya lebih dulu.
+     */
+    for (let y = 14; y >= 1; y--) {
       h.mouse.emit({ kind: "press", x: 4, y })
       await tick(2)
       if (/HIT-/.test(h.frame())) break
@@ -3207,6 +3215,159 @@ test("sesi anak tanpa transkrip mengatakan sebabnya, bukan menggambar layar hamp
 
     assert.match(h.frame(), /sub-agent . claude/)
     assert.match(h.frame(), /No transcript here/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+const RIGHT_ARROW = "\u001b[C"
+
+
+// ---------- banyak extension di satu sisi ----------
+
+/**
+ * Extension sederhana yang MENGHITUNG berapa kali `render` dipanggil.
+ *
+ * Penghitungnya ditulis ke berkas, bukan disimpan di memori: extension dimuat
+ * lewat `import()` di dalam proses yang sama, tapi test tidak punya pegangan ke
+ * modulnya. Berkas adalah satu-satunya jalan untuk bertanya "berapa kali kamu
+ * dipanggil" dari luar.
+ */
+function writeCountingExtension(title: string, side: "left" | "right"): { dir: string; counter: string } {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-stack-ext-"))
+  const counter = path.join(directory, "renders.txt")
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({
+      name: `uji-${title.toLowerCase()}`,
+      type: "module",
+      version: "1.0.0",
+      // Harness me-mount App dengan version "0.4.0"; menyebut rentang lain di
+      // sini membuat `checkEngine` menolaknya sebelum panelnya pernah dimuat.
+      engines: { titah: "^0.4.0" },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `import fs from "node:fs"
+     export default function () {
+       return {
+         title: ${JSON.stringify(title)},
+         side: ${JSON.stringify(side)},
+         render() {
+           fs.appendFileSync(${JSON.stringify(counter)}, "x")
+           return { kind: "rows", rows: [{ text: ${JSON.stringify(`isi-${title}`)} }] }
+         },
+       }
+     }`,
+  )
+  return { dir: directory, counter }
+}
+
+const renderCount = (counter: string): number =>
+  fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0
+
+test("dua extension di sisi yang sama digambar sebagai dua box bertumpuk", async () => {
+  // Sebelumnya yang kedua ditolak dengan "already taken", jadi plafonnya dua
+  // extension untuk seluruh aplikasi — satu kiri, satu kanan.
+  const atas = writeCountingExtension("Atas", "right")
+  const bawah = writeCountingExtension("Bawah", "right")
+  const h = mount({ extension: { [atas.dir]: {}, [bawah.dir]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press(RIGHT_ARROW) // panel_right
+    await tick()
+    await tick()
+
+    const frame = h.frame()
+    assert.match(frame, /isi-Atas/, "box pertama tergambar")
+    assert.match(frame, /isi-Bawah/, "box kedua tergambar juga, bukan ditolak")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("box yang terlipat TIDAK dirender sama sekali", async () => {
+  /*
+   * Bukan sekadar disembunyikan. Panel git yang terlipat tetap akan menjalankan
+   * `git status` tiap refresh, dan melipat lalu berhenti jadi cara mengurangi
+   * apa yang Titah kerjakan atas nama user — yang justru salah satu gunanya.
+   *
+   * Dibuktikan dengan penghitung panggilan, bukan dengan ketiadaan teks di
+   * layar: teks yang hilang juga terjadi kalau render dipanggil lalu hasilnya
+   * dibuang, dan itu tidak menghemat apa pun.
+   */
+  const terlipat = writeCountingExtension("Terlipat", "right")
+  const terbuka = writeCountingExtension("Terbuka", "right")
+  const h = mount({
+    extension: { [terlipat.dir]: { collapsed: true }, [terbuka.dir]: {} },
+  })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press(RIGHT_ARROW)
+    await tick()
+    await tick()
+
+    assert.match(h.frame(), /isi-Terbuka/, "yang terbuka memang dirender")
+    assert.match(h.frame(), /Terlipat/, "yang terlipat tetap terlihat sebagai judul")
+    assert.equal(renderCount(terlipat.counter), 0, "render-nya tidak pernah dipanggil")
+    assert.ok(renderCount(terbuka.counter) > 0)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("ctrl+x f berputar antar box, ctrl+x z melipat yang sedang fokus", async () => {
+  const atas = writeCountingExtension("Atas", "right")
+  const bawah = writeCountingExtension("Bawah", "right")
+  const h = mount({ extension: { [atas.dir]: {}, [bawah.dir]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press(RIGHT_ARROW)
+    await tick()
+    await tick()
+
+    // Fokus pertama = box teratas; tekanan kedua turun ke box berikutnya.
+    // Sebelumnya `<leader>f` hanya bisa menunjuk SISI, jadi tombol yang
+    // diusulkan extension kedua tidak akan pernah sampai kepadanya.
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press("z")
+    await tick()
+    await tick()
+
+    /*
+     * Yang ditunggu adalah PENANDA `▸`, bukan hilangnya `isi-Bawah`.
+     *
+     * `h.frame()` mengembalikan seluruh buffer, dan dua tombol berarti dua
+     * bingkai — yang pertama, saat leader menyala, masih memperlihatkan kedua
+     * box terbuka. `doesNotMatch` di atas buffer seperti itu akan gagal karena
+     * bingkai yang basi, bukan karena produknya salah.
+     *
+     * `▸` hanya digambar untuk box yang TERLIPAT, jadi ia bukti positif —
+     * bukan ketiadaan bukti. Pola yang sama dipakai `⋯` di test blok tool.
+     */
+    assert.match(h.frame(), /▸ Bawah/, "box kedua terlipat jadi satu baris judul")
+    assert.doesNotMatch(h.frame(), /▸ Atas/, "box pertama tidak ikut terlipat")
   } finally {
     h.cleanup()
   }

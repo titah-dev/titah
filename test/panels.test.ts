@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import {
   droppedNotice,
+  foldedNotice,
   panelBody,
   panelHit,
   plain,
@@ -9,9 +10,14 @@ import {
   type PanelLine,
   panelLayout,
   PANEL_CHROME_COLUMNS,
+  PANEL_CHROME_ROWS,
   PANEL_EMPTY,
+  PANEL_BOX_FLOOR,
+  PANEL_COLLAPSED_ROWS,
   PANEL_FLOOR,
   PANEL_WIDTH,
+  stackGeometry,
+  stackLayout,
 } from "../src/tui/panels.ts"
 import { widthOf as displayWidth } from "../src/tui/markdown.ts"
 
@@ -200,47 +206,195 @@ test("terminal yang lebih sempit dari lantainya tetap memberi lebar minimum", ()
   assert.equal(resizePanel({ current: 20, delta: 2, columns: 30, other: 0, floor: PANEL_FLOOR }), 8)
 })
 
+// ---------- tumpukan box ----------
+
+const box = (spec: string, extra: { rows?: number; collapsed?: boolean } = {}) => ({
+  spec,
+  collapsed: extra.collapsed ?? false,
+  ...(extra.rows !== undefined ? { rows: extra.rows } : {}),
+})
+
+test("satu box mendapat seluruh tinggi sisinya", () => {
+  const stack = stackLayout({ rows: 14, boxes: [box("a")], floor: PANEL_BOX_FLOOR })
+  assert.deepEqual(stack.boxes, [{ spec: "a", rows: 14, collapsed: false }])
+  assert.deepEqual(stack.folded, [])
+})
+
+test("sisa tinggi dibagi rata, dan HABIS dibagi", () => {
+  // Baris yang menganggur di dasar sidebar terlihat seperti box yang gagal
+  // digambar, bukan seperti ruang yang memang kosong. 15 = 8 + 7, bukan 7 + 7.
+  const stack = stackLayout({ rows: 15, boxes: [box("a"), box("b")], floor: PANEL_BOX_FLOOR })
+  assert.deepEqual(
+    stack.boxes.map((entry) => entry.rows),
+    [8, 7],
+  )
+  assert.equal(
+    stack.boxes.reduce((sum, entry) => sum + entry.rows, 0),
+    15,
+    "tidak ada baris yang menganggur",
+  )
+})
+
+test("`rows` dilayani lebih dulu, tapi tetap dibatasi yang tersisa", () => {
+  const dilayani = stackLayout({
+    rows: 20,
+    boxes: [box("a", { rows: 6 }), box("b")],
+    floor: PANEL_BOX_FLOOR,
+  })
+  assert.deepEqual(
+    dilayani.boxes.map((entry) => entry.rows),
+    [6, 14],
+  )
+
+  // Permintaan yang lebih besar dari sisi itu sendiri tidak boleh mendorong
+  // box lain ke bawah lantai; ia dipangkas, bukan dituruti.
+  const dipangkas = stackLayout({
+    rows: 12,
+    boxes: [box("a", { rows: 99 }), box("b")],
+    floor: PANEL_BOX_FLOOR,
+  })
+  assert.equal(dipangkas.boxes[1]?.rows, PANEL_BOX_FLOOR + PANEL_CHROME_ROWS)
+  assert.equal(
+    dipangkas.boxes.reduce((sum, entry) => sum + entry.rows, 0),
+    12,
+  )
+})
+
+test("box yang tidak kebagian tinggi melipat sendiri, dari BAWAH ke atas", () => {
+  /*
+   * Urutan config adalah urutan prioritas user. Melipat dari ujung yang lain
+   * berarti box teratas — yang sengaja ia taruh di sana — justru yang pertama
+   * hilang, dan tidak ada apa pun di layar yang menjelaskan kenapa.
+   */
+  const stack = stackLayout({
+    rows: 12,
+    boxes: [box("a"), box("b"), box("c")],
+    floor: PANEL_BOX_FLOOR,
+  })
+  assert.deepEqual(stack.folded, ["c"], "yang paling bawah yang melipat")
+  assert.deepEqual(
+    stack.boxes.map((entry) => entry.collapsed),
+    [false, false, true],
+  )
+  assert.equal(stack.boxes[2]?.rows, PANEL_COLLAPSED_ROWS)
+})
+
+test("box terlipat memakan satu baris, bukan satu bingkai", () => {
+  // Tiga box terlipat yang masih membayar bingkai akan menghabiskan sembilan
+  // baris untuk tidak menampilkan apa-apa, dan melipat berhenti jadi jalan
+  // keluar dari sidebar yang penuh — satu-satunya gunanya.
+  const stack = stackLayout({
+    rows: 10,
+    boxes: [box("a"), box("b", { collapsed: true }), box("c", { collapsed: true })],
+    floor: PANEL_BOX_FLOOR,
+  })
+  assert.deepEqual(
+    stack.boxes.map((entry) => entry.rows),
+    [8, PANEL_COLLAPSED_ROWS, PANEL_COLLAPSED_ROWS],
+  )
+  assert.deepEqual(stack.folded, [], "user yang melipat, bukan lantai")
+})
+
+test("kalau baris terlipat pun tidak muat, yang paling bawah dibuang", () => {
+  // Keadaan merosot yang tetap dilaporkan: panel yang meluber ke kolom tengah
+  // terlihat seperti kerusakan render, dan sumbernya tidak akan dicari di sini.
+  const stack = stackLayout({
+    rows: 2,
+    boxes: [box("a"), box("b"), box("c")],
+    floor: PANEL_BOX_FLOOR,
+  })
+  assert.equal(stack.boxes.length, 2)
+  assert.deepEqual(stack.dropped, ["c"])
+  assert.ok(!stack.folded.includes("c"), "yang dibuang tidak ikut dijanjikan terlipat")
+})
+
+test("notice melipat menyebut jumlah dan lantainya", () => {
+  assert.equal(foldedNotice([], 2), undefined)
+  assert.match(foldedNotice(["a"], 2) ?? "", /1 panel folded/)
+  assert.match(foldedNotice(["a", "b"], 3) ?? "", /2 panels folded .* 3 rows/)
+})
+
+// ---------- peta klik ----------
+
+/*
+ * Geometri dibangun `stackGeometry`, bukan ditulis tangan.
+ *
+ * Menuliskannya sebagai objek literal berarti test ini menyetujui angka yang
+ * ia karang sendiri, dan pergeseran satu baris di penyusunnya akan lolos.
+ * `top: 4` menaruh bingkai atas di baris layar 5 (1-basis), judul di 6, dan
+ * baris isi pertama di 7.
+ */
 const GEOMETRY = {
-  contentTop: 6,
-  left: { from: 1, to: 20, rows: 5 },
-  right: { from: 81, to: 100, rows: 5 },
+  left: stackGeometry([{ spec: "kiri", rows: 8, collapsed: false }], { from: 1, to: 20 }, 4),
+  right: stackGeometry([{ spec: "kanan", rows: 8, collapsed: false }], { from: 81, to: 100 }, 4),
 }
 
-test("klik dipetakan ke sisi dan indeks baris yang benar", () => {
-  // contentTop 6 (0-basis) berarti baris isi pertama ada di baris layar 7
-  // (1-basis). Pergeseran satu di sini membuat SETIAP klik memilih tetangganya.
-  assert.deepEqual(panelHit(GEOMETRY, 5, 7), { side: "left", row: 0 })
-  assert.deepEqual(panelHit(GEOMETRY, 5, 8), { side: "left", row: 1 })
-  assert.deepEqual(panelHit(GEOMETRY, 5, 11), { side: "left", row: 4 })
-  assert.deepEqual(panelHit(GEOMETRY, 90, 9), { side: "right", row: 2 })
+test("klik dipetakan ke box dan indeks baris yang benar", () => {
+  // Pergeseran satu di sini membuat SETIAP klik memilih tetangganya.
+  assert.deepEqual(panelHit(GEOMETRY, 5, 7), { spec: "kiri", row: 0, title: false })
+  assert.deepEqual(panelHit(GEOMETRY, 5, 8), { spec: "kiri", row: 1, title: false })
+  assert.deepEqual(panelHit(GEOMETRY, 5, 11), { spec: "kiri", row: 4, title: false })
+  assert.deepEqual(panelHit(GEOMETRY, 90, 9), { spec: "kanan", row: 2, title: false })
 })
 
 test("batas kolom panel eksklusif di kedua ujung yang benar", () => {
-  assert.deepEqual(panelHit(GEOMETRY, 1, 7), { side: "left", row: 0 })
-  assert.deepEqual(panelHit(GEOMETRY, 20, 7), { side: "left", row: 0 })
+  assert.deepEqual(panelHit(GEOMETRY, 1, 7), { spec: "kiri", row: 0, title: false })
+  assert.deepEqual(panelHit(GEOMETRY, 20, 7), { spec: "kiri", row: 0, title: false })
   assert.equal(panelHit(GEOMETRY, 21, 7), undefined)
   assert.equal(panelHit(GEOMETRY, 80, 7), undefined)
-  assert.deepEqual(panelHit(GEOMETRY, 81, 7), { side: "right", row: 0 })
-  assert.deepEqual(panelHit(GEOMETRY, 100, 7), { side: "right", row: 0 })
+  assert.deepEqual(panelHit(GEOMETRY, 81, 7), { spec: "kanan", row: 0, title: false })
+  assert.deepEqual(panelHit(GEOMETRY, 100, 7), { spec: "kanan", row: 0, title: false })
   assert.equal(panelHit(GEOMETRY, 101, 7), undefined)
 })
 
-test("klik pada bingkai dan judul panel tidak mengenai baris apa pun", () => {
-  // Bingkai atas dan judul ada di kolom panel juga. Meneruskannya ke pencocokan
-  // riwayat akan membuka blok tool yang kebetulan sebaris dengan judul panel.
-  assert.equal(panelHit(GEOMETRY, 5, 5), undefined)
-  assert.equal(panelHit(GEOMETRY, 5, 6), undefined)
-  assert.equal(panelHit(GEOMETRY, 5, 12), undefined)
+test("baris judul adalah gestur LIPAT, bingkainya bukan apa-apa", () => {
+  // Bingkai ada di kolom panel juga. Meneruskannya ke pencocokan riwayat akan
+  // melipat blok tool yang kebetulan sebaris dengan bingkai panel.
+  assert.deepEqual(panelHit(GEOMETRY, 5, 6), { spec: "kiri", row: 0, title: true })
+  assert.equal(panelHit(GEOMETRY, 5, 5), undefined, "bingkai atas")
+  assert.equal(panelHit(GEOMETRY, 5, 12), undefined, "bingkai bawah")
   assert.equal(panelHit(GEOMETRY, 5, 99), undefined)
 })
 
-test("sisi yang tidak tergambar tidak pernah kena klik", () => {
-  const onlyLeft = { contentTop: 6, left: { from: 1, to: 20, rows: 5 } }
-  assert.equal(panelHit(onlyLeft, 90, 7), undefined)
-  assert.equal(panelHit({ contentTop: 6 }, 5, 7), undefined)
+test("box KEDUA di satu sisi punya barisnya sendiri", () => {
+  /*
+   * Inti dari sisi yang menampung banyak box. Selama peta klik hanya mengenal
+   * satu box per sisi, klik di box bawah mengembalikan baris box atas — yang
+   * terbaca sebagai "kliknya kurang akurat", bukan sebagai hitungan yang salah.
+   */
+  const dua = {
+    left: stackGeometry(
+      [
+        { spec: "atas", rows: 6, collapsed: false },
+        { spec: "bawah", rows: 6, collapsed: false },
+      ],
+      { from: 1, to: 20 },
+      0,
+    ),
+    right: [],
+  }
+  // Box atas: bingkai 1, judul 2, isi 3–5, bingkai 6 (1-basis).
+  assert.deepEqual(panelHit(dua, 5, 3), { spec: "atas", row: 0, title: false })
+  // Box bawah mulai di baris 7: bingkai 7, judul 8, isi 9–11.
+  assert.deepEqual(panelHit(dua, 5, 8), { spec: "bawah", row: 0, title: true })
+  assert.deepEqual(panelHit(dua, 5, 9), { spec: "bawah", row: 0, title: false })
+  assert.deepEqual(panelHit(dua, 5, 11), { spec: "bawah", row: 2, title: false })
 })
 
-test("panel tanpa baris isi tidak bisa diklik", () => {
-  // Terjadi saat tinggi panel lebih kecil dari bingkai + judulnya.
-  assert.equal(panelHit({ contentTop: 6, left: { from: 1, to: 20, rows: 0 } }, 5, 7), undefined)
+test("box terlipat hanya bisa dikenai lewat baris judulnya", () => {
+  const terlipat = {
+    left: stackGeometry([{ spec: "lipat", rows: PANEL_COLLAPSED_ROWS, collapsed: true }], { from: 1, to: 20 }, 3),
+    right: [],
+  }
+  assert.deepEqual(panelHit(terlipat, 5, 4), { spec: "lipat", row: 0, title: true })
+  assert.equal(panelHit(terlipat, 5, 5), undefined, "tidak punya baris isi sama sekali")
+})
+
+test("sisi yang tidak tergambar tidak pernah kena klik", () => {
+  const onlyLeft = {
+    left: stackGeometry([{ spec: "kiri", rows: 8, collapsed: false }], { from: 1, to: 20 }, 4),
+    right: [],
+  }
+  assert.equal(panelHit(onlyLeft, 90, 7), undefined)
+  assert.equal(panelHit({ left: [], right: [] }, 5, 7), undefined)
 })

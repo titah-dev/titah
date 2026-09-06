@@ -208,17 +208,18 @@ export interface LoadOptions {
  * sesi — aturan yang sama dengan `plugin` dan dengan server MCP yang mati.
  * Kegagalannya dikumpulkan dan dilaporkan sekali lewat notice.
  *
- * Dua sisi dan lebih dari dua extension: yang PERTAMA di config menang untuk
- * satu sisi, dan sisanya dilaporkan. Urutan config adalah satu-satunya urutan
- * yang user bisa lihat dan ubah; memilih berdasarkan apa pun yang lain berarti
- * pemenangnya tidak bisa dijelaskan.
+ * Satu sisi menampung BANYAK extension, bertumpuk dari atas ke bawah menurut
+ * urutan config. Urutan config adalah satu-satunya urutan yang user bisa lihat
+ * dan ubah; menumpuk berdasarkan apa pun yang lain — abjad, waktu pasang —
+ * berarti urutannya tidak bisa dijelaskan kepada orang yang membaca config-nya
+ * sendiri. Berapa yang muat, dan mana yang melipat sendiri saat tidak muat,
+ * diputuskan `stackLayout` di `tui/panels.ts`, bukan di sini.
  */
 export async function loadExtensions(
   options: LoadOptions,
 ): Promise<{ extensions: LoadedExtension[]; failures: ExtensionFailure[] }> {
   const extensions: LoadedExtension[] = []
   const failures: ExtensionFailure[] = []
-  const taken = new Set<string>()
 
   for (const [spec, entry] of Object.entries(options.config.extension)) {
     if (entry.enabled === false) continue
@@ -244,14 +245,6 @@ export async function loadExtensions(
       }
 
       const side = entry.side ?? panel.side ?? "left"
-      if (taken.has(side)) {
-        throw new ExtensionError(
-          `${spec} wants the ${side} panel, which is already taken. ` +
-            `Set "side" on one of them in your config.`,
-        )
-      }
-      taken.add(side)
-
       const key = entry.key ?? panel.key
       extensions.push({
         spec,

@@ -15,7 +15,7 @@
  * "yang diukur bukan yang dikirim", dan yang ini tidak akan terlihat sampai ada
  * orang menghapus blok `panel` dari config-nya.
  */
-export { PANEL_FLOOR, PANEL_WIDTH } from "../core/schema.ts"
+export { PANEL_BOX_FLOOR, PANEL_FLOOR, PANEL_WIDTH } from "../core/schema.ts"
 
 import { widthOf } from "./markdown.ts"
 
@@ -210,20 +210,181 @@ function truncate(line: string, inner: number): string {
   return `${line.slice(0, cut)}…`
 }
 
-/** Di mana panel digambar di layar, untuk memetakan klik. */
+/**
+ * Baris yang dipakai satu box TERLIPAT: judulnya saja, tanpa bingkai.
+ *
+ * Satu dan bukan tiga. Box terlipat yang masih membayar bingkai atas dan bawah
+ * hampir tidak menghemat apa pun — tiga box terlipat akan memakan sembilan
+ * baris untuk tidak menampilkan apa-apa, dan melipat berhenti jadi jalan keluar
+ * dari sidebar yang penuh.
+ */
+export const PANEL_COLLAPSED_ROWS = 1
+
+/** Satu extension yang meminta tempat di tumpukan sisinya. */
+export interface StackEntry {
+  spec: string
+  /** Tinggi TOTAL yang diminta, termasuk bingkai. Tanpa ini: bagi rata. */
+  rows?: number
+  /** Dilipat oleh user atau oleh config. */
+  collapsed: boolean
+}
+
+/** Satu box beserta tinggi yang benar-benar diberikan kepadanya. */
+export interface StackBox {
+  spec: string
+  /** Tinggi TOTAL di layar, termasuk bingkai. `PANEL_COLLAPSED_ROWS` kalau terlipat. */
+  rows: number
+  collapsed: boolean
+}
+
+export interface StackLayout {
+  boxes: StackBox[]
+  /** Dilipat oleh LANTAI, bukan oleh user — untuk notice. */
+  folded: string[]
+  /** Tidak digambar sama sekali; hanya terjadi saat baris terlipat pun tak muat. */
+  dropped: string[]
+}
+
+/**
+ * Membagi tinggi satu sisi di antara box-boxnya.
+ *
+ * Kembaran `panelLayout` pada sumbu tinggi, dan bentuk kontraknya sengaja sama:
+ * lantai, daftar yang dikorbankan, lalu satu kalimat notice yang menjelaskannya.
+ * Yang sudah paham kenapa panel menutup sendiri saat terminal disempitkan sudah
+ * paham kenapa box melipat sendiri saat terminal dipendekkan.
+ *
+ * Melipat dari BAWAH ke atas. Urutan config adalah urutan prioritas user —
+ * melipat dari ujung yang lain berarti box teratas, yang sengaja ia taruh di
+ * sana, justru yang pertama hilang.
+ */
+export function stackLayout(request: {
+  rows: number
+  boxes: StackEntry[]
+  floor: number
+}): StackLayout {
+  const total = Math.max(0, Math.trunc(request.rows))
+  const floor = Math.max(1, Math.trunc(request.floor))
+  /** Tinggi terkecil sebuah box yang masih pantas disebut terbuka. */
+  const base = floor + PANEL_CHROME_ROWS
+
+  const entries = request.boxes.map((box) => ({ ...box }))
+  const folded: string[] = []
+  const dropped: string[] = []
+
+  const cost = () => {
+    const open = entries.filter((entry) => !entry.collapsed).length
+    return open * base + (entries.length - open) * PANEL_COLLAPSED_ROWS
+  }
+
+  while (cost() > total) {
+    const last = entries.findLastIndex((entry) => !entry.collapsed)
+    if (last === -1) break
+    const entry = entries[last] as StackEntry
+    entry.collapsed = true
+    folded.push(entry.spec)
+  }
+
+  // Bahkan baris judulnya pun tidak muat. Membuangnya dilaporkan, bukan
+  // digambar menimpa riwayat — panel yang meluber ke kolom tengah terlihat
+  // seperti kerusakan render, dan sumbernya tidak akan pernah dicari di sini.
+  while (entries.length > 0 && entries.length * PANEL_COLLAPSED_ROWS > total) {
+    const gone = entries.pop() as StackEntry
+    dropped.push(gone.spec)
+    const at = folded.indexOf(gone.spec)
+    if (at !== -1) folded.splice(at, 1)
+  }
+
+  const heights = entries.map((entry) => (entry.collapsed ? PANEL_COLLAPSED_ROWS : base))
+  const openAt = entries.flatMap((entry, index) => (entry.collapsed ? [] : [index]))
+  let spare = total - heights.reduce((sum, value) => sum + value, 0)
+
+  // Yang menyebut `rows` dilayani lebih dulu, dari atas ke bawah. Permintaan,
+  // bukan jaminan: yang tersisa tetap batas atasnya.
+  for (const index of openAt) {
+    if (spare <= 0) break
+    const wanted = entries[index]?.rows
+    if (wanted === undefined) continue
+    const extra = Math.max(0, Math.min(wanted - base, spare))
+    heights[index] = (heights[index] as number) + extra
+    spare -= extra
+  }
+
+  /*
+   * Sisanya dibagi rata, dan HABIS dibagi.
+   *
+   * Baris yang menganggur di dasar sidebar terlihat seperti box yang gagal
+   * digambar, bukan seperti ruang yang memang kosong. Sisa pembagian jatuh ke
+   * box paling atas, arah yang sama dengan seluruh keputusan lain di sini.
+   */
+  const takers = openAt.filter((index) => entries[index]?.rows === undefined)
+  const pool = takers.length > 0 ? takers : openAt
+  if (pool.length > 0 && spare > 0) {
+    const each = Math.floor(spare / pool.length)
+    let rest = spare - each * pool.length
+    for (const index of pool) {
+      heights[index] = (heights[index] as number) + each + (rest > 0 ? 1 : 0)
+      if (rest > 0) rest -= 1
+    }
+  }
+
+  return {
+    boxes: entries.map((entry, index) => ({
+      spec: entry.spec,
+      rows: heights[index] as number,
+      collapsed: entry.collapsed,
+    })),
+    folded,
+    dropped,
+  }
+}
+
+/** Di mana satu box digambar di layar, untuk memetakan klik. */
 export interface PanelBox {
+  spec: string
   /** Kolom pertama dan terakhir, 1-basis seperti yang dikirim terminal. */
   from: number
   to: number
-  /** Berapa baris isi yang benar-benar digambar. */
+  /** Baris layar 0-basis tempat JUDUL box ini digambar. */
+  titleTop: number
+  /** Baris layar 0-basis baris ISI pertamanya. */
+  top: number
+  /** Berapa baris isi yang benar-benar digambar; 0 kalau terlipat. */
   rows: number
 }
 
 export interface PanelGeometry {
-  /** Baris layar 0-basis tempat baris ISI pertama digambar. */
-  contentTop: number
-  left?: PanelBox
-  right?: PanelBox
+  left: PanelBox[]
+  right: PanelBox[]
+}
+
+/**
+ * Menyusun geometri satu sisi dari hasil `stackLayout`.
+ *
+ * Ada di sini, bukan di app.tsx: yang menghitung tinggi dan yang memetakan klik
+ * harus membaca angka yang sama. Menyusunnya di sisi render berarti dua
+ * ekspresi untuk satu tumpukan, dan gejalanya klik yang mengenai box tetangga —
+ * yang terbaca sebagai "kliknya kurang akurat", bukan sebagai hitungan salah.
+ */
+export function stackGeometry(
+  boxes: StackBox[],
+  columns: { from: number; to: number },
+  top: number,
+): PanelBox[] {
+  const out: PanelBox[] = []
+  let cursor = top
+  for (const box of boxes) {
+    out.push({
+      spec: box.spec,
+      from: columns.from,
+      to: columns.to,
+      // Box terlipat TIDAK punya bingkai: barisnya sendiri adalah judulnya.
+      titleTop: box.collapsed ? cursor : cursor + 1,
+      top: cursor + 2,
+      rows: box.collapsed ? 0 : Math.max(0, box.rows - PANEL_CHROME_ROWS),
+    })
+    cursor += box.rows
+  }
+  return out
 }
 
 /**
@@ -240,21 +401,39 @@ export function panelHit(
   geometry: PanelGeometry,
   x: number,
   y: number,
-): { side: PanelSide; row: number } | undefined {
-  const row = y - 1 - geometry.contentTop
+): { spec: string; row: number; title: boolean } | undefined {
+  const screen = y - 1
   for (const side of ["left", "right"] as const) {
-    const box = geometry[side]
-    if (!box || x < box.from || x > box.to) continue
-    /*
-     * Klik di dalam kolom panel tapi di luar barisnya mengembalikan undefined —
-     * dan pemanggil harus BERHENTI di situ, bukan lanjut mencocokkan ke riwayat.
-     * Bingkai dan judul panel ada di kolom itu juga, dan klik di sana tidak
-     * boleh membuka blok tool yang kebetulan sebaris.
-     */
-    if (row < 0 || row >= box.rows) return undefined
-    return { side, row }
+    for (const box of geometry[side]) {
+      if (x < box.from || x > box.to) continue
+
+      // Baris judul adalah gestur LIPAT, bukan baris isi. Ia diperiksa lebih
+      // dulu karena pada box terlipat ia satu-satunya baris yang ada.
+      if (screen === box.titleTop) return { spec: box.spec, row: 0, title: true }
+
+      const row = screen - box.top
+      if (row >= 0 && row < box.rows) return { spec: box.spec, row, title: false }
+    }
   }
+  /*
+   * Klik di dalam kolom panel tapi di luar baris mana pun mengembalikan
+   * undefined — dan pemanggil harus BERHENTI di situ, bukan lanjut mencocokkan
+   * ke riwayat. Bingkai panel ada di kolom itu juga, dan klik di sana tidak
+   * boleh melipat blok tool yang kebetulan sebaris.
+   */
   return undefined
+}
+
+/**
+ * Kalimat untuk notice saat LANTAI melipat box, bukan user.
+ *
+ * Kembaran `droppedNotice` di bawah, dan ada di sini karena alasan yang sama:
+ * yang melipat dan yang menjelaskan harus satu tempat.
+ */
+export function foldedNotice(folded: string[], floor: number): string | undefined {
+  if (folded.length === 0) return undefined
+  const which = folded.length === 1 ? "1 panel" : `${folded.length} panels`
+  return `${which} folded — an open box needs ${floor} rows`
 }
 
 /**

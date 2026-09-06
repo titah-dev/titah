@@ -43,12 +43,17 @@ import { SubagentPanel, SUBAGENT_PANEL_ROWS, panelWindowStart } from "./subagent
 import { Panel } from "./panel.tsx"
 import {
   droppedNotice,
+  foldedNotice,
   panelLayout,
   PANEL_CHROME_ROWS,
   PANEL_RESIZE_STEP,
   panelHit,
   resizePanel,
+  stackGeometry,
+  stackLayout,
+  type PanelGeometry,
   type PanelLine,
+  type StackBox,
 } from "./panels.ts"
 import { loadExtensions, type ExtensionFailure, type LoadedExtension } from "../core/extension.ts"
 import { errorLines, renderPanel } from "./extension-host.ts"
@@ -298,7 +303,23 @@ export function App({
    * tombol selama terbuka. Menyatukan keduanya berarti membuka panel git
    * membuat prompt tidak bisa diketik lagi.
    */
-  const [panelFocus, setPanelFocus] = useState<"left" | "right" | undefined>(undefined)
+  /*
+   * Box yang sedang menerima tombol, dikenali lewat SPEC-nya dan bukan lewat
+   * sisinya.
+   *
+   * Satu sisi kini menampung banyak box. Selama fokus disimpan sebagai sisi,
+   * `<leader>f` hanya bisa menunjuk "kanan" — dan tombol yang diusulkan
+   * extension kedua di sisi itu tidak akan pernah sampai kepadanya.
+   */
+  const [focusedSpec, setFocusedSpec] = useState<string | undefined>(undefined)
+  /**
+   * Box yang dilipat USER di layar, terpisah dari `collapsed` di config.
+   *
+   * Config adalah nilai awal, bukan kunci: melipat sesuatu dengan tombol tidak
+   * boleh menulis balik ke berkas orang. Yang disimpan hanya penyimpangannya,
+   * jadi `undefined` berarti "ikut config".
+   */
+  const [foldedSpecs, setFoldedSpecs] = useState<Record<string, boolean>>({})
   /**
    * Sisi yang benar-benar TERGAMBAR, disegarkan tiap render.
    *
@@ -311,7 +332,8 @@ export function App({
    * Pola yang sama dengan `view.current` di bawah: hanya render yang tahu apa
    * yang sedang terlihat, dan penanganan tombol datang belakangan.
    */
-  const drawnPanels = useRef<("left" | "right")[]>([])
+  /** Spec box yang benar-benar tergambar, urut kiri-atas ke kanan-bawah. */
+  const drawnPanels = useRef<string[]>([])
 
   /**
    * Lebar hasil resize, per sisi. Kosong berarti pakai lebar dari config.
@@ -353,6 +375,18 @@ export function App({
    */
   const subagentsRef = useRef<TuiState["subagents"]>([])
   const openChildRef = useRef<(sessionID: string, agent: string) => void>(() => {})
+  const toggleFoldRef = useRef<(spec: string) => void>(() => {})
+  /*
+   * Tumpukan terakhir yang digambar.
+   *
+   * Ref, bukan state: `toggleFold` dideklarasikan jauh di atas tempat tumpukan
+   * dihitung — ia butuh `available`, yang baru diketahui di akhir render — dan
+   * menaruh `stacks` di deps-nya akan membacanya sebelum ia ada.
+   */
+  const stacksRef = useRef<{
+    left: { boxes: StackBox[]; folded: string[] }
+    right: { boxes: StackBox[]; folded: string[] }
+  }>({ left: { boxes: [], folded: [] }, right: { boxes: [], folded: [] } })
 
   /**
    * Geometri panel sub-agent untuk klik, diisi saat render dari angka yang SAMA
@@ -363,12 +397,7 @@ export function App({
     undefined,
   )
 
-  const panelView = useRef<{
-    /** Baris layar (0-basis) tempat baris ISI pertama panel digambar. */
-    contentTop: number
-    left?: { from: number; to: number; rows: number }
-    right?: { from: number; to: number; rows: number }
-  }>({ contentTop: 0 })
+  const panelView = useRef<PanelGeometry>({ left: [], right: [] })
   /**
    * Isi panel per sisi, beserta error terakhirnya.
    *
@@ -377,7 +406,7 @@ export function App({
    * panel yang menampilkan keadaan sebelumnya dengan penanda gagal.
    */
   const [panelContent, setPanelContent] = useState<
-    Partial<Record<"left" | "right", { lines: PanelLine[]; error?: string }>>
+    Record<string, { lines: PanelLine[]; error?: string } | undefined>
   >({})
   /**
    * Dinaikkan oleh keempat pemicu refresh Q26. Satu angka, bukan empat effect
@@ -739,19 +768,26 @@ export function App({
        */
       {
         const geometry = panelView.current
-        const inPanelColumns = (["left", "right"] as const).some((side) => {
-          const box = geometry[side]
-          return box !== undefined && event.x >= box.from && event.x <= box.to
-        })
+        const inPanelColumns = (["left", "right"] as const).some((side) =>
+          geometry[side].some((box) => event.x >= box.from && event.x <= box.to),
+        )
         const hit = panelHit(geometry, event.x, event.y)
         if (hit !== undefined) {
-          const owner = extensionsRef.current.find((entry) => entry.side === hit.side)
           /*
-           * Klik juga MEMINDAHKAN fokus ke panel itu. Kalau tidak, klik bekerja
+           * Klik juga MEMINDAHKAN fokus ke box itu. Kalau tidak, klik bekerja
            * lalu tombol `b` yang baru saja diiklankan panelnya tidak bekerja —
            * dua cara berinteraksi dengan satu panel yang tidak saling tahu.
            */
-          setPanelFocus(hit.side)
+          setFocusedSpec(hit.spec)
+
+          // Baris judul MELIPAT, tidak diteruskan ke extension. Sama seperti
+          // blok tool di riwayat: judulnya yang dilipat, isinya yang diklik.
+          if (hit.title) {
+            toggleFoldRef.current(hit.spec)
+            return
+          }
+
+          const owner = extensionsRef.current.find((entry) => entry.spec === hit.spec)
           const verdict = owner?.panel.onClick?.({ row: hit.row })
           if (verdict?.refresh === true) setRefreshToken((value) => value + 1)
           return
@@ -787,6 +823,33 @@ export function App({
     setNotice(text)
     setTimeout(() => setNotice(undefined), 4000)
   }, [])
+
+  /**
+   * Melipat atau membuka satu box.
+   *
+   * Membaca keadaan yang benar-benar TERGAMBAR, bukan nilai config: sebuah box
+   * bisa terlipat karena user, karena config, atau karena lantai tinggi, dan
+   * tombol yang membalik nilai config akan terasa tidak melakukan apa-apa pada
+   * dua dari tiga sebab itu.
+   */
+  const toggleFold = useCallback(
+    (spec: string) => {
+      const stack = stacksRef.current
+      const box = [...stack.left.boxes, ...stack.right.boxes].find((entry) => entry.spec === spec)
+      if (box === undefined) return
+
+      // Yang dilipat LANTAI tidak bisa dibuka: membukanya hanya akan dilipat
+      // lagi oleh perhitungan yang sama pada render berikutnya, dan tombol yang
+      // terlihat tidak bekerja lebih buruk daripada tombol yang menjelaskan.
+      if (box.collapsed && [...stack.left.folded, ...stack.right.folded].includes(spec)) {
+        flash("not enough rows — fold another panel or make the terminal taller")
+        return
+      }
+      setFoldedSpecs((current) => ({ ...current, [spec]: !box.collapsed }))
+    },
+    [flash],
+  )
+
 
   /**
    * `/login` — alur perangkat yang sama persis dengan `titah login`.
@@ -1209,7 +1272,7 @@ export function App({
            * panel yang tidak ada di layar, dan satu-satunya jalan keluarnya Esc
            * yang tidak diketahui user sedang ia butuhkan.
            */
-          setPanelFocus((current) => {
+          setFocusedSpec((current) => {
             const drawn = drawnPanels.current
             if (drawn.length === 0) {
               flash("no side panel is open")
@@ -1218,6 +1281,13 @@ export function App({
             const index = current === undefined ? -1 : drawn.indexOf(current)
             return drawn[index + 1]
           })
+          return
+        case "panel_fold":
+          if (focusedSpec === undefined) {
+            flash(`nothing focused — ${leaderName(keymap)} f picks a panel first`)
+            return
+          }
+          toggleFold(focusedSpec)
           return
         case "extension_picker":
           openExtensionPicker()
@@ -1282,11 +1352,13 @@ export function App({
       mouse,
       mouseCapture,
       openExtensionPicker,
+      focusedSpec,
       openLeaderMenu,
       openSessionPicker,
       openSubagentPicker,
       session.id,
       startNewSession,
+      toggleFold,
     ],
   )
 
@@ -1600,13 +1672,13 @@ export function App({
      * saat menekan Esc adalah bisa mengetik lagi, bukan kehilangan panel yang
      * baru saja ia buka.
      */
-    if (panelFocus !== undefined && !state.permission && !state.question && !leaderActive) {
-      const owner = extensions.find((entry) => entry.side === panelFocus)
+    if (focusedSpec !== undefined && !state.permission && !state.question && !leaderActive) {
+      const owner = extensions.find((entry) => entry.spec === focusedSpec)
       const plain = press.ctrl !== true && press.alt !== true
       if (owner === undefined) {
-        setPanelFocus(undefined)
+        setFocusedSpec(undefined)
       } else if (press.key === "escape" && plain) {
-        setPanelFocus(undefined)
+        setFocusedSpec(undefined)
         return
       } else if (plain && (press.key === "+" || press.key === "-" || press.key === "=")) {
         /*
@@ -1619,7 +1691,7 @@ export function App({
          * `=` mengembalikan ke lebar config, bukan ke angka bawaan Titah —
          * yang user tulis di config adalah lebar yang ia maksud.
          */
-        const side = panelFocus
+        const side = owner.side
         if (press.key === "=") {
           setPanelWidth((current) => ({ ...current, [side]: undefined }))
           return
@@ -2113,20 +2185,12 @@ export function App({
    * yang hilang menelan setiap tombol polos tanpa ada apa pun di layar yang
    * menjelaskan kenapa.
    */
-  useEffect(() => {
-    if (panelFocus === undefined) return
-    const width = panelFocus === "left" ? panels.left : panels.right
-    if (width === 0 || !extensions.some((entry) => entry.side === panelFocus)) setPanelFocus(undefined)
-  }, [panelFocus, panels.left, panels.right, extensions])
 
   extensionsRef.current = extensions
   subagentsRef.current = state.subagents
   openChildRef.current = openChild
+  toggleFoldRef.current = toggleFold
 
-  drawnPanels.current = (["left", "right"] as const).filter(
-    (side) =>
-      (side === "left" ? panels.left : panels.right) > 0 && extensions.some((entry) => entry.side === side),
-  )
 
   const droppedMessage = droppedNotice(panels.dropped, config.panel.floor)
   useEffect(() => {
@@ -2310,6 +2374,62 @@ export function App({
   const window = viewport(lines, available, scroll)
 
   /*
+   * Tumpukan box per sisi, dari tinggi yang BENAR-BENAR tersisa.
+   *
+   * Dihitung di sini dan bukan lebih atas karena `available` baru diketahui
+   * setelah penyunting, popup, dialog, dan panel sub-agent mengambil jatahnya.
+   * Tumpukan yang dihitung dari tinggi terminal akan menjanjikan baris yang
+   * sudah dipakai orang lain, dan yang mengalah adalah riwayat — tanpa error.
+   */
+  const stacks = useMemo(() => {
+    const build = (side: "left" | "right") => {
+      if ((side === "left" ? panels.left : panels.right) === 0) {
+        return { boxes: [], folded: [], dropped: [] }
+      }
+      const entries = extensions
+        .filter((entry) => entry.side === side)
+        .map((entry) => {
+          const wanted = config.extension[entry.spec]?.rows
+          return {
+            spec: entry.spec,
+            collapsed: foldedSpecs[entry.spec] ?? config.extension[entry.spec]?.collapsed ?? false,
+            ...(wanted !== undefined ? { rows: wanted } : {}),
+          }
+        })
+      return stackLayout({ rows: available, boxes: entries, floor: config.panel.boxFloor })
+    }
+    return { left: build("left"), right: build("right") }
+  }, [extensions, foldedSpecs, config, panels.left, panels.right, available])
+
+  /** Spec box yang tergambar, urut kiri dari atas lalu kanan dari atas. */
+  const drawn = useMemo(
+    () => [...stacks.left.boxes, ...stacks.right.boxes].map((box) => box.spec),
+    [stacks],
+  )
+
+  stacksRef.current = stacks
+  drawnPanels.current = drawn
+
+  /*
+   * Fokus dilepas begitu box-nya tidak lagi tergambar — ditutup lantai lebar,
+   * dilipat lantai tinggi, atau extension-nya gagal dimuat. Fokus yang
+   * tertinggal pada box yang hilang menelan setiap tombol polos tanpa ada apa
+   * pun di layar yang menjelaskan kenapa.
+   */
+  useEffect(() => {
+    if (focusedSpec === undefined) return
+    if (!drawn.includes(focusedSpec)) setFocusedSpec(undefined)
+  }, [focusedSpec, drawn])
+
+  const foldedMessage = foldedNotice(
+    [...stacks.left.folded, ...stacks.right.folded],
+    config.panel.boxFloor,
+  )
+  useEffect(() => {
+    if (foldedMessage) flash(foldedMessage)
+  }, [foldedMessage, flash])
+
+  /*
    * Props satu panel, dibangun dari SATU tempat untuk kedua sisi.
    *
    * Judulnya datang dari extension yang termuat, dan `PANEL_EMPTY` yang muncul
@@ -2357,33 +2477,68 @@ export function App({
         }
       : undefined
 
+  /*
+   * Geometri klik, dari tumpukan yang SAMA dengan yang menggambar.
+   *
+   * `stackGeometry` yang menghitungnya dan bukan baris-baris di sini: catatan
+   * di panel sub-agent di atas mencatat persis bug ini pada sumbu tinggi, dan
+   * satu box lebih banyak di satu sisi membuat setiap klik di bawahnya meleset.
+   */
+  const panelTop = onSplash ? 0 : headerHeight
   panelView.current = {
-    contentTop: (onSplash ? 0 : headerHeight) + 2,
-    ...(panels.left > 0
-      ? { left: { from: 1, to: panels.left, rows: Math.max(0, available - PANEL_CHROME_ROWS) } }
-      : {}),
-    ...(panels.right > 0
-      ? {
-          right: {
-            from: size.columns - panels.right + 1,
-            to: size.columns,
-            rows: Math.max(0, available - PANEL_CHROME_ROWS),
-          },
-        }
-      : {}),
+    left: panels.left > 0 ? stackGeometry(stacks.left.boxes, { from: 1, to: panels.left }, panelTop) : [],
+    right:
+      panels.right > 0
+        ? stackGeometry(
+            stacks.right.boxes,
+            { from: size.columns - panels.right + 1, to: size.columns },
+            panelTop,
+          )
+        : [],
   }
 
-  const panelProps = (side: "left" | "right") => {
-    const extension = extensions.find((entry) => entry.side === side)
-    const content = panelContent[side]
+  const panelProps = (side: "left" | "right", box: StackBox) => {
+    const extension = extensions.find((entry) => entry.spec === box.spec)
+    const content = panelContent[box.spec]
     return {
       side,
       width: side === "left" ? panels.left : panels.right,
-      rows: available,
-      title: extension?.panel.title ?? (side === "left" ? "Left" : "Right"),
-      focused: panelFocus === side,
+      rows: box.rows,
+      collapsed: box.collapsed,
+      title: extension?.panel.title ?? box.spec,
+      focused: focusedSpec === box.spec,
       lines: content?.error !== undefined ? [...content.lines, ...errorLines(content.error)] : (content?.lines ?? []),
     }
+  }
+
+  /**
+   * Sisi yang terbuka tapi tidak diisi extension mana pun.
+   *
+   * Tetap digambar sebagai satu kotak kosong bertuliskan `PANEL_EMPTY`, sama
+   * seperti sebelum sisi bisa menampung banyak box: sisi yang dibuka lalu tidak
+   * menggambar apa pun terbaca sebagai tombol yang rusak.
+   */
+  const emptyProps = (side: "left" | "right") => ({
+    side,
+    width: side === "left" ? panels.left : panels.right,
+    rows: available,
+    title: side === "left" ? "Left" : "Right",
+    focused: false,
+    lines: [],
+  })
+
+  const panelStack = (side: "left" | "right") => {
+    const width = side === "left" ? panels.left : panels.right
+    if (width === 0) return null
+    const boxes = stacks[side].boxes
+    if (boxes.length === 0) return <Panel {...emptyProps(side)} />
+    return (
+      <Box flexDirection="column" width={width} flexShrink={0}>
+        {boxes.map((box) => (
+          <Panel key={box.spec} {...panelProps(side, box)} />
+        ))}
+      </Box>
+    )
   }
 
   /*
@@ -2398,23 +2553,38 @@ export function App({
     let alive = true
     for (const side of ["left", "right"] as const) {
       const width = side === "left" ? panels.left : panels.right
-      const extension = extensions.find((entry) => entry.side === side)
-      if (width === 0 || extension === undefined) continue
+      if (width === 0) continue
 
-      void renderPanel({ extension, width, rows: available }).then((result) => {
-        if (!alive) return
-        setPanelContent((current) => ({
-          ...current,
-          // Baris lama dipertahankan saat render gagal. Lihat komentar
-          // deklarasi `panelContent`.
-          [side]: result.error === undefined ? result : { lines: current[side]?.lines ?? [], error: result.error },
-        }))
-      })
+      for (const box of stacks[side].boxes) {
+        /*
+         * Box terlipat TIDAK dirender sama sekali.
+         *
+         * Bukan sekadar disembunyikan: panel git yang terlipat tetap akan
+         * menjalankan `git status` tiap refresh, dan melipat lalu berhenti jadi
+         * cara mengurangi apa yang Titah kerjakan atas namamu.
+         */
+        if (box.collapsed) continue
+        const extension = extensions.find((entry) => entry.spec === box.spec)
+        if (extension === undefined) continue
+
+        void renderPanel({ extension, width, rows: box.rows }).then((result) => {
+          if (!alive) return
+          setPanelContent((current) => ({
+            ...current,
+            // Baris lama dipertahankan saat render gagal. Lihat komentar
+            // deklarasi `panelContent`.
+            [box.spec]:
+              result.error === undefined
+                ? result
+                : { lines: current[box.spec]?.lines ?? [], error: result.error },
+          }))
+        })
+      }
     }
     return () => {
       alive = false
     }
-  }, [extensions, panels.left, panels.right, available, refreshToken])
+  }, [extensions, panels.left, panels.right, stacks, refreshToken])
 
 
 
@@ -2478,7 +2648,7 @@ export function App({
             `columns` yang diteruskan ke Splash adalah kolom TENGAH, supaya
             logo dan prompt terpusat di ruang yang benar-benar tersisa. */}
         <Box flexDirection="row" flexGrow={1}>
-          {panels.left > 0 ? <Panel {...panelProps("left")} /> : null}
+          {panelStack("left")}
           <Box flexDirection="column" flexGrow={1}>
         <Splash
           columns={panels.content}
@@ -2501,7 +2671,7 @@ export function App({
           }
         />
           </Box>
-          {panels.right > 0 ? <Panel {...panelProps("right")} /> : null}
+          {panelStack("right")}
         </Box>
         {/* Footer juga di sini: ia satu-satunya tempat keadaan leader dan pesan
             flash terlihat, dan layar pembuka adalah tempat orang pertama kali
@@ -2542,14 +2712,14 @@ export function App({
           dialog izin yang menyempit ke lebar riwayat akan memotong perintah
           yang justru sedang diminta persetujuannya. */}
       <Box flexDirection="row" flexGrow={1}>
-        {panels.left > 0 ? <Panel {...panelProps("left")} /> : null}
+        {panelStack("left")}
         <History
           lines={window.lines}
           hiddenAbove={window.hiddenAbove}
           hiddenBelow={window.hiddenBelow}
           jumpHint={jumpKey}
         />
-        {panels.right > 0 ? <Panel {...panelProps("right")} /> : null}
+        {panelStack("right")}
       </Box>
 
       {/* Ruang tunggu tetap: dua baris, selalu, apa pun panjang percakapannya

@@ -258,6 +258,8 @@ berarti mengirim API yang lebih besar dari yang bisa dijaga.
 | `<leader>←` | buka/tutup panel kiri |
 | `<leader>→` | buka/tutup panel kanan |
 | `<leader>e` | segarkan kedua panel |
+| `<leader>f` | berputar antar box; Esc mengembalikan papan tombol |
+| `<leader>z` | lipat/buka box yang sedang fokus |
 | `<leader>f` | serahkan papan tombol ke panel samping; `Esc` mengambilnya kembali |
 
 Saat panel sedang fokus, tiga tombol **dipesan Titah** dan tidak pernah
@@ -306,11 +308,46 @@ extension-nya sendiri dan muncul di menu leader di bawah aksi bawaan.
 Extension memilih `side` (`"left"` atau `"right"`); user boleh menimpanya di
 config. Lebar dan lantai ada di blok `panel`, bukan di dalam kode Titah.
 
-Dua extension yang menginginkan sisi yang sama: yang **pertama di config**
-menang, dan yang kedua dilaporkan lewat notice. Urutan config adalah satu-satunya
-urutan yang user bisa lihat dan ubah — memilih berdasarkan abjad atau waktu
-pasang berarti pemenangnya tidak bisa dijelaskan kepada orang yang membaca
-config-nya sendiri.
+**Satu sisi menampung banyak extension**, bertumpuk dari atas ke bawah menurut
+urutan config. Urutan config adalah satu-satunya urutan yang user bisa lihat dan
+ubah — menumpuk berdasarkan abjad atau waktu pasang berarti urutannya tidak bisa
+dijelaskan kepada orang yang membaca config-nya sendiri.
+
+```jsonc
+"extension": {
+  "@titah/extension-git":   { "side": "right" },   // di atas
+  "@titah/extension-tests": { "side": "right", "rows": 6 },
+  "@titah/extension-notes": { "side": "right", "collapsed": true }
+}
+```
+
+`rows` adalah permintaan, bukan jaminan: yang tersisa setelah box lain dilayani
+tetap batas atasnya, dan tanpa angka itu sisa tinggi dibagi rata. `collapsed`
+adalah nilai AWAL — melipat sesuatu dengan tombol tidak menulis balik ke config,
+karena config yang berubah sendiri karena tombol berhenti bisa dibaca sebagai
+pernyataan niat.
+
+### Melipat, dan kenapa ia wajib ada
+
+Tinggi habis jauh lebih cepat daripada lebar. Sisi setinggi 14 baris — terminal
+30 baris dengan header lebar — memberi 11 baris isi untuk satu box, 4 untuk dua,
+dan 1–2 untuk tiga; tiap box memakai tiga baris untuk bingkai dan judulnya.
+
+Box terlipat jadi **satu baris** judul ber-`▸`, tanpa bingkai. Satu dan bukan
+tiga: box terlipat yang masih membayar bingkai hampir tidak menghemat apa pun,
+dan melipat berhenti jadi jalan keluar dari sidebar yang penuh. `render`
+extension-nya **tidak dipanggil sama sekali** selama ia terlipat — panel git yang
+terlipat tidak boleh tetap menjalankan `git status` tiap refresh.
+
+Melipatnya lewat `<leader>z` pada box yang sedang fokus, atau klik pada baris
+judulnya. `<leader>f` berputar antar box, bukan antar sisi.
+
+**Di bawah `panel.boxFloor`, box melipat sendiri** — dari BAWAH ke atas, dan
+dilaporkan lewat notice. Urutan config adalah urutan prioritas: melipat dari
+ujung yang lain berarti box teratas, yang sengaja ditaruh di sana, justru yang
+pertama hilang. Yang dilipat lantai tidak bisa dibuka dengan `<leader>z`; ia akan
+dilipat lagi oleh perhitungan yang sama pada render berikutnya, jadi Titah
+mengatakannya alih-alih memberi tombol yang terlihat tidak bekerja.
 
 Default: 20 kolom kiri, 20 kolom kanan, lantai history 40 kolom. Di terminal 80
 kolom itu berarti keduanya boleh terbuka dan history dapat tepat 40.
