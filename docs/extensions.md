@@ -410,6 +410,39 @@ hasil yang tidak akan dipakai.
 `"enabled": false` membuat modulnya **tidak di-`import` sama sekali**, bukan
 sekadar tidak dipakai — kode di level atas modul berjalan saat import.
 
+### Panel yang hilang: ke mana harus melihat
+
+Notice saat memuat itu **sekejap**, dan keadaannya berlaku sepanjang sesi. Jadi
+sisi yang terbuka tapi tidak satu pun extension-nya berhasil dimuat berbunyi
+`⚠ N failed`, bukan `No extension` — bedanya menentukan ke mana orang mencari:
+yang satu menyuruhnya memasang sesuatu, yang lain menyuruhnya membaca sebabnya.
+Footer membawa kalimat lengkapnya selama keadaan itu masih berlaku.
+
+Dua perintah yang menjawabnya:
+
+```bash
+titah doctor              # manifest dan engines.titah, TANPA menjalankan kodenya
+titah extension list      # dimuat sungguhan — menangkap kegagalan saat import juga
+```
+
+`doctor` sengaja tidak meng-`import` apa pun, aturan yang sama dengan bagian MCP
+di sana. Konsekuensinya jujur dan dicetak di layar: ia tidak bisa melihat factory
+yang melempar atau yang tidak mengembalikan `render` — untuk itu ada `extension
+list`.
+
+Kegagalan yang paling sering terjadi bukan bug di extension-nya:
+
+```
+✗ @titah/extension-git
+    @titah/extension-git needs Titah ^0.4.0, but this is 0.6.0.
+```
+
+Di bawah 1.0.0, caret npm berarti **hanya minor itu** — `^0.4.0` adalah 0.4.x dan
+bukan 0.5 atau 0.6. Jadi setiap kenaikan minor Titah mematikan setiap extension
+yang belum diterbitkan ulang dengan rentang yang lebih lebar. `titah extension
+update` hanya bisa menolong kalau versi kompatibelnya memang sudah ada di npm;
+kalau belum, yang perlu diperbarui adalah paketnya, bukan pemasangannya.
+
 ## Kontrak API
 
 `engines.titah` diperiksa **saat load**. Versi yang tidak cocok berarti extension

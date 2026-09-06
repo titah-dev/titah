@@ -138,6 +138,23 @@ export const PANEL_CHROME_ROWS = 3
 export const PANEL_EMPTY = "No extension"
 
 /**
+ * Ditampilkan saat ADA extension yang dikonfigurasi tapi tidak satu pun berhasil
+ * dimuat.
+ *
+ * `PANEL_EMPTY` berbohong dalam keadaan itu: bukan "tidak ada extension",
+ * melainkan "ada dan ditolak". Bedanya menentukan ke mana orang mencari — yang
+ * satu menyuruhnya memasang sesuatu, yang lain menyuruhnya membaca sebabnya.
+ *
+ * Pendek dengan sengaja, dan tunduk pada batas yang sama dengan `PANEL_EMPTY`:
+ * enam belas kolom di dalam panel bawaan. Kalimat yang bisa ditindaklanjuti
+ * tidak muat di situ dan akan terpotong di tengah kata — jadi kalimat itu pergi
+ * ke footer, dan yang tinggal di sini cuma penunjuknya.
+ */
+export function panelFailed(count: number): string {
+  return `⚠ ${count} failed`
+}
+
+/**
  * Satu baris di dalam panel, beserta gayanya.
  *
  * Bergaya dan bukan string telanjang karena `ViewRow` membawa `dim`, `color`,

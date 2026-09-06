@@ -283,3 +283,66 @@ test("doctor diam soal allowlist kalau user memang tidak memakainya", () => {
   // dikatakan — lihat "Nothing to fix" pada bagian Context windows.
   assert.doesNotMatch(output, /Bash allowlist/)
 })
+
+
+test("doctor menyebut extension yang DITOLAK beserta sebabnya", () => {
+  /*
+   * Kelas kegagalan yang paling sering membuat panel hilang tanpa jejak: paket
+   * terpasang dan terdaftar, tapi `engines.titah`-nya tidak lagi memuat versi
+   * Titah yang berjalan — yang terjadi setiap kali Titah naik versi minor
+   * sementara extension-nya belum diterbitkan ulang.
+   *
+   * `^0.1.0` dipakai supaya test ini tidak pernah bergantung pada versi repo
+   * saat ini; rentangnya tidak akan pernah cocok.
+   */
+  const root = isolatedProject({ extension: { "./ext-lama": {} } }, {})
+  fs.mkdirSync(path.join(root, "ext-lama"))
+  fs.writeFileSync(
+    path.join(root, "ext-lama", "package.json"),
+    JSON.stringify({
+      name: "ext-lama",
+      version: "1.0.0",
+      engines: { titah: "^0.1.0" },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+
+  const output = runDoctor(root)
+  assert.match(output, /Extensions/)
+  assert.match(output, /✗ \.\/ext-lama/)
+  assert.match(output, /needs Titah \^0\.1\.0/, "sebabnya disebut, bukan cuma tandanya")
+})
+
+test("doctor memeriksa extension TANPA meng-import-nya", () => {
+  /*
+   * Aturan yang sama dengan bagian MCP, dan dinyatakan di layar supaya
+   * batasannya jujur: doctor tidak bisa melihat kegagalan yang baru muncul saat
+   * modulnya dijalankan. Panelnya sengaja ditulis melempar di level atas —
+   * kalau doctor meng-import-nya, ia akan jatuh di sini alih-alih melaporkan.
+   */
+  const root = isolatedProject({ extension: { "./ext-meledak": {} } }, {})
+  fs.mkdirSync(path.join(root, "ext-meledak"))
+  fs.writeFileSync(
+    path.join(root, "ext-meledak", "package.json"),
+    JSON.stringify({
+      name: "ext-meledak",
+      version: "1.0.0",
+      engines: { titah: ">=0.0.1" },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+  fs.writeFileSync(
+    path.join(root, "ext-meledak", "panel.mjs"),
+    `throw new Error("extension ini tidak boleh pernah dijalankan doctor")`,
+  )
+
+  const output = runDoctor(root)
+  assert.match(output, /✓ \.\/ext-meledak/, "manifest-nya sehat, jadi doctor melaporkannya sehat")
+  assert.match(output, /never runs third-party code/, "batasannya dinyatakan, bukan disembunyikan")
+})
+
+test("doctor mengatakan kalau memang tidak ada extension yang dikonfigurasi", () => {
+  // Diam di bagian ini tidak bisa dibedakan dari bagian yang lupa ditulis.
+  const output = runDoctor(isolatedProject({}, {}))
+  assert.match(output, /Extensions\n\s+\(none configured\)/)
+})
