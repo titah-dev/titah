@@ -310,7 +310,8 @@ test("doctor menyebut extension yang DITOLAK beserta sebabnya", () => {
   const output = runDoctor(root)
   assert.match(output, /Extensions/)
   assert.match(output, /✗ \.\/ext-lama/)
-  assert.match(output, /needs Titah \^0\.1\.0/, "sebabnya disebut, bukan cuma tandanya")
+  assert.match(output, /needs extension API \^0\.1\.0/, "sebabnya disebut, bukan cuma tandanya")
+  assert.match(output, /provides/, "kedua angka disebut — API yang memutuskan, versi produk yang memberi konteks")
 })
 
 test("doctor memeriksa extension TANPA meng-import-nya", () => {

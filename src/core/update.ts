@@ -108,6 +108,13 @@ export function updateNotice(status: UpdateStatus): string | undefined {
 /**
  * Membandingkan versi.
  *
+ * Ini SATU-SATUNYA pemakaian `satisfiesEngine` yang membandingkan versi PRODUK,
+ * dan itu benar: yang ditanyakan di sini "apakah ada Titah yang lebih baru di
+ * npm", bukan "apakah sebuah extension cocok". Dua pemakai yang lain —
+ * `checkEngine` dan pemilih versi di `extension-install.ts` — membandingkan
+ * `EXTENSION_API`. Menyeragamkan ketiganya akan membuat pemberitahuan versi baru
+ * berhenti bekerja setiap kali kontrak extension tidak ikut bergerak.
+ *
  * `satisfiesEngine(latest, ">=current")` yang dipakai, bukan perbandingan
  * string: `"0.10.0" > "0.9.0"` bernilai false secara leksikografis, dan itu
  * membuat update paling penting — yang menyeberangi angka dua digit — jadi

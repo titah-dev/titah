@@ -130,18 +130,52 @@ yang salah.
 
 `titah.panel` dan `engines.titah` keduanya WAJIB.
 
-Perhatikan angkanya. `engines.titah` harus menyebut versi pertama yang benar-benar
-punya loader extension — bukan versi Titah tertua yang kebetulan ada. Menulis
-`^0.2.0` membuat pemeriksaan LOLOS di Titah 0.2.0, yang tidak punya loader sama
-sekali: extension terpasang, lalu tidak ada apa pun yang memuatnya, dan tidak ada
-satu pun pesan yang menyebutkan kenapa.
+### `engines.titah` menyatakan versi API, bukan versi Titah
 
-Dan karena caret di bawah 1.0.0 mengunci minor (aturan npm), `^0.3.0` menolak
-Titah 0.4.0. Itu bukan kekeliruan — selama API belum stabil, extension memang
-harus dibaca ulang penulisnya setiap kali minor Titah naik. `titah.panel` adalah berkas yang di-`import`, dan
-`engines.titah` diperiksa saat load — extension tanpa itu **ditolak**, bukan
-diterima. Selama API masih 0.x ia berubah, dan paket yang tidak menyatakan versi
-yang ia targetkan tidak bisa dibedakan dari paket yang ditulis dua rilis lalu.
+**Ini berubah di 0.7.0, dan artinya bergeser.** Sebelumnya angka itu dibandingkan
+dengan versi produk Titah. Akibatnya setiap kenaikan minor Titah mematikan setiap
+extension yang terpasang — padahal `src/extension.ts` tidak berubah satu byte pun
+dari 0.4.0 sampai 0.6.1, lima rilis berturut-turut.
+
+Sekarang ia dibandingkan dengan **`EXTENSION_API`**: versi dari kontrak di
+`titah-code/extension`, yang hanya bergerak kalau kontrak itu sendiri berubah.
+
+```js
+import { EXTENSION_API } from "titah-code/extension"   // "0.4.0"
+```
+
+Dua nomor untuk dua pertanyaan yang memang berbeda: *"Titah mana yang kamu
+jalankan"* dan *"kontrak mana yang kamu tulis di atasnya"*. Selama keduanya satu
+angka, jawaban kedua ikut berubah tiap kali yang pertama berubah.
+
+Yang perlu kamu lakukan sebagai penulis extension: **tidak ada.** Nilai awalnya
+`0.4.0`, jadi setiap paket yang sudah terbit — semuanya menyatakan `^0.4.0` —
+tetap jalan tanpa diterbitkan ulang.
+
+Angka itu naik ketika ada yang bisa kamu amati berubah: nama yang diekspor,
+bentuk sebuah tipe, arti sebuah field. Saat itu terjadi, extension lama ditolak
+dengan kalimat yang menyebut sebabnya — bukan `TypeError` di tengah render.
+
+`titah.panel` dan `engines.titah` keduanya tetap **WAJIB**. Extension tanpa
+`engines.titah` ditolak, bukan diterima: paket yang tidak menyatakan kontrak yang
+ia targetkan tidak bisa dibedakan dari paket yang ditulis dua rilis lalu.
+
+### Bentuk rentang yang dipahami
+
+```
+*  x                    apa saja
+1.2.3                   persis itu
+^1.2.3  ~1.2.3          aturan npm, termasuk caret 0.x yang mengunci minor
+>=1.2.3  >1.2.3         batas bawah
+<=1.2.3  <1.2.3         batas atas
+>=0.4.0 <1.0.0          konjungsi — semuanya harus cocok
+^0.4.0 || ^0.5.0        alternatif — salah satu cocok sudah cukup
+```
+
+Rentang yang tidak dikenali **ditolak**, bukan diloloskan: memuat extension
+karena rentangnya tidak terbaca adalah kebalikan dari gunanya pemeriksaan ini.
+Bagian cacat di dalam konjungsi menjatuhkan kelompoknya — `>=0.4.0 <BOGUS` yang
+diloloskan berarti batas atas yang sengaja kamu tulis hilang tanpa jejak.
 
 Kodenya:
 
@@ -445,7 +479,7 @@ kalau belum, yang perlu diperbarui adalah paketnya, bukan pemasangannya.
 
 ## Kontrak API
 
-`engines.titah` diperiksa **saat load**. Versi yang tidak cocok berarti extension
+`engines.titah` diperiksa **saat load**, terhadap `EXTENSION_API`. Versi yang tidak cocok berarti extension
 tidak dimuat, dengan notice yang menyebut versi yang dibutuhkan dan versi yang
 ada.
 

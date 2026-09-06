@@ -35,6 +35,15 @@ job, not the code's.
 `erasableSyntaxOnly` is on. No parameter properties, no `enum`, no namespaces —
 anything that needs more than deleting the types is rejected at compile time.
 
+## Permukaan publik extension
+
+`src/extension.ts` adalah kontrak yang dipakai paket npm pihak ketiga, dan
+`EXTENSION_API` di dalamnya adalah versinya. Mengubah nama yang diekspor, bentuk
+sebuah tipe, atau arti sebuah field berarti **menaikkan angka itu** — dan itu
+mematikan setiap extension yang sudah terbit sampai masing-masing diterbitkan
+ulang. Ada test yang gagal kalau ia naik, supaya keputusan itu tidak pernah
+terjadi tanpa disengaja. Versi produk Titah TIDAK ada hubungannya.
+
 ## Comments
 
 Comments explain **why**, never what. The what is in the line below them.

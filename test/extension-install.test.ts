@@ -256,7 +256,7 @@ test("update memindahkan lockfile dan melaporkan dari-ke", async () => {
 
   const result = await updateExtension({
     packageName: "@a/b",
-    titahVersion: "0.4.0",
+    api: "0.4.0",
     root,
     lockFile: lock,
     run: npm.run,
@@ -281,7 +281,7 @@ test("update yang tidak mengubah apa pun TETAP menyebut versi yang diblokir", as
 
   const result = await updateExtension({
     packageName: "@a/b",
-    titahVersion: "0.4.0",
+    api: "0.4.0",
     root,
     lockFile: lock,
     run: npm.run,
@@ -301,7 +301,7 @@ test("update tidak memasang apa pun kalau tidak ada versi yang kompatibel", asyn
 
   const result = await updateExtension({
     packageName: "@a/b",
-    titahVersion: "0.1.0",
+    api: "0.1.0",
     root,
     lockFile: lock,
     run: npm.run,

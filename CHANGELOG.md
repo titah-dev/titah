@@ -5,6 +5,31 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-06
+
+### Extension bertahan melewati upgrade Titah
+
+- **`engines.titah` sekarang diperiksa terhadap versi API, bukan versi produk.**
+  Titah mengumumkan `EXTENSION_API` dari `titah-code/extension` — versi kontrak,
+  yang hanya bergerak kalau kontrak itu sendiri berubah. Sebelumnya setiap
+  kenaikan minor Titah mematikan setiap extension yang terpasang, padahal
+  `src/extension.ts` tidak berubah satu byte pun dari 0.4.0 sampai 0.6.1.
+- Nilai awalnya `0.4.0`, dan itu disengaja: **setiap extension yang sudah terbit
+  hidup lagi tanpa diterbitkan ulang**, karena semuanya menyatakan `^0.4.0`.
+- Pemeriksaannya **dipindahkan, bukan dilemahkan**. Kontrak yang benar-benar
+  tidak cocok tetap ditolak, dan kalimatnya menyebut kedua angka —
+  `needs extension API ^9.0.0, but Titah 0.7.0 provides 0.4.0` — karena satu
+  angka saja terbaca seperti kerusakan.
+- `satisfiesEngine` mengerti rentang majemuk: `||`, konjungsi berspasi
+  (`>=0.4.0 <1.0.0`), dan operator `<` `<=` `>`. Sebelumnya satu-satunya bentuk
+  lebar adalah `>=0.4.0` yang tanpa batas atas sama sekali. Rentang yang tidak
+  dikenali tetap **ditolak**, dan bagian cacat di dalam konjungsi tetap
+  menjatuhkan kelompoknya.
+- `titah extension update` ikut memilih berdasarkan API, jadi ia berhenti
+  menolak setiap versi terbit setiap kali Titah naik minor.
+- `titah upgrade` **tidak** ikut: ia membandingkan versi Titah sendiri di npm,
+  pertanyaan yang berbeda, dan alasannya ditulis di tempatnya.
+
 ## [0.6.1] — 2026-09-06
 
 ### Extension yang ditolak
