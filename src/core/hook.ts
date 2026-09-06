@@ -124,11 +124,35 @@ export function runHook(
       resolve({ run: hook.run, code, stdout, stderr, timedOut })
     })
 
+    /*
+     * Kait yang tidak membaca stdin menutupnya lalu keluar. Tulisan yang datang
+     * sesudah itu gagal dengan EPIPE, dan itu BUKAN kesalahan — `pwd`, `true`,
+     * dan formatter yang cuma melihat `$TITAH_TOOL` semuanya berlaku begitu.
+     *
+     * Listener ini yang menahannya, bukan `try`/`catch` di bawah. Kegagalan
+     * stream datang ASINKRON sebagai event `error`, jadi ia tidak pernah lewat
+     * blok `try` mana pun; tanpa listener, Node memperlakukannya sebagai event
+     * `error` tak tertangani dan menjatuhkan SELURUH proses.
+     *
+     * Itu sebabnya bug ini bertahan lama dengan hanya `try`/`catch`: muatan
+     * kecil muat seluruhnya di buffer pipa, jadi `end()` selesai sebelum anaknya
+     * sempat keluar dan tidak ada yang pernah gagal. Ia baru muncul ketika
+     * anaknya menang balapan — di bawah beban, atau pada muatan yang lebih besar
+     * dari buffer pipa, yang wajar karena masukan tool bisa memuat seluruh isi
+     * berkas.
+     *
+     * Diabaikan diam-diam, dan itu aman: putusan sebuah kait datang dari kode
+     * keluarnya, bukan dari apakah kita berhasil menyerahkan muatannya. Kait
+     * yang benar-benar BUTUH muatan itu akan gagal atas namanya sendiri, dan
+     * `code` bukan-nol itulah yang dilaporkan.
+     */
+    child.stdin?.on("error", () => {})
+
     try {
       child.stdin?.end(JSON.stringify(event))
     } catch {
-      // Kait yang tidak membaca stdin menutupnya lebih dulu; itu bukan
-      // kesalahan, dan EPIPE di sini tidak boleh menjatuhkan giliran.
+      // Jalur sinkron: `end()` pada stream yang sudah dihancurkan melempar
+      // langsung, dan listener di atas tidak pernah melihatnya.
     }
   })
 }
