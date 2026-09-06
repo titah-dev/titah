@@ -108,6 +108,27 @@ test("kait yang tidak membaca stdin tidak menjatuhkan apa pun", async () => {
   assert.equal(outcome.code, 0)
 })
 
+test("muatan yang lebih besar dari buffer pipa juga tidak menjatuhkan apa pun", async () => {
+  /*
+   * Test di atas lolos bahkan ketika bugnya masih ada, dan itulah yang membuat
+   * bug ini bertahan.
+   *
+   * Muatan kecil muat seluruhnya di buffer pipa, jadi `end()` selesai sebelum
+   * anaknya sempat keluar dan tidak ada yang pernah gagal. 200 KB melewati
+   * buffer itu (64 KB), jadi sisa tulisannya menabrak pipa yang sudah tertutup
+   * dan EPIPE-nya PASTI terjadi — bukan kadang-kadang, di bawah beban.
+   *
+   * Ukurannya bukan mengada-ada: masukan tool bisa memuat seluruh isi berkas,
+   * dan itu justru alasan peristiwanya dikirim lewat stdin dan bukan argumen.
+   *
+   * Kegagalannya datang ASINKRON sebagai event `error` di stream, jadi ia tidak
+   * pernah muncul sebagai test yang merah — ia menjatuhkan seluruh proses test.
+   */
+  const besar = { ...event, input: { isi: "x".repeat(200_000) } }
+  const outcome = await runHook({ run: "true" }, besar)
+  assert.equal(outcome.code, 0)
+})
+
 // ---------- tool.before menolak ----------
 
 test("keluar bukan-nol MENOLAK panggilan, dan stderr jadi alasannya", async () => {

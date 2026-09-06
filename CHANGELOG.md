@@ -5,6 +5,23 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-06
+
+### Kait
+
+- Kait yang tidak membaca stdin tidak lagi bisa menjatuhkan seluruh proses.
+  `pwd`, `true`, dan formatter yang cuma melihat `$TITAH_TOOL` menutup stdin
+  lalu keluar; tulisan yang datang sesudahnya gagal dengan EPIPE, dan
+  kegagalan itu tiba sebagai event `error` di stream — bukan sebagai lemparan
+  dari `end()`, jadi `try`/`catch` yang menjaganya tidak pernah melihatnya.
+  Tanpa listener, Node memperlakukannya sebagai event `error` tak tertangani.
+- Bugnya tersembunyi karena muatan kecil muat seluruhnya di buffer pipa: kait
+  selesai sebelum anaknya sempat keluar, dan tidak ada yang pernah gagal. Ia
+  muncul ketika anaknya menang balapan — di bawah beban, atau pada muatan yang
+  lebih besar dari buffer pipa, yang wajar karena masukan tool bisa memuat
+  seluruh isi berkas. Test barunya memakai muatan 200 KB supaya kegagalannya
+  pasti, bukan kadang-kadang.
+
 ## [0.5.0] — 2026-09-06
 
 ### Kursor prompt
