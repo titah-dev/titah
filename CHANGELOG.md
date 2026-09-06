@@ -3,7 +3,9 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [SemVer](https://semver.org/).
 
-## 0.5.0
+## [Unreleased]
+
+## [0.5.0] — 2026-09-06
 
 ### Kursor prompt
 
@@ -41,14 +43,14 @@ Versioning follows [SemVer](https://semver.org/).
   mengirim jawaban akhirnya, jadi halamannya mengatakan itu alih-alih
   menggambar layar hampa.
 
-## 0.4.2
+## [0.4.2] — 2026-08-25
 
 ### Account server
 
 - Default login/account server diganti dari `https://titah.akil.co.id` ke `https://titah.dev`.
 - Dokumentasi default server disesuaikan agar mengikuti domain baru.
 
-## 0.4.1
+## [0.4.1] — 2026-08-23
 
 ### `titah extension update`
 
@@ -84,7 +86,7 @@ menaikkan versi membuat "kode yang sama di dua mesin" jadi harapan lagi.
   mengatakan itu. Penanda `✓` juga diluruskan: ia berarti "ada di disk", BUKAN
   "versi terbaru" — picker tidak memanggil registry npm untuk setiap baris.
 
-## 0.4.0
+## [0.4.0] — 2026-08-23
 
 ### Panel bisa diklik, dan lebarnya bisa diubah tanpa keluar dari sesi
 
@@ -127,7 +129,7 @@ melakukan apa pun. Ketiganya sekarang lewat ref yang disegarkan tiap render —
 pola yang sama dengan `view.current`, dan alasannya sama: hanya render yang tahu
 apa yang sedang terlihat, sedangkan penanganan input datang belakangan.
 
-## 0.3.0
+## [0.3.0] — 2026-08-23
 
 ### Extension — panel samping yang disumbang paket npm
 
@@ -171,8 +173,6 @@ permukaan publik. Index picker: `titah-dev/titah-extensions`.
 - String menu leader yang masih Bahasa Indonesia diterjemahkan. `AGENTS.md` sudah
   mewajibkan UI berbahasa Inggris; sembilan baris `LEADER_ACTIONS` tertinggal.
 
-
-## [Unreleased]
 
 ## [0.2.1] — 2026-08-22
 
