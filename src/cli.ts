@@ -1298,6 +1298,46 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   out()
 
   /*
+   * Extension diperiksa TANPA menjalankan kodenya.
+   *
+   * Aturan yang sama dengan MCP di atas, dan konsekuensinya jujur: doctor tidak
+   * bisa melihat kegagalan yang baru muncul saat modulnya di-import — factory
+   * yang melempar, atau yang tidak mengembalikan `render`. Untuk itu ada
+   * `titah extension list`, yang memang memuatnya sungguhan.
+   *
+   * Yang BISA diperiksa tanpa import — manifest terbaca, dan `engines.titah`
+   * cocok dengan versi ini — kebetulan justru kelas kegagalan yang paling sering
+   * membuat panel hilang tanpa jejak: ia terjadi setiap kali Titah naik versi
+   * minor sementara extension-nya belum diterbitkan ulang, dan satu-satunya
+   * penjelasannya di TUI dulu sekejap lalu hilang.
+   */
+  out("Extensions")
+  {
+    const configured = Object.entries(loaded.config.extension)
+    if (configured.length === 0) {
+      out("  (none configured)")
+    }
+    for (const [spec, entry] of configured) {
+      if (entry.enabled === false) {
+        out(`  · ${spec}  disabled in config`)
+        continue
+      }
+      try {
+        const manifest = readManifest(extensionDir(parseExtensionSpec(spec), process.cwd()))
+        checkEngine(manifest, VERSION)
+        out(`  ✓ ${spec}${manifest.version === undefined ? "" : `  ${manifest.version}`}`)
+      } catch (error) {
+        out(`  ✗ ${spec}`)
+        out(`      ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    if (configured.length > 0) {
+      out("  (not imported here — doctor never runs third-party code)")
+    }
+  }
+  out()
+
+  /*
    * Sandbox dilaporkan di sini karena keadaannya bisa BERBEDA dari yang
    * dikira user: config menyalakannya, tapi mesinnya tidak punya. Tanpa baris
    * ini, satu-satunya cara mengetahuinya adalah perintah bash pertama yang

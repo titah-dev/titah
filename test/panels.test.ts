@@ -4,6 +4,7 @@ import {
   droppedNotice,
   foldedNotice,
   panelBody,
+  panelFailed,
   panelHit,
   plain,
   resizePanel,
@@ -137,6 +138,27 @@ test("empty-state muat utuh di lebar panel bawaan", () => {
   // pesan yang berhenti menjelaskan tepat di kata yang menjelaskan.
   assert.ok(PANEL_EMPTY.length <= PANEL_WIDTH - PANEL_CHROME_COLUMNS)
   assert.deepEqual(texts(panelBody([], PANEL_WIDTH, 10)), [PANEL_EMPTY])
+})
+
+test("kalimat 'ada tapi ditolak' muat utuh di lebar panel bawaan", () => {
+  /*
+   * Batas yang sama dengan `PANEL_EMPTY`, dan alasannya sama: kalimat yang
+   * terpotong di tengah berhenti menjelaskan tepat di kata yang menjelaskan.
+   * Dua digit sengaja diuji juga — jumlahnya ikut memakan kolom.
+   */
+  for (const count of [1, 2, 12]) {
+    assert.ok(
+      displayWidth(panelFailed(count)) <= PANEL_WIDTH - PANEL_CHROME_COLUMNS,
+      `panelFailed(${count}) terpotong di panel bawaan`,
+    )
+  }
+})
+
+test("sisi yang extension-nya DITOLAK tidak berbunyi 'tidak ada extension'", () => {
+  // Bedanya menentukan ke mana orang mencari: yang satu menyuruhnya memasang
+  // sesuatu, yang lain menyuruhnya membaca sebabnya.
+  assert.notEqual(panelFailed(2), PANEL_EMPTY)
+  assert.match(panelFailed(2), /2/)
 })
 
 test("panel yang lebih sempit dari bingkainya tidak menghasilkan lebar negatif", () => {

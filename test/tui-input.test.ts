@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream"
 import test from "node:test"
 import { createElement } from "react"
 import { render } from "ink"
-import { App, sanitizePaste, toKeyPress } from "../dist/tui/app.js"
+import { App, failureHint, sanitizePaste, toKeyPress } from "../dist/tui/app.js"
 import { buildKeymap, resolve } from "../dist/tui/keybinds.js"
 import { createMouseSource } from "../dist/tui/mouse.js"
 import { markLines } from "../dist/tui/logo.js"
@@ -3371,4 +3371,75 @@ test("ctrl+x f berputar antar box, ctrl+x z melipat yang sedang fokus", async ()
   } finally {
     h.cleanup()
   }
+})
+
+
+// ---------- extension yang ditolak ----------
+
+/** Extension yang PASTI ditolak: rentangnya tidak akan pernah cocok versi apa pun yang dipakai harness. */
+function writeRejectedExtension(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-reject-ext-"))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({
+      name: "uji-ditolak",
+      type: "module",
+      version: "1.0.0",
+      engines: { titah: "^0.1.0" },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `export default function () {
+       return { title: "Ditolak", side: "right", render: () => ({ kind: "text", text: "x" }) }
+     }`,
+  )
+  return directory
+}
+
+test("sisi yang extension-nya ditolak mengatakan itu, bukan 'No extension'", async () => {
+  /*
+   * Keadaan yang benar-benar terjadi di mesin sungguhan: paket TERPASANG dan
+   * TERDAFTAR di config, tapi ditolak pemeriksaan versi. Satu-satunya penjelasan
+   * dulu adalah flash empat detik; sesudah itu sidebar berbunyi "No extension",
+   * yang menyuruh orang memasang sesuatu yang justru sudah terpasang.
+   *
+   * Baris panel yang diuji, bukan flash-nya: baris panel tidak punya timer sama
+   * sekali, jadi ia juga yang membuktikan penjelasannya bertahan.
+   */
+  const h = mount({ extension: { [writeRejectedExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press(CTRL_X)
+    await tick(1)
+    h.stdin.press(RIGHT_ARROW)
+    await tick()
+    await tick()
+
+    const frame = h.frame()
+    assert.match(frame, /⚠ 1 failed/, "kotaknya menyebut ada yang ditolak")
+    assert.doesNotMatch(frame, /No extension/, "bukan 'tidak ada extension'")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("petunjuk yang berdiri menyebut jumlahnya dan ke mana harus melihat", () => {
+  /*
+   * Diuji sebagai fungsi murni, bukan lewat footer: petunjuk ini baru muncul
+   * SETELAH flash empat detik kedaluwarsa, dan menunggu empat detik sungguhan di
+   * setiap kali suite dijalankan adalah harga yang tidak sebanding dengan apa
+   * yang dibuktikannya.
+   */
+  assert.equal(failureHint([]), undefined)
+  assert.match(failureHint([{ spec: "a", message: "m" }]) ?? "", /1 side panel failed/)
+  assert.match(
+    failureHint([
+      { spec: "a", message: "m" },
+      { spec: "b", message: "m" },
+    ]) ?? "",
+    /2 side panels failed.*titah extension list/,
+  )
 })

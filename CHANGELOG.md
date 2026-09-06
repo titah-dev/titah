@@ -5,6 +5,27 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-06
+
+### Extension yang ditolak
+
+Tidak ada perubahan kebijakan: extension yang `engines.titah`-nya tidak memuat
+versi Titah yang berjalan tetap ditolak. Yang berubah cara Titah mengatakannya.
+
+- Sisi yang terbuka tapi tidak satu pun extension-nya berhasil dimuat kini
+  berbunyi `⚠ N failed`, bukan `No extension`. Yang kedua menyesatkan: bukan
+  "tidak ada extension", melainkan "ada dan ditolak" — dan bedanya menentukan ke
+  mana orang mencari.
+- Penjelasannya **bertahan**. Sebelumnya hanya `flash()` yang hilang setelah
+  empat detik; sesudah itu satu-satunya yang tersisa di layar justru kalimat yang
+  menyesatkan di atas. Footer kini membawa `⚠ N side panels failed to load — run:
+  titah extension list` selama keadaan itu masih berlaku.
+- `titah doctor` punya bagian **Extensions**: manifest terbaca dan `engines.titah`
+  cocok, per extension yang dikonfigurasi. Sengaja TANPA meng-`import` apa pun —
+  aturan yang sama dengan bagian MCP — dan batasannya dicetak, bukan
+  disembunyikan: kegagalan yang baru muncul saat modulnya dijalankan tetap milik
+  `titah extension list`.
+
 ## [0.6.0] — 2026-09-06
 
 ### Sidebar

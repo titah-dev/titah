@@ -47,6 +47,7 @@ import {
   panelLayout,
   PANEL_CHROME_ROWS,
   PANEL_RESIZE_STEP,
+  panelFailed,
   panelHit,
   resizePanel,
   stackGeometry,
@@ -413,6 +414,16 @@ export function App({
    * yang masing-masing memanggil render — empat pemanggil untuk satu pekerjaan
    * berarti dua pemicu yang berdekatan menjalankan render dua kali.
    */
+  /*
+   * Extension yang DITOLAK saat dimuat, disimpan — bukan cuma di-flash.
+   *
+   * Sebelumnya hasilnya hanya lewat `flash()`, yang hilang setelah empat detik.
+   * Kegagalan muat bukan kabar sekejap: ia berlaku sepanjang sesi, dan sesudah
+   * flash itu hilang satu-satunya yang tersisa di layar adalah panel bertuliskan
+   * "No extension" — yang menyuruh orang memasang sesuatu yang justru sudah
+   * terpasang.
+   */
+  const [extensionFailures, setExtensionFailures] = useState<ExtensionFailure[]>([])
   const [refreshToken, setRefreshToken] = useState(0)
   const [updateHint, setUpdateHint] = useState<string | undefined>(undefined)
   const [subagentSelected, setSubagentSelected] = useState(0)
@@ -2192,6 +2203,16 @@ export function App({
   toggleFoldRef.current = toggleFold
 
 
+  /*
+   * Petunjuk yang BERDIRI, bukan berkedip.
+   *
+   * Urutannya: kabar sekejap menang, lalu keadaan yang berlaku terus, lalu kabar
+   * versi baru. `mouseCapture` yang mati sudah memakai pola yang sama — keadaan
+   * yang harus terlihat TERUS tidak boleh disampaikan lewat sesuatu yang
+   * kedaluwarsa dalam empat detik.
+   */
+  const standingHint = failureHint(extensionFailures)
+
   const droppedMessage = droppedNotice(panels.dropped, config.panel.floor)
   useEffect(() => {
     if (droppedMessage) flash(droppedMessage)
@@ -2208,6 +2229,9 @@ export function App({
     void loadExtensions({ config, cwd, version }).then((result) => {
       if (!alive) return
       setExtensions(result.extensions)
+      setExtensionFailures(result.failures)
+      // Flash-nya TETAP: ia sinyal "ini baru saja terjadi". Yang di atas adalah
+      // yang bertahan sesudahnya.
       if (result.failures.length > 0) flash(failureNotice(result.failures))
     })
     return () => {
@@ -2524,7 +2548,18 @@ export function App({
     rows: available,
     title: side === "left" ? "Left" : "Right",
     focused: false,
-    lines: [],
+    /*
+     * Kegagalannya TIDAK diatribusikan ke satu sisi.
+     *
+     * Extension yang ditolak `checkEngine` belum pernah sampai ke penentuan
+     * sisinya — pemeriksaan versi terjadi sebelum modulnya di-import sama
+     * sekali. Menebak sisinya berarti mengarang; jumlah totalnya tetap benar
+     * di sisi mana pun ia terbaca.
+     */
+    lines:
+      extensionFailures.length > 0
+        ? [{ text: panelFailed(extensionFailures.length), color: "red" }]
+        : [],
   })
 
   const panelStack = (side: "left" | "right") => {
@@ -2682,7 +2717,13 @@ export function App({
           usage={usage}
           leaderActive={leaderActive}
           exitArmed={exitArmed}
-          {...(notice ? { hint: notice } : updateHint ? { hint: updateHint } : {})}
+          {...(notice
+            ? { hint: notice }
+            : standingHint
+              ? { hint: standingHint }
+              : updateHint
+                ? { hint: updateHint }
+                : {})}
           mouseCapture={mouseCapture}
         />
       </Box>
@@ -2748,7 +2789,7 @@ export function App({
         usage={usage}
         leaderActive={leaderActive}
         exitArmed={exitArmed}
-        {...(notice ? { hint: notice } : {})}
+        {...(notice ? { hint: notice } : standingHint ? { hint: standingHint } : {})}
         mouseCapture={mouseCapture}
       />
     </Box>
@@ -2762,6 +2803,21 @@ export function App({
  * mencari yang mana, dan pada dua sisi terpasang itu berarti menebak. Sisanya
  * dihitung karena satu baris footer tidak bisa memuat tiga pesan penuh.
  */
+/**
+ * Kalimat yang BERTAHAN di footer selama ada extension yang ditolak.
+ *
+ * Terpisah dari `failureNotice` di bawah karena keduanya menjawab pertanyaan
+ * berbeda. Yang itu menyebut kegagalan PERTAMA beserta sebabnya, sekali, saat
+ * ia baru terjadi. Yang ini menyebut jumlahnya dan ke mana harus melihat —
+ * kalimat yang masih berguna dibaca sepuluh menit kemudian, ketika orangnya
+ * sudah lupa pernah ada notice.
+ */
+export function failureHint(failures: ExtensionFailure[]): string | undefined {
+  if (failures.length === 0) return undefined
+  const which = failures.length === 1 ? "1 side panel" : `${failures.length} side panels`
+  return `⚠ ${which} failed to load — run: titah extension list`
+}
+
 function failureNotice(failures: ExtensionFailure[]): string {
   const first = failures[0]
   const rest = failures.length - 1
