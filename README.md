@@ -9,15 +9,17 @@ bring the answer back into the conversation. Including **consensus mode**: one
 question fanned out to several agents at once, synthesised, with the
 disagreements marked.
 
-> **Status: 0.5.0, usable.** All milestones M0–M6 are done. 0.2.0 closed six
+> **Status: 0.6.0, usable.** All milestones M0–M6 are done. 0.2.0 closed six
 > gaps measured against `opencode` 1.18.4 and Claude Code 2.1.233 rather than
 > guessed: structured output, cost and limits, hooks, background turns, a web
 > client, and a bash sandbox. 0.3.0–0.4.x added the extension system: side
 > panels contributed by npm packages, a registry to find them, and a version
-> check that refuses the ones that would not load. 0.5.0 is about moving
+> check that refuses the ones that would not load. 0.5.0 was about moving
 > around the terminal — a cursor that walks visual rows and words, tool blocks
-> that open by default, and a full-page transcript for any sub-agent. Every new
-> axis is off or absent by default.
+> that open by default, and a full-page transcript for any sub-agent. 0.6.0
+> turns each side panel into a stack: as many extensions per side as you list,
+> each in its own box, foldable to a single line. Every new axis is off or
+> absent by default.
 >
 > What remains before tagging `v1.0.0` is not code: using Titah to build Titah
 > for a full week. See [DESIGN.md](./DESIGN.md) and [CHANGELOG.md](./CHANGELOG.md).
