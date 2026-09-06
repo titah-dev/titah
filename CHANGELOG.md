@@ -5,6 +5,38 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-06
+
+### Sidebar
+
+- **Satu sisi kini menampung banyak extension.** Sebelumnya yang kedua di sisi
+  yang sama ditolak dengan "already taken" dan hanya dilaporkan lewat notice,
+  jadi plafonnya dua extension untuk seluruh aplikasi — satu kiri, satu kanan.
+  Kini mereka bertumpuk sebagai box terpisah, urut menurut config: satu-satunya
+  urutan yang user bisa lihat dan ubah.
+- **Box bisa dilipat** jadi satu baris judul ber-`▸` — lewat `<leader>z` pada box
+  yang sedang fokus, klik pada baris judulnya, atau `"collapsed": true` di
+  config. Satu baris dan bukan satu bingkai: box terlipat yang masih membayar
+  bingkai hampir tidak menghemat apa pun.
+- Box terlipat **tidak dirender sama sekali**. Bukan sekadar disembunyikan —
+  panel git yang terlipat berhenti menjalankan `git status` tiap refresh.
+- **Di bawah `panel.boxFloor`, box melipat sendiri**, dari bawah ke atas, dan
+  dilaporkan lewat notice. Cermin lantai lebar yang sudah ada: urutan config
+  adalah urutan prioritas, jadi yang teratas bertahan paling lama.
+- `<leader>f` kini **berputar antar box**, bukan memilih sisi — tombol yang
+  diusulkan extension kedua di satu sisi sebelumnya tidak akan pernah sampai
+  kepadanya.
+- Dua field config baru per extension: `rows` (tinggi yang diminta; permintaan,
+  bukan jaminan) dan `collapsed` (nilai awal, tidak ditulis balik saat dilipat
+  lewat tombol). Plus `panel.boxFloor`.
+
+### Di dalamnya
+
+- Identitas panel pindah dari SISI ke extension. `panelHit` mengembalikan spec
+  box beserta apakah yang kena adalah baris judulnya, dan geometrinya disusun
+  `stackGeometry` dari tumpukan yang sama dengan yang menggambar — bukan dihitung
+  ulang di sisi render, yang selama ini jadi cara reservasi dan gambar menyimpang.
+
 ## [0.5.1] — 2026-09-06
 
 ### Kait

@@ -126,6 +126,17 @@ export const DEFAULT_KEYBINDS = {
   panel_focus: "<leader>f",
 
   /*
+   * Melipat box yang sedang fokus jadi satu baris judul.
+   *
+   * Satu sisi menampung banyak extension, dan tinggi terminal habis jauh lebih
+   * cepat daripada lebarnya: tiga box terbuka di terminal 30 baris menyisakan
+   * satu-dua baris isi masing-masing. Melipat yang sedang tidak dipakai adalah
+   * jalan keluarnya, dan `z` karena ia satu-satunya huruf yang tersisa yang
+   * masih bisa dihubungkan ke "melipat" oleh yang membaca menunya.
+   */
+  panel_fold: "<leader>z",
+
+  /*
    * Mematikan pelacakan mouse supaya seleksi teks bawaan terminal hidup lagi.
    *
    * Keduanya TIDAK BISA menyala bersamaan: begitu terminal melaporkan klik ke
@@ -191,7 +202,8 @@ export const LEADER_ACTIONS: { action: Action; describe: string }[] = [
   { action: "panel_left", describe: "Left panel" },
   { action: "panel_right", describe: "Right panel" },
   { action: "panel_refresh", describe: "Refresh side panels" },
-  { action: "panel_focus", describe: "Give the keyboard to a side panel (Esc returns it)" },
+  { action: "panel_focus", describe: "Cycle the keyboard through side panels (Esc returns it)" },
+  { action: "panel_fold", describe: "Fold or unfold the focused side panel" },
   { action: "extension_picker", describe: "Extensions — search and install" },
   { action: "session_list", describe: "Switch to another session" },
   { action: "session_new", describe: "Start a new session" },

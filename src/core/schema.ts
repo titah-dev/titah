@@ -600,6 +600,22 @@ export const ExtensionConfig = z.object({
   key: z.string().optional(),
   /** Menimpa lebar sisi ini untuk panel ini saja. */
   width: z.number().int().min(8).optional(),
+  /**
+   * Baris yang diminta box ini di dalam tumpukan sisinya.
+   *
+   * Permintaan, bukan jaminan: yang tersisa setelah box lain dilayani tetap
+   * batas atasnya. Tanpa angka ini, sisa tinggi dibagi rata.
+   */
+  rows: z.number().int().min(1).optional(),
+  /**
+   * Mulai dalam keadaan terlipat — satu baris judul, dan `render` extension
+   * tidak dipanggil sama sekali.
+   *
+   * Ini nilai AWAL, bukan kunci: melipat dan membukanya di layar tidak menulis
+   * balik ke config. Config yang berubah sendiri karena tombol yang ditekan
+   * adalah config yang tidak bisa dibaca sebagai pernyataan niat.
+   */
+  collapsed: z.boolean().optional(),
 })
 
 /**
@@ -612,6 +628,15 @@ export const ExtensionConfig = z.object({
  */
 export const PANEL_FLOOR = 40
 export const PANEL_WIDTH = 20
+
+/**
+ * Baris ISI minimum sebuah box yang terbuka.
+ *
+ * Cermin `PANEL_FLOOR` pada sumbu tinggi, dengan alasan yang sama: box dengan
+ * satu baris isi tidak mengatakan apa pun, dan lebih baik melipat sendiri jadi
+ * satu baris judul daripada menghabiskan tiga baris untuk menampilkannya.
+ */
+export const PANEL_BOX_FLOOR = 2
 
 /**
  * Satu sisi panel. Objek dan bukan angka telanjang karena sisi akan tumbuh
@@ -641,6 +666,15 @@ export const Panel = z.object({
    * menyalakannya, dan menyebutnya pilihan user tidak mengubah itu.
    */
   floor: z.number().int().min(0).default(PANEL_FLOOR),
+  /**
+   * Baris isi minimum sebuah box sebelum ia melipat sendiri.
+   *
+   * Satu sisi menampung banyak extension. Ketika tingginya tidak cukup untuk
+   * semuanya, yang PALING BAWAH melipat lebih dulu — urutan config adalah
+   * urutan prioritas user, dan melipat dari ujung yang lain berarti box teratas
+   * yang sengaja ia taruh di sana justru yang pertama hilang.
+   */
+  boxFloor: z.number().int().min(1).default(PANEL_BOX_FLOOR),
   left: PanelSide.default({ width: PANEL_WIDTH }),
   right: PanelSide.default({ width: PANEL_WIDTH }),
 })
@@ -707,6 +741,7 @@ export const Config = z.object({
    */
   panel: Panel.default({
     floor: PANEL_FLOOR,
+    boxFloor: PANEL_BOX_FLOOR,
     left: { width: PANEL_WIDTH },
     right: { width: PANEL_WIDTH },
   }),

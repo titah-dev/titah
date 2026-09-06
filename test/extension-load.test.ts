@@ -181,11 +181,16 @@ test("factory yang mengembalikan objek tanpa render dilaporkan", async () => {
   assert.match(result.failures[0]?.message ?? "", /without a render\(\) function/)
 })
 
-test("dua extension yang menginginkan sisi yang sama: yang PERTAMA di config menang", async () => {
+test("dua extension di sisi yang sama: dua-duanya dimuat, urut config", async () => {
   /*
-   * Urutan config adalah satu-satunya urutan yang user bisa lihat dan ubah.
-   * Memilih berdasarkan apa pun yang lain — abjad, waktu pasang — berarti
-   * pemenangnya tidak bisa dijelaskan kepada orang yang membaca config-nya.
+   * Satu sisi menampung banyak box, bertumpuk. Sebelumnya yang kedua DITOLAK —
+   * satu sisi satu extension — jadi plafonnya dua extension untuk seluruh
+   * aplikasi.
+   *
+   * Urutan config adalah urutan tumpukannya, dan itu bukan pilihan sembarang:
+   * ia satu-satunya urutan yang user bisa lihat dan ubah. Menumpuk berdasarkan
+   * abjad atau waktu pasang berarti urutannya tidak bisa dijelaskan kepada
+   * orang yang membaca config-nya sendiri.
    */
   const root = scratch()
   writeExtension(root, "first", `export default () => ({ title: "1", side: "left", render: () => ({ kind: "text", text: "" }) })`)
@@ -196,9 +201,15 @@ test("dua extension yang menginginkan sisi yang sama: yang PERTAMA di config men
     cwd: root,
     version: "0.2.1",
   })
-  assert.equal(result.extensions.length, 1)
-  assert.equal(result.extensions[0]?.spec, "./first")
-  assert.match(result.failures[0]?.message ?? "", /already taken/)
+  assert.deepEqual(
+    result.extensions.map((entry) => entry.spec),
+    ["./first", "./second"],
+  )
+  assert.deepEqual(
+    result.extensions.map((entry) => entry.side),
+    ["left", "left"],
+  )
+  assert.deepEqual(result.failures, [], "tidak ada lagi yang ditolak karena sisinya penuh")
 })
 
 test("enabled: false tidak meng-import modulnya sama sekali", async () => {
