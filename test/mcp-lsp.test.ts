@@ -11,7 +11,7 @@ import {
   stopAllLanguageServers,
 } from "../src/core/lsp.ts"
 import { loadMcpTools, McpServer, stopAllMcpServers } from "../src/core/mcp.ts"
-import { MessageBuffer, encode } from "../src/core/rpc.ts"
+import { MessageBuffer, RpcPeer, encode } from "../src/core/rpc.ts"
 import { Config } from "../src/core/schema.ts"
 import { ToolError } from "../src/core/tool/types.ts"
 
@@ -417,4 +417,47 @@ test("berkas yang sudah rapi tidak ditulis ulang", async () => {
 
   assert.equal(await formatFile(lspConfig(server), dir, target), undefined)
   assert.equal(fs.statSync(target).mtimeMs, sebelum, "mtime tidak berubah")
+})
+
+
+test("server yang mati saat sedang ditulisi menolak permintaannya, bukan menjatuhkan Titah", async () => {
+  /*
+   * `#write` menjaga dirinya dengan memeriksa `#dead` sebelum menulis, tapi itu
+   * POTRET SESAAT: anaknya bisa mati di antara pemeriksaan dan tulisan yang
+   * mendarat. Muatan 200 KB melewati buffer pipa 64 KB, jadi sisanya pasti
+   * mendarat sesudah pemeriksaan itu — kegagalannya terjadi selalu, bukan
+   * kadang-kadang di bawah beban.
+   *
+   * EPIPE-nya datang ASINKRON sebagai event `error` di stdin. Tanpa listener,
+   * Node memperlakukannya sebagai `error` tak tertangani dan menjatuhkan seluruh
+   * proses — jadi bug ini tidak pernah muncul sebagai test merah, ia membunuh
+   * runner-nya.
+   *
+   * Yang dituntut BUKAN sekadar "tidak jatuh". Permintaannya benar-benar hilang
+   * dan pemanggilnya sedang menunggu, jadi ia harus DITOLAK dengan sebab yang
+   * sungguhan — bukan digantung sampai timeout, yang cuma menunda pertanyaannya
+   * selama tiga puluh detik.
+   */
+  const server = script("mati-seketika.mjs", `process.exit(3)`)
+  const peer = new RpcPeer({
+    command: process.execPath,
+    args: [server],
+    cwd: dir,
+    framing: "ndjson",
+    // Jauh lebih pendek dari bawaan 30 detik: kalau penolakannya datang dari
+    // timeout dan bukan dari kematian anaknya, test ini harus tetap selesai —
+    // dan `assert.rejects` di bawah yang membedakan keduanya lewat pesannya.
+    timeoutMs: 3_000,
+  })
+
+  await assert.rejects(
+    () => peer.request("apa.saja", { besar: "x".repeat(200_000) }),
+    (error: Error) => {
+      assert.doesNotMatch(error.message, /in time/, "ditolak karena anaknya mati, bukan karena timeout")
+      assert.match(error.message, /exited/, "sebabnya menyebut proses yang berhenti")
+      return true
+    },
+  )
+
+  peer.stop()
 })
