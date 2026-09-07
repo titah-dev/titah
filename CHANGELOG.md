@@ -29,6 +29,24 @@ Versioning follows [SemVer](https://semver.org/).
   menolak setiap versi terbit setiap kali Titah naik minor.
 - `titah upgrade` **tidak** ikut: ia membandingkan versi Titah sendiri di npm,
   pertanyaan yang berbeda, dan alasannya ditulis di tempatnya.
+## [0.6.2] — 2026-09-06
+
+### MCP dan LSP
+
+- Server MCP atau language server yang mati **saat sedang ditulisi** tidak lagi
+  menjatuhkan seluruh Titah. `#write` sudah memeriksa apakah anaknya masih hidup,
+  tapi itu potret sesaat: muatan yang lebih besar dari buffer pipa 64 KB — hasil
+  tool MCP, `didOpen` yang membawa satu berkas utuh — mendarat sesudah
+  pemeriksaan itu. EPIPE-nya datang asinkron sebagai event `error` di stream,
+  dan tanpa listener Node memperlakukannya sebagai `error` tak tertangani.
+- Permintaannya kini **ditolak dengan sebab yang sungguhan**, bukan digantung
+  sampai timeout tiga puluh detik. Kalimatnya membawa kode keluar dan stderr
+  server, dan menyebut kalau ada permintaan yang sedang ditulis saat ia mati —
+  itu yang menjelaskan kenapa jawabannya tidak pernah datang.
+- Kelas yang sama dengan perbaikan kait di 0.5.1, tapi penanganannya berbeda dan
+  sengaja: di sana EPIPE diabaikan karena putusan sebuah kait datang dari kode
+  keluarnya. Di sini permintaannya benar-benar hilang dan ada yang menunggu,
+  jadi mengabaikannya diam-diam justru salah.
 
 ## [0.6.1] — 2026-09-06
 
