@@ -683,7 +683,7 @@ async function cmdExtension(args: string[]): Promise<void> {
     for (const packageName of targets) {
       let result
       try {
-        result = await updateExtension({ packageName, titahVersion: VERSION })
+        result = await updateExtension({ packageName })
       } catch (error) {
         out(`✗ ${packageName} — ${error instanceof Error ? error.message : String(error)}`)
         continue

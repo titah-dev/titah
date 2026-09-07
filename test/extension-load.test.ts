@@ -3,6 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
+import { EXTENSION_API } from "../src/extension.ts"
 import {
   checkEngine,
   extensionDir,
@@ -30,7 +31,20 @@ function writeExtension(
   fs.mkdirSync(directory, { recursive: true })
   fs.writeFileSync(
     path.join(directory, "package.json"),
-    JSON.stringify({ name, version: "1.0.0", engines: { titah: "^0.2.0" }, titah: { panel: "./panel.mjs" }, ...manifest }),
+    /*
+     * Rentangnya DITURUNKAN dari `EXTENSION_API`, bukan ditulis tetap.
+     *
+     * Angka tetap di sini pernah membuat seluruh berkas ini gagal begitu
+     * pemeriksaan berpindah dari versi produk ke versi kontrak — fixture yang
+     * lapuk menguji versi lama Titah, bukan yang sedang dibangun.
+     */
+    JSON.stringify({
+      name,
+      version: "1.0.0",
+      engines: { titah: `^${EXTENSION_API}` },
+      titah: { panel: "./panel.mjs" },
+      ...manifest,
+    }),
   )
   fs.writeFileSync(path.join(directory, "panel.mjs"), body)
   return directory
@@ -265,4 +279,32 @@ test("spasi di sekitar spec tidak jadi bagian nama paket", () => {
   // Disalin-tempel dari README orang, spasi ikut terbawa — dan `npm install
   // " git-panel"` gagal dengan pesan yang tidak menyebut spasinya.
   assert.deepEqual(parseInstallTarget("  git-panel@1.0.0  "), { packageName: "git-panel", version: "1.0.0" })
+})
+
+
+test("versi PRODUK Titah tidak lagi ikut memutuskan", () => {
+  /*
+   * Inti dari pemisahan dua nomor ini, dan test yang akan gagal pada kode lama.
+   *
+   * Extension menyatakan `^0.4.0`. Dulu itu dibandingkan dengan versi produk,
+   * jadi Titah 9.9.9 menolaknya — padahal `src/extension.ts` yang ia tulis di
+   * atasnya tidak berubah satu byte pun. Sekarang yang dibandingkan kontraknya,
+   * dan versi produk hanya muncul di kalimat kesalahan.
+   */
+  assert.doesNotThrow(() => checkEngine({ name: "git", engines: { titah: "^0.4.0" } }, "9.9.9"))
+
+  // Dan ia tetap MENOLAK saat kontraknya yang tidak cocok — pemeriksaannya
+  // dipindahkan, bukan dilemahkan.
+  assert.throws(
+    () => checkEngine({ name: "git", engines: { titah: "^9.0.0" } }, "9.9.9"),
+    /needs extension API \^9\.0\.0/,
+  )
+})
+
+test("kalimat penolakan menyebut KEDUA angka", () => {
+  // "provides 0.4.0" sendirian di pemasangan 0.6.1 terbaca seperti kerusakan.
+  assert.throws(
+    () => checkEngine({ name: "git", engines: { titah: "^9.0.0" } }, "0.6.1"),
+    /but Titah 0\.6\.1 provides 0\.4\.0/,
+  )
 })

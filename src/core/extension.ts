@@ -1,7 +1,12 @@
 import fs from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-import { satisfiesEngine, type ExtensionFactory, type ExtensionPanel } from "../extension.ts"
+import {
+  EXTENSION_API,
+  satisfiesEngine,
+  type ExtensionFactory,
+  type ExtensionPanel,
+} from "../extension.ts"
 import { dataDir } from "./paths.ts"
 import type { Config } from "./schema.ts"
 
@@ -180,17 +185,30 @@ export function entryFile(directory: string, manifest: ExtensionManifest): strin
  * dibedakan dari paket yang ditulis dua rilis lalu — jadi memuatnya berarti
  * menukar kegagalan yang jelas dengan kegagalan yang menyesatkan.
  */
-export function checkEngine(manifest: ExtensionManifest, titahVersion: string): void {
+/**
+ * `titahVersion` dipakai untuk KALIMATNYA, bukan untuk keputusannya.
+ *
+ * Yang memutuskan `EXTENSION_API` — versi kontrak, yang hanya bergerak kalau
+ * `src/extension.ts` berubah. Versi produk tetap disebut karena tanpanya
+ * pesannya membingungkan: "provides 0.4.0" di pemasangan 0.6.1 terbaca seperti
+ * kerusakan, bukan seperti dua nomor yang memang berbeda.
+ */
+export function checkEngine(
+  manifest: ExtensionManifest,
+  titahVersion: string,
+  api: string = EXTENSION_API,
+): void {
   const range = manifest.engines?.titah
   if (range === undefined || range.trim() === "") {
     throw new ExtensionError(
       `${manifest.name ?? "extension"} does not declare engines.titah. ` +
-        `Add {"engines": {"titah": "^${titahVersion}"}} to its package.json.`,
+        `Add {"engines": {"titah": "^${api}"}} to its package.json.`,
     )
   }
-  if (!satisfiesEngine(titahVersion, range)) {
+  if (!satisfiesEngine(api, range)) {
     throw new ExtensionError(
-      `${manifest.name ?? "extension"} needs Titah ${range}, but this is ${titahVersion}.`,
+      `${manifest.name ?? "extension"} needs extension API ${range}, ` +
+        `but Titah ${titahVersion} provides ${api}.`,
     )
   }
 }

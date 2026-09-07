@@ -3,7 +3,7 @@ import path from "node:path"
 import { spawn } from "node:child_process"
 import { configDir } from "./paths.ts"
 import { extensionRoot } from "./extension.ts"
-import { satisfiesEngine } from "../extension.ts"
+import { EXTENSION_API, satisfiesEngine } from "../extension.ts"
 
 /**
  * Memasang extension: mengunduh, menyematkan versi, dan mencatat hash.
@@ -237,7 +237,15 @@ const defaultFetcher: Fetcher = async (url) => {
  */
 export async function latestCompatible(
   packageName: string,
-  titahVersion: string,
+  /*
+   * Versi API extension, bukan versi produk.
+   *
+   * `engines.titah` sebuah paket menyatakan kontrak mana yang ia tulis di
+   * atasnya. Membandingkannya dengan versi produk berarti `update` menolak
+   * setiap versi terbit setiap kali Titah naik minor — persis kebalikan dari
+   * gunanya perintah ini.
+   */
+  api: string,
   fetcher: Fetcher = defaultFetcher,
 ): Promise<{ version?: string; rejected: { version: string; needs: string }[] }> {
   const text = await fetcher(`https://registry.npmjs.org/${packageName.replace("/", "%2F")}`)
@@ -254,7 +262,7 @@ export async function latestCompatible(
   const rejected: { version: string; needs: string }[] = []
   for (const [version, meta] of versions) {
     const needs = meta.engines?.titah
-    if (needs !== undefined && satisfiesEngine(titahVersion, needs)) return { version, rejected }
+    if (needs !== undefined && satisfiesEngine(api, needs)) return { version, rejected }
     if (needs !== undefined) rejected.push({ version, needs })
   }
   return { rejected }
@@ -279,7 +287,7 @@ export interface UpdateResult {
  * tempat user MENYATAKAN bahwa ia ingin bergerak maju.
  */
 export async function updateExtension(
-  options: InstallOptions & { titahVersion: string; fetcher?: Fetcher },
+  options: InstallOptions & { api?: string; fetcher?: Fetcher },
 ): Promise<UpdateResult> {
   const root = options.root ?? extensionRoot()
   const lockFile = options.lockFile ?? lockfilePath()
@@ -287,7 +295,7 @@ export async function updateExtension(
 
   const { version, rejected } = await latestCompatible(
     options.packageName,
-    options.titahVersion,
+    options.api ?? EXTENSION_API,
     options.fetcher ?? defaultFetcher,
   )
 

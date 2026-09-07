@@ -21,6 +21,35 @@
  * alih `TypeError` di tengah render.
  */
 
+/**
+ * Versi KONTRAK di bawah ini — bukan versi Titah.
+ *
+ * `engines.titah` sebuah extension diperiksa terhadap angka INI. Dulu ia
+ * diperiksa terhadap versi produk, dan akibatnya setiap kenaikan minor Titah
+ * mematikan setiap extension yang terpasang — padahal berkas ini tidak berubah
+ * satu byte pun dari 0.4.0 sampai 0.6.1, lima rilis berturut-turut.
+ *
+ * Dua nomor untuk dua pertanyaan yang memang berbeda: "Titah mana yang kamu
+ * jalankan" dan "kontrak mana yang kamu tulis di atasnya". Selama keduanya satu
+ * angka, jawaban yang kedua ikut berubah setiap kali yang pertama berubah.
+ *
+ * Nilainya mulai dari 0.4.0 dan bukan 1.0.0 dengan sengaja: itu versi saat
+ * bentuk berkas ini mulai berlaku, jadi setiap extension yang sudah terbit —
+ * semuanya menyatakan `^0.4.0` — tetap jalan tanpa diterbitkan ulang.
+ *
+ * # KAPAN ANGKA INI NAIK
+ *
+ * Setiap kali ada yang bisa DIAMATI penulis extension berubah di berkas ini:
+ * nama yang diekspor, bentuk sebuah tipe, atau arti sebuah field. Perbaikan
+ * komentar tidak. Kalau ragu, naikkan — extension yang ditolak dengan kalimat
+ * yang menyebut sebabnya jauh lebih murah daripada `TypeError` di tengah render.
+ *
+ * Menaikkannya MEMATIKAN setiap extension yang sudah terbit sampai masing-
+ * masing diterbitkan ulang. Ada test yang menahan angka ini supaya keputusan itu
+ * tidak pernah terjadi tanpa sengaja.
+ */
+export const EXTENSION_API = "0.4.0"
+
 /** Sisi tempat panel duduk. User boleh menimpanya di config. */
 export type ExtensionSide = "left" | "right"
 
@@ -124,12 +153,18 @@ export interface ExtensionPanel {
 export type ExtensionFactory = (context: ExtensionContext) => ExtensionPanel | Promise<ExtensionPanel>
 
 /**
- * Apakah versi Titah memenuhi `engines.titah` sebuah extension.
+ * Apakah sebuah versi memenuhi rentang `engines.titah`.
  *
- * Sengaja hanya mengerti bentuk yang benar-benar dipakai orang di lapangan:
- * `*`, `1.2.3`, `^1.2.3`, `~1.2.3`, dan `>=1.2.3`. Rentang yang tidak dikenali
- * mengembalikan `false`, BUKAN `true` — memuat extension karena rentangnya
- * tidak terbaca adalah kebalikan dari gunanya pemeriksaan ini.
+ * Mengerti bentuk yang benar-benar dipakai orang: `*`, `1.2.3`, `^1.2.3`,
+ * `~1.2.3`, pembanding `>=` `>` `<=` `<`, konjungsi berspasi (`>=0.4.0 <1.0.0`),
+ * dan alternatif ber-`||`. Rentang yang tidak dikenali mengembalikan `false`,
+ * BUKAN `true` — memuat extension karena rentangnya tidak terbaca adalah
+ * kebalikan dari gunanya pemeriksaan ini.
+ *
+ * Konjungsi dan `||` ada karena tanpa keduanya satu-satunya bentuk lebar adalah
+ * `>=0.4.0`, yang tidak punya batas atas sama sekali. Penulis yang ingin
+ * menyatakan "0.4 sampai sebelum 1.0" jadi harus memilih antara terlalu sempit
+ * dan tidak berbatas.
  *
  * Perhatikan aturan caret di bawah 1.0.0: `^0.3.1` hanya menerima 0.3.x, bukan
  * 0.4.0. Itu perilaku npm, dan menyimpang darinya membuat extension pecah pada
@@ -142,12 +177,48 @@ export function satisfiesEngine(version: string, range: string): boolean {
   const current = parseVersion(version)
   if (!current) return false
 
-  const operator = wanted.startsWith(">=") ? ">=" : wanted.startsWith("^") ? "^" : wanted.startsWith("~") ? "~" : "="
-  const target = parseVersion(wanted.slice(operator === ">=" ? 2 : operator === "=" ? 0 : 1))
+  // `||` memisahkan alternatif: satu sisi yang cocok sudah cukup.
+  return wanted.split("||").some((alternative) => satisfiesAll(current, alternative))
+}
+
+/** Satu kelompok konjungsi: `>=0.4.0 <1.0.0` — SEMUA bagiannya harus cocok. */
+function satisfiesAll(current: Version, group: string): boolean {
+  const parts = group.trim().split(/\s+/).filter((part) => part !== "")
+  // Kelompok kosong (`"^1.0.0 || "`) bukan "cocok dengan apa pun" melainkan
+  // rentang yang cacat, dan yang cacat ditolak.
+  if (parts.length === 0) return false
+  return parts.every((part) => satisfiesOne(current, part))
+}
+
+function satisfiesOne(current: Version, comparator: string): boolean {
+  if (comparator === "*" || comparator === "x") return true
+
+  // `>=` dan `<=` diperiksa SEBELUM `>` dan `<`: kebalikannya membuat `>=0.4.0`
+  // terbaca sebagai `>` diikuti versi `=0.4.0` yang tidak terurai, lalu seluruh
+  // rentangnya ditolak tanpa satu pun kalimat yang menjelaskan.
+  const operator = comparator.startsWith(">=")
+    ? ">="
+    : comparator.startsWith("<=")
+      ? "<="
+      : comparator.startsWith(">")
+        ? ">"
+        : comparator.startsWith("<")
+          ? "<"
+          : comparator.startsWith("^")
+            ? "^"
+            : comparator.startsWith("~")
+              ? "~"
+              : "="
+
+  const target = parseVersion(comparator.slice(operator === "=" ? 0 : operator.length))
   if (!target) return false
 
-  if (operator === "=") return compare(current, target) === 0
-  if (compare(current, target) < 0) return false
+  const order = compare(current, target)
+  if (operator === "=") return order === 0
+  if (operator === "<") return order < 0
+  if (operator === "<=") return order <= 0
+  if (operator === ">") return order > 0
+  if (order < 0) return false
   if (operator === ">=") return true
   if (operator === "~") return current[0] === target[0] && current[1] === target[1]
 
