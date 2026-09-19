@@ -86,12 +86,30 @@ Tiga bentuk kunci, sama dengan `plugin`:
 titah extension list             apa yang terpasang, dimuat SUNGGUHAN
 titah extension install <pkg>    unduh, lalu tulis ke config
 titah extension update [<pkg>]   pindahkan lockfile ke versi terbaru yang KOMPATIBEL
-titah extension remove <pkg>     cabut, lalu buang dari config
+titah extension disable <pkg>    berhenti memuatnya, TAPI tetap di disk
+titah extension enable <pkg>     muat lagi sesudah disable
+titah extension remove <pkg>     cabut, lalu buang dari SETIAP config yang menyebutnya
 ```
 
 `list` memuatnya sungguhan lalu melaporkan apa yang disediakan masing-masing, dan
 apa yang gagal. Membaca config saja tidak cukup: extension yang tertulis tapi
 tidak bisa di-`import` terlihat sama dengan yang bekerja.
+
+`disable` menulis `"enabled": false`; `enable` **menghapus** kunci itu alih-alih
+menulis `true`, karena `true` adalah bawaan schema dan baris yang tidak menyatakan
+apa pun tidak layak ditambahkan ke berkas yang dirawat tangan.
+
+`remove` menyunting berkas yang **benar-benar menyebut** spec itu — global,
+proyek, atau keduanya. Itu bukan detail: `install ./x` menulis ke config
+**proyek**, jadi pencabutan yang selalu menyunting config global akan mencetak
+"Removed" untuk entri yang masih utuh, dan panelnya muncul lagi di sesi
+berikutnya tanpa sebab yang bisa dilihat. Spec yang tidak disebut di berkas mana
+pun **dikatakan** begitu, bukan dilaporkan sebagai keberhasilan.
+
+`list` juga menyebut yang dimatikan (`⊘`). Tanpa itu ia hilang diam-diam:
+`loadExtensions()` melewati `enabled: false` sebelum sempat melaporkannya, dan
+daftar yang menghilangkan sesuatu yang masih ada di config membuat orang mengira
+ia sudah terhapus lalu memasangnya lagi di atas entri yang masih ada.
 
 `install` mengunduh **lalu** menulis ke config, dalam urutan itu. Ditulis lebih
 dulu, unduhan yang gagal meninggalkan config yang menyebut extension yang tidak
@@ -559,19 +577,59 @@ dimaksud orang saat mengetik `update`.
 
 ## Picker
 
-`<leader>x` membuka picker: popup di tengah layar dengan pencarian, dan **Enter**
-memasang baris yang tersorot. Itu satu-satunya aksi yang ada di picker hari ini —
-memperbarui dan mencabut lewat `titah extension update` dan `titah extension
-remove`.
+`<leader>x` membuka picker: popup di tengah layar, **Enter** memasang baris yang
+tersorot, **D** mematikan atau menyalakannya lagi, dan **R** mencabutnya.
+Memperbarui tetap lewat `titah extension update`.
 
-Tiga keadaan dibedakan tampilannya, karena `I` berarti hal berbeda pada
+Empat keadaan dibedakan tampilannya, karena tombolnya berarti hal berbeda pada
 masing-masing:
 
-| Penanda | Keadaan | Enter berarti |
-|---|---|---|
-| `✓` | terpasang | tidak ada yang perlu dilakukan |
-| `↓` | ada di config, belum terunduh | unduh |
-| `+` | ada di registry, belum dipilih | **tulis ke config**, lalu unduh |
+| Penanda | Keadaan | Enter berarti | D | R |
+|---|---|---|---|---|
+| `✓` | terpasang | tidak ada yang perlu dilakukan | matikan | cabut + `npm uninstall` |
+| `↓` | ada di config, belum terunduh | unduh | matikan | buang dari config |
+| `⊘` | ada di config, `enabled: false` | tidak ada | **nyalakan lagi** | cabut |
+| `+` | ada di registry, belum dipilih | **tulis ke config**, lalu unduh | — | — |
+
+Baris `+` tidak punya D maupun R, dan itu bukan kelalaian: mematikan sesuatu yang
+belum pernah user pilih berarti menulis `enabled: false` untuk entri yang belum
+ada — config yang menyatakan niat yang tidak pernah dinyatakan siapa pun.
+
+`⊘` **menang** atas `✓`. `enabled: false` berarti modulnya tidak pernah
+di-`import` sama sekali — `loadExtensions` melewatinya sebelum menyentuh disk —
+jadi baris yang mengaku terpasang untuk sesuatu yang tidak akan pernah dimuat
+adalah baris yang berbohong.
+
+D dan R **bertanya dulu**, dengan dialog merah yang menyebut apa yang akan
+terjadi dan **berkas mana** yang akan disunting. Merah dan bukan kuning atau
+cyan: kuning sudah milik dialog izin dan cyan milik dialog pertanyaan, dan tiga
+hal yang menuntut tindakan berbeda tidak boleh terlihat sama jam dua pagi.
+Dialog yang cuma bertanya "yakin?" tanpa menyebut apa yang disentuhnya meminta
+persetujuan untuk sesuatu yang tidak bisa dilihat user. Menyalakan kembali tidak
+bertanya — ia tidak menghapus apa pun.
+
+**Panel yang sedang tampil tidak lenyap** sesudah D atau R. Extension dimuat
+sekali per sesi dan Node tidak bisa meng-un-`import` modul; panel yang hilang
+seketika akan menjanjikan pembongkaran yang tidak terjadi. Yang jujur adalah
+panelnya tetap ada dan kalimatnya menyebut restart — cermin dari kalimat yang
+sudah dipakai `install`.
+
+## Mencabut dari panel yang sedang dibuka
+
+`<leader>x` yang ditekan saat sebuah panel sedang **fokus** membuka picker dengan
+baris panel itu sudah tersorot. Di situlah "tombol di panel" berada.
+
+Tidak ada tombol tersendiri untuk ini, dan itu disengaja. Selama sebuah panel
+fokus, setiap tombol biasa diteruskan ke `onKey` extension lalu ditelan — justru
+supaya arti sebuah tombol tidak bergantung pada extension mana yang sedang fokus.
+Hanya `+`, `-`, `=`, dan `Esc` yang dipesan Titah, dan tombol merusak yang aktif
+tepat saat papan ketik ada di dalam panel adalah tombol yang bisa tertekan tanpa
+sengaja. `<leader>x` bukan tombol biasa, jadi ia sudah sampai ke sana tanpa aturan
+itu disentuh.
+
+Satu hal yang ikut berubah: **popup mendahului panel yang fokus**. Tanpa itu,
+picker yang dibuka dari panel tergambar di depan mata sementara papan ketiknya
+masih dipegang kotak di belakangnya.
 
 Perhatikan bahwa `✓` **tidak** berarti "versi terbaru" — hanya "ada di disk".
 Picker tidak memanggil registry npm untuk setiap baris; itu satu request per

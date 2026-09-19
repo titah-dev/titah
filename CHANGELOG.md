@@ -5,6 +5,52 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Extension bisa dimatikan dan dicabut dari tempat ia dipasang
+
+- **Picker `<leader>x` sekarang punya `D` dan `R`.** `D` mematikan
+  (`enabled: false`, kode tetap di disk) atau menyalakannya lagi; `R` mencabut —
+  entri config dibuang dan paketnya di-`npm uninstall`. Sebelumnya picker hanya
+  bisa memasang, dan orang yang memasang dari dalam TUI harus keluar dari TUI
+  untuk membuangnya.
+- Keduanya **bertanya dulu**, lewat dialog merah yang menyebut apa yang akan
+  terjadi dan **berkas mana** yang akan disunting. Menyalakan kembali tidak
+  bertanya — ia tidak menghapus apa pun.
+- **Keadaan keempat, `⊘ disabled`**, dengan penanda visual sendiri. Ia menang
+  atas `✓`: `enabled: false` berarti modulnya tidak pernah di-`import`, jadi
+  baris yang mengaku terpasang untuk sesuatu yang tidak akan pernah dimuat
+  adalah baris yang berbohong.
+- **`<leader>x` saat sebuah panel fokus** membuka picker dengan baris panel itu
+  sudah tersorot. Tanpa keybind baru, dan tanpa menyentuh aturan bahwa tombol
+  biasa milik `onKey` extension selama panelnya fokus.
+- Popup kini **mendahului** panel yang fokus. Tanpa itu, picker yang dibuka dari
+  panel tergambar di depan mata sementara papan ketiknya masih dipegang kotak di
+  belakangnya.
+- Panel yang sedang tampil **tidak lenyap** sesudah D atau R. Extension dimuat
+  sekali per sesi dan Node tidak bisa meng-un-`import` modul; kalimatnya menyebut
+  restart, cermin dari kalimat yang sudah dipakai `install`.
+
+### Diperbaiki
+
+- **`titah extension remove ./x` benar-benar mencabut.** Ia selalu menyunting
+  config global, padahal `install ./x` selalu menulis ke config **proyek** — jadi
+  ia mencetak "Removed" untuk entri yang masih utuh, dan panelnya muncul lagi di
+  sesi berikutnya. Sekarang yang disunting adalah setiap berkas yang benar-benar
+  menyebut spec itu, dan spec yang tidak disebut di mana pun **dikatakan** begitu
+  alih-alih dilaporkan sebagai keberhasilan.
+- **`remove market:<id>` menghapus kunci yang benar.** Kunci config-nya
+  `market:<id>`, bukan nama paketnya; yang dihapus sebelumnya adalah kunci yang
+  tidak pernah ada.
+- **`titah extension list` menyebut yang dimatikan.** `loadExtensions()` melewati
+  `enabled: false` sebelum sempat melaporkannya, jadi extension yang sengaja
+  dimatikan hilang diam-diam dari daftar — dan orang mengira ia sudah terhapus.
+
+### Ditambahkan
+
+- `titah extension disable <pkg>` dan `titah extension enable <pkg>`. `enable`
+  **menghapus** kunci `enabled` alih-alih menulis `true`: `true` adalah bawaan
+  schema, dan baris yang tidak menyatakan apa pun tidak layak ditambahkan ke
+  berkas yang dirawat tangan.
+
 ## [0.7.0] — 2026-09-06
 
 ### Extension bertahan melewati upgrade Titah

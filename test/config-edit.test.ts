@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { ConfigUnparsable, editConfigFile, editJsonc } from "../src/core/config-edit.ts"
+import { ConfigUnparsable, editConfigFile, editJsonc, extensionDeclaredIn } from "../src/core/config-edit.ts"
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "titah-config-edit-"))
@@ -116,4 +116,67 @@ test("tidak ada berkas .tmp yang tertinggal sesudah penulisan berhasil", () => {
   const file = path.join(directory, "titah.json")
   editConfigFile(file, ["panel", "floor"], 50)
   assert.deepEqual(fs.readdirSync(directory), ["titah.json"])
+})
+
+/*
+ * `extensionDeclaredIn` — berkas mana yang benar-benar menyebut sebuah spec.
+ *
+ * Ada karena `loadConfig()` tidak bisa menjawabnya: ia me-merge global dan
+ * proyek ke satu objek dan membuang asal tiap kunci. Mencabut extension tanpa
+ * tahu asalnya berarti menyunting berkas yang salah lalu melapor berhasil.
+ */
+
+function twoConfigs(global: unknown, project: unknown): { files: string[]; directory: string } {
+  const directory = scratch()
+  const files = [path.join(directory, "global.json"), path.join(directory, "project.json")]
+  if (global !== undefined) fs.writeFileSync(files[0]!, JSON.stringify(global, null, 2))
+  if (project !== undefined) fs.writeFileSync(files[1]!, JSON.stringify(project, null, 2))
+  return { files, directory }
+}
+
+test("spec yang hanya ada di config global dilaporkan dari sana saja", () => {
+  const { files } = twoConfigs({ extension: { "@acme/x": {} } }, { extension: { "@acme/y": {} } })
+  assert.deepEqual(extensionDeclaredIn("@acme/x", files), [files[0]])
+})
+
+test("spec yang hanya ada di config proyek dilaporkan dari sana saja", () => {
+  // Path lokal SELALU ditulis ke config proyek (cli.ts `install`). Ini kasus
+  // yang hari ini gagal diam-diam: `remove` menyunting global, lalu melapor
+  // "Removed" untuk entri yang masih utuh.
+  const { files } = twoConfigs({ extension: { "@acme/x": {} } }, { extension: { "./notes": {} } })
+  assert.deepEqual(extensionDeclaredIn("./notes", files), [files[1]])
+})
+
+test("spec yang ada di kedua berkas dilaporkan dua-duanya", () => {
+  // Dicabut dari satu saja, entri yang tertinggal menghidupkannya lagi di sesi
+  // berikutnya — dan user melihat extension yang ia hapus kembali sendiri.
+  const { files } = twoConfigs({ extension: { "@acme/x": {} } }, { extension: { "@acme/x": { side: "right" } } })
+  assert.deepEqual(extensionDeclaredIn("@acme/x", files), files)
+})
+
+test("spec yang tidak disebut di mana pun menghasilkan daftar kosong", () => {
+  const { files } = twoConfigs({ extension: { "@acme/x": {} } }, {})
+  assert.deepEqual(extensionDeclaredIn("@acme/z", files), [])
+})
+
+test("berkas yang belum ada dilewati, bukan dianggap kegagalan", () => {
+  const { files } = twoConfigs(undefined, { extension: { "./notes": {} } })
+  assert.deepEqual(extensionDeclaredIn("./notes", files), [files[1]])
+})
+
+test("berkas yang tidak bisa diurai MENGGAGALKAN pencarian, bukan dilewati", () => {
+  /*
+   * Melewatinya berarti mengaku tahu spec itu tidak ada di sana, padahal yang
+   * sebenarnya terjadi adalah tidak bisa membacanya — dan jawaban itu dipakai
+   * untuk memutuskan berkas mana yang disunting saat mencabut.
+   */
+  const { files } = twoConfigs({ extension: {} }, undefined)
+  fs.writeFileSync(files[1]!, '{\n  "extension": {\n  "a": {}\n}\n')
+  assert.throws(() => extensionDeclaredIn("a", files), ConfigUnparsable)
+})
+
+test("trailing comma diterima saat mencari, sama seperti saat menulis", () => {
+  const { files } = twoConfigs({ extension: {} }, undefined)
+  fs.writeFileSync(files[1]!, '{\n  "extension": {\n    "./notes": {},\n  },\n}\n')
+  assert.deepEqual(extensionDeclaredIn("./notes", files), [files[1]])
 })

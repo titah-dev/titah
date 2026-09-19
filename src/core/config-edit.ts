@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { applyEdits, modify, parse as parseJsonc, type ParseError } from "jsonc-parser"
+import { globalConfigFile, projectConfigFile } from "./paths.ts"
 
 /**
  * Menyunting config user di tempat, tanpa menghancurkan apa yang ia tulis.
@@ -109,4 +110,45 @@ function readIfExists(file: string): string | undefined {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
     throw error
   }
+}
+
+/**
+ * Berkas config yang benar-benar menyebut `extension[spec]`, urut prioritas naik.
+ *
+ * `loadConfig()` tidak bisa menjawab ini: ia me-merge global dan proyek ke satu
+ * objek dan membuang asal tiap kunci. Yang dibutuhkan saat mencabut justru
+ * asalnya — path lokal `./x` selalu ditulis ke config PROYEK, jadi pencabutan
+ * yang selalu menyunting config global melapor "Removed" untuk entri yang masih
+ * utuh.
+ *
+ * Mengembalikan DAFTAR, bukan satu berkas. Spec yang disebut di kedua tempat
+ * harus dicabut dari keduanya; entri global yang tertinggal menghidupkannya lagi
+ * di sesi berikutnya, dan user melihat extension yang ia hapus kembali sendiri.
+ */
+export function extensionDeclaredIn(
+  spec: string,
+  files: string[] = [globalConfigFile(), projectConfigFile()],
+): string[] {
+  const found: string[] = []
+  for (const file of files) {
+    const text = readIfExists(file)
+    if (text === undefined || text.trim() === "") continue
+
+    const errors: ParseError[] = []
+    const parsed = parseJsonc(text, errors, { allowTrailingComma: true }) as
+      | { extension?: Record<string, unknown> }
+      | undefined
+    /*
+     * Berkas yang tidak bisa diurai MENGGAGALKAN pencarian, bukan dilewati.
+     *
+     * Melewatinya berarti mengaku tahu spec itu tidak ada di sana, padahal yang
+     * sebenarnya terjadi adalah tidak bisa membacanya — dan jawaban itu yang
+     * menentukan berkas mana yang disunting sesudahnya.
+     */
+    if (errors.length > 0) throw new ConfigUnparsable(file, `${errors.length} parse error(s)`)
+
+    const table = parsed?.extension
+    if (table !== null && typeof table === "object" && spec in table) found.push(file)
+  }
+  return found
 }

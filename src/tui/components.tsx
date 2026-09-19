@@ -245,6 +245,46 @@ export function History({
   )
 }
 
+/**
+ * Konfirmasi untuk aksi yang menyunting berkas user atau menghapus dari disk.
+ *
+ * Bingkainya MERAH, dan bukan kuning atau cyan: kuning sudah milik dialog izin,
+ * cyan milik dialog pertanyaan, dan tiga hal yang menuntut tindakan berbeda
+ * tidak boleh terlihat sama jam dua pagi. Alasan yang sama dengan yang sudah
+ * dieja di `QuestionDialog` di bawah.
+ *
+ * `lines` menyebut apa yang akan terjadi DAN berkas mana yang disentuh. Dialog
+ * yang cuma bertanya "yakin?" meminta persetujuan untuk sesuatu yang tidak bisa
+ * dilihat user — dan satu-satunya jawaban yang masuk akal untuk pertanyaan
+ * seperti itu adalah menekan `n` setiap kali.
+ */
+export function ConfirmDialog({
+  title,
+  lines,
+  confirmLabel,
+}: {
+  title: string
+  lines: string[]
+  confirmLabel: string
+}) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1} flexShrink={0}>
+      <Text color="red" bold>
+        {title}
+      </Text>
+      {lines.slice(0, 10).map((line, index) => (
+        <Text key={index} dimColor>
+          {line}
+        </Text>
+      ))}
+      <Text>
+        <Text color="red">[y]</Text> {confirmLabel} {"  "}
+        <Text color="green">[n]</Text> cancel
+      </Text>
+    </Box>
+  )
+}
+
 export function PermissionDialog({ request }: { request: PermissionRequest }) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} flexShrink={0}>
@@ -719,11 +759,15 @@ export function Popup({
   title,
   items,
   selected,
+  hint,
   height = 8,
 }: {
   title: string
   items: Suggestion[]
   selected: number
+  /** Tombol tambahan yang hanya berlaku di popup ini, mis. `"D disable · R remove"`. */
+  hint?: string
+  selectedLabel?: string
   height?: number
 }) {
   if (items.length === 0) {
@@ -741,7 +785,7 @@ export function Popup({
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} flexShrink={0}>
       <Text dimColor>
-        {title} · {items.length} · ↑↓ move · tab/enter select · esc close
+        {title} · {items.length} · ↑↓ move · tab/enter select{hint ? ` · ${hint}` : ""} · esc close
       </Text>
       {window.map((item, index) => {
         const actual = offset + index

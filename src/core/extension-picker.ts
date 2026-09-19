@@ -11,13 +11,19 @@ import type { RegistryEntry } from "./extension-registry.ts"
  *   installed  → tidak ada yang perlu dilakukan
  *   configured → ada di config, belum terunduh; unduh
  *   available  → ada di registry, belum dipilih; tulis ke config LALU unduh
+ *   disabled   → ada di config dengan `enabled: false`; nyalakan
+ *
+ * `disabled` MENANG atas dua yang pertama. `enabled: false` berarti modulnya
+ * tidak pernah di-`import` sama sekali — `loadExtensions` melewatinya sebelum
+ * menyentuh disk — jadi baris yang mengaku "installed" untuk sesuatu yang tidak
+ * akan pernah dimuat adalah baris yang berbohong.
  *
  * Tombol yang artinya berubah tergantung baris yang tersorot, tanpa tampilan
  * yang membedakan barisnya, adalah tombol yang orang tekan lalu menyesal —
  * terutama yang ketiga, karena ia menulis ke config user.
  */
 
-export type PickerState = "installed" | "configured" | "available"
+export type PickerState = "installed" | "configured" | "available" | "disabled"
 
 export interface PickerRow {
   /** Spec seperti yang ada (atau akan ada) di config. */
@@ -39,6 +45,8 @@ export interface PickerInput {
   configured: string[]
   /** Paket yang benar-benar ada di disk. */
   installed: string[]
+  /** Spec config yang `enabled`-nya `false`. Kunci config, bukan nama paket. */
+  disabled?: string[]
   registry: RegistryEntry[]
   /** Tombol yang diusulkan per spec, dari manifest atau config. */
   proposedKeys?: Record<string, string>
@@ -56,6 +64,7 @@ export interface PickerInput {
  */
 export function pickerRows(input: PickerInput): PickerRow[] {
   const installed = new Set(input.installed)
+  const disabled = new Set(input.disabled ?? [])
   const byPackage = new Map(input.registry.map((entry) => [entry.package, entry]))
   const byId = new Map(input.registry.map((entry) => [entry.id, entry]))
   const rows: PickerRow[] = []
@@ -75,8 +84,16 @@ export function pickerRows(input: PickerInput): PickerRow[] {
            * `./lokal` yang tidak pernah diunduh. Menyebutnya "installed" karena
            * ia ada di config akan membuat `I` tidak melakukan apa pun pada
            * baris yang justru paling butuh sesuatu dilakukan.
+           *
+           * `disabled` diperiksa lebih dulu, dan dicocokkan dengan SPEC bukan
+           * nama paket: `enabled: false` ditulis di bawah kunci config, dan
+           * kunci itu bisa berbentuk `market:git` sementara paketnya bukan.
            */
-          state: installed.has(packageName) ? "installed" : "configured",
+          state: disabled.has(spec)
+            ? "disabled"
+            : installed.has(packageName)
+              ? "installed"
+              : "configured",
           title: entry?.title ?? spec,
           ...(entry?.description !== undefined ? { description: entry.description } : {}),
           ...(entry?.version !== undefined ? { version: entry.version } : {}),
@@ -141,7 +158,60 @@ function filter(rows: PickerRow[], query: string | undefined): PickerRow[] {
  * dari keduanya berubah.
  */
 export function installLabel(row: PickerRow): string {
+  if (row.state === "disabled") return "disabled — press E to enable"
   if (row.state === "installed") return "already installed"
   if (row.state === "configured") return `download ${row.packageName}`
   return `add ${row.packageName} to your config, then download it`
+}
+
+/**
+ * Apa yang akan dilakukan `D` pada baris ini, sebagai kalimat.
+ *
+ * `undefined` berarti aksinya TIDAK BERLAKU di baris ini, dan itu bukan hal
+ * yang sama dengan "tidak melakukan apa-apa": baris `available` belum ada di
+ * config sama sekali, jadi mematikannya berarti menulis `enabled: false` untuk
+ * entri yang belum pernah user pilih — config yang menyatakan niat yang tidak
+ * pernah dinyatakan siapa pun.
+ */
+export function disableLabel(row: PickerRow): string | undefined {
+  if (row.state === "available") return undefined
+  if (row.state === "disabled") return `enable ${row.spec} again`
+  return `stop loading ${row.spec}, keep it on disk`
+}
+
+/**
+ * Apa yang akan dilakukan `R` pada baris ini, sebagai kalimat.
+ *
+ * Disebut berbeda untuk npm dan bukan-npm karena yang terjadi memang berbeda:
+ * path lokal dan spec yang belum terunduh tidak punya apa pun untuk dicabut
+ * dari npm, dan kalimat yang menjanjikan penghapusan dari disk untuk berkas
+ * yang user tulis sendiri adalah kalimat yang menakutkan tanpa sebab.
+ */
+export function removeLabel(row: PickerRow): string | undefined {
+  if (row.state === "available") return undefined
+  if (row.state === "configured") return `drop ${row.spec} from your config`
+  return `drop ${row.spec} from your config and uninstall ${row.packageName}`
+}
+
+export type PickerVerb = "install" | "disable" | "enable" | "remove"
+
+/**
+ * Tombol mana berarti apa di baris ini. Seluruh keputusannya ada di sini.
+ *
+ * Ditulis di sini dan bukan di penangan tombol TUI karena alasan yang sama
+ * dengan `installLabel`: kalimat yang dibaca user dan cabang yang dieksekusi
+ * harus datang dari satu tempat. Yang kedua juga bisa diuji tanpa merender
+ * apa pun.
+ *
+ * Huruf besar dan kecil sama artinya — hint menyebutnya `D`/`R`, dan orang
+ * yang membacanya akan menekan shift.
+ */
+export function pickerAction(row: PickerRow, key: string): PickerVerb | undefined {
+  const letter = key.length === 1 ? key.toLowerCase() : key
+  if (letter === "d" || letter === "e") {
+    if (disableLabel(row) === undefined) return undefined
+    return row.state === "disabled" ? "enable" : "disable"
+  }
+  if (letter === "r") return removeLabel(row) === undefined ? undefined : "remove"
+  return undefined
 }

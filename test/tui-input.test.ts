@@ -245,6 +245,8 @@ function mount(
     skillPaths?: { path: string; as: string }[]
     /** Blok `extension` config, untuk test panel samping. */
     extension?: Record<string, unknown>
+    /** Direktori kerja sesi. Diisi kalau test butuh `titah.json` proyek sungguhan. */
+    cwd?: string
   } = {},
 ): Harness {
   const stdin = new FakeStdin()
@@ -290,7 +292,7 @@ function mount(
     createElement(App, {
       client,
       session,
-      cwd: "/proyek",
+      cwd: options.cwd ?? "/proyek",
       model: "uji/model",
       // Wajib: `checkEngine` membandingkan `engines.titah` extension terhadap
       // angka ini, dan `undefined` membuat setiap extension ditolak dengan
@@ -3442,4 +3444,245 @@ test("petunjuk yang berdiri menyebut jumlahnya dan ke mana harus melihat", () =>
     ]) ?? "",
     /2 side panels failed.*titah extension list/,
   )
+})
+
+/*
+ * --- Picker extension: disable & remove ------------------------------------
+ *
+ * Mesin pencabutannya sudah ada dan sudah teruji di `extension-install.test.ts`
+ * dan `extension-cli.test.ts`. Yang diuji di sini adalah satu-satunya bagian
+ * yang tidak bisa dibuktikan tanpa merender: apakah tombolnya benar-benar
+ * sampai ke sana, dan apakah `n` benar-benar tidak menyentuh berkas apa pun.
+ */
+
+/**
+ * Mengalihkan cache registry ke direktori sementara yang SUDAH terisi.
+ *
+ * Tanpa ini picker memanggil raw.githubusercontent sungguhan setiap kali ia
+ * dibuka — test yang gagal saat wifi mati, dan lambat saat tidak. Cache yang
+ * masih segar membuat `loadRegistry` pulang sebelum menyentuh jaringan.
+ */
+function offlineRegistry(): void {
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "titah-tui-registry-"))
+  fs.mkdirSync(path.join(cache, "titah"), { recursive: true })
+  fs.writeFileSync(
+    path.join(cache, "titah", "registry.json"),
+    JSON.stringify({ fetchedAt: Date.now(), entries: [] }),
+  )
+  process.env.XDG_CACHE_HOME = cache
+}
+
+/** Satu extension lokal yang disebut config proyek sungguhan di disk. */
+function projectWithExtension(): { cwd: string; configFile: string; spec: string } {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "titah-tui-proj-"))
+  const spec = writePanelExtension()
+  const configFile = path.join(cwd, "titah.json")
+  fs.writeFileSync(configFile, `{\n  // panel uji\n  "extension": { ${JSON.stringify(spec)}: {} }\n}\n`)
+  return { cwd, configFile, spec }
+}
+
+test("picker menyebutkan tombol disable dan remove, bukan hanya Enter", async () => {
+  offlineRegistry()
+  const h = mount({ extension: { [writePanelExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /Extensions/)
+    assert.match(h.frame(), /D disable/)
+    assert.match(h.frame(), /R remove/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("R membuka konfirmasi yang menyebut berkas yang akan disunting", async () => {
+  offlineRegistry()
+  const project = projectWithExtension()
+  const h = mount({ extension: { [project.spec]: {} }, cwd: project.cwd })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    h.clear()
+    h.stdin.press("R")
+    await tick()
+    await tick()
+    const frame = h.frame()
+    assert.match(frame, /Remove/i)
+    // Berkas yang akan disunting DISEBUT. Dialog yang cuma bertanya "yakin?"
+    // tanpa menyebut apa yang disentuhnya meminta persetujuan untuk sesuatu
+    // yang tidak bisa dilihat user.
+    assert.match(frame, /titah\.json/)
+    assert.match(frame, /\[y\]/)
+    assert.match(frame, /\[n\]/)
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("n membatalkan tanpa menyentuh berkas config", async () => {
+  offlineRegistry()
+  const project = projectWithExtension()
+  const before = fs.readFileSync(project.configFile, "utf8")
+  const h = mount({ extension: { [project.spec]: {} }, cwd: project.cwd })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    h.stdin.press("R")
+    await tick()
+    h.stdin.press("n")
+    await tick()
+    await tick()
+    assert.equal(fs.readFileSync(project.configFile, "utf8"), before)
+    // Dan `n` tidak boleh mendarat di prompt sebagai ketikan.
+    assert.deepEqual(h.recorded.sent, [])
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("y pada disable menulis enabled:false dan menjaga komentar config", async () => {
+  offlineRegistry()
+  const project = projectWithExtension()
+  const h = mount({ extension: { [project.spec]: {} }, cwd: project.cwd })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    h.stdin.press("D")
+    await tick()
+    h.stdin.press("y")
+    await tick()
+    await tick()
+    const after = fs.readFileSync(project.configFile, "utf8")
+    assert.match(after, /"enabled":\s*false/)
+    assert.ok(after.includes("// panel uji"))
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("panel tetap tergambar sesudah remove, dan flash mengatakannya", async () => {
+  /*
+   * Extension dimuat sekali per sesi dan Node tidak bisa meng-un-import modul.
+   * Panel yang lenyap seketika akan menjanjikan pembongkaran yang tidak terjadi;
+   * yang jujur adalah panelnya tetap ada dan kalimatnya menyebut restart.
+   */
+  offlineRegistry()
+  const project = projectWithExtension()
+  const h = mount({ extension: { [project.spec]: {} }, cwd: project.cwd })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /RINGKAS/)
+
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    h.stdin.press("R")
+    await tick()
+    h.clear()
+    h.stdin.press("y")
+    await tick()
+    await tick()
+    const frame = h.frame()
+    assert.match(frame, /restart/i)
+    assert.match(frame, /RINGKAS/)
+    assert.equal(
+      (JSON.parse(fs.readFileSync(project.configFile, "utf8").replace(/\/\/.*$/gm, "")) as {
+        extension: Record<string, unknown>
+      }).extension[project.spec],
+      undefined,
+    )
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("leader x dengan panel fokus membuka picker pada baris panel itu", async () => {
+  /*
+   * Inilah "tombol di panel": tanpa keybind baru, dan tanpa menyentuh doktrin
+   * bahwa tombol biasa milik `onKey` extension selama panelnya fokus.
+   *
+   * Dibuktikan lewat APA YANG TERJADI, bukan lewat penanda `›` di bingkai.
+   * Dengan dua panel, fokus dipindahkan ke yang KEDUA lalu `D` ditekan: baris
+   * yang tersorot default adalah yang pertama, jadi kalau prasorotnya tidak
+   * bekerja, yang termatikan adalah extension yang salah.
+   */
+  offlineRegistry()
+  const first = writePanelExtension()
+  const second = writePanelExtension()
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "titah-tui-proj-"))
+  const configFile = path.join(cwd, "titah.json")
+  fs.writeFileSync(
+    configFile,
+    JSON.stringify({ extension: { [first]: {}, [second]: {} } }, null, 2),
+  )
+
+  const h = mount({ extension: { [first]: {}, [second]: {} }, cwd })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("\u001b[D")
+    await tick()
+    await tick()
+
+    // Dua kali `f`: panel pertama, lalu panel kedua.
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("f")
+    await tick()
+
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /Extensions/)
+
+    h.stdin.press("D")
+    await tick()
+    h.stdin.press("y")
+    await tick()
+    await tick()
+
+    const table = (JSON.parse(fs.readFileSync(configFile, "utf8")) as {
+      extension: Record<string, { enabled?: boolean }>
+    }).extension
+    assert.equal(table[second]?.enabled, false, "panel yang fokus yang termatikan")
+    assert.equal(table[first]?.enabled, undefined, "panel yang TIDAK fokus tidak tersentuh")
+  } finally {
+    h.cleanup()
+  }
 })
