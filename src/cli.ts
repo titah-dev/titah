@@ -20,6 +20,7 @@ import {
   checkEngine,
   entryFile,
   extensionDir,
+  extensionRoot,
   installedExtensions,
   loadExtensions,
   parseExtensionSpec,
@@ -27,7 +28,7 @@ import {
   readManifest,
 } from "./core/extension.ts"
 import { installExtension, removeExtension, updateExtension } from "./core/extension-install.ts"
-import { editConfigFile } from "./core/config-edit.ts"
+import { editConfigFile, extensionDeclaredIn } from "./core/config-edit.ts"
 import { checkUpdate } from "./core/update.ts"
 import { collectStats } from "./core/stats.ts"
 import { available as sandboxAvailable } from "./core/sandbox.ts"
@@ -177,7 +178,9 @@ Configuration:
   extension list           Configured side panels — loaded for real, not just read
   extension install <pkg>  Download a panel and add it to your config
   extension update [<pkg>] Move the lockfile to the newest COMPATIBLE version
-  extension remove <pkg>   Remove a panel and drop it from your config
+  extension disable <pkg>  Stop loading a panel, but keep it on disk
+  extension enable <pkg>   Load a panel again after disable
+  extension remove <pkg>   Uninstall a panel and drop it from every config that names it
   upgrade                  Check npm for a newer Titah and print how to install it
   mcp list                 Configured MCP servers, their transport, and sign-in state
   mcp login <server>       Sign in to a remote MCP server with OAuth
@@ -572,6 +575,22 @@ async function cmdExtension(args: string[]): Promise<void> {
       for (const line of failure.message.split("\n")) out(`    ${line}`)
     }
 
+    /*
+     * Yang dimatikan DIKATAKAN, bukan disembunyikan.
+     *
+     * `loadExtensions()` melewati `enabled: false` sebelum sempat menyentuhnya,
+     * jadi tanpa baris ini extension yang sengaja dimatikan user hilang
+     * diam-diam dari daftar — dan daftar yang menghilangkan sesuatu yang masih
+     * ada di config membuat orang mengira ia sudah terhapus, lalu memasangnya
+     * lagi di atas entri yang masih ada.
+     */
+    for (const [spec, entry] of Object.entries(loaded.config.extension)) {
+      if (entry.enabled !== false) continue
+      const where = extensionDeclaredIn(spec)
+      out(`⊘ ${spec} — disabled${where.length > 0 ? ` in ${where.join(", ")}` : ""}`)
+      out(`    enable it with: titah extension enable ${spec}`)
+    }
+
     // Terpasang tapi tidak disebut config: bukan kegagalan, tapi juga bukan
     // sesuatu yang berjalan. Tidak menyebutkannya membuat orang bertanya-tanya
     // ke mana panel yang ia pasang kemarin.
@@ -706,20 +725,85 @@ async function cmdExtension(args: string[]): Promise<void> {
     return
   }
 
-  if (sub === "remove" || sub === "uninstall") {
-    const packageName = args[1]
-    if (!packageName) fail("Usage: titah extension remove <package>")
-    // Path lokal tidak pernah diunduh, jadi tidak ada yang perlu dicabut dari
-    // npm — hanya entri config-nya yang dibuang di bawah.
-    if (parseExtensionSpec(packageName).kind === "npm") await removeExtension({ packageName })
-    const target = globalConfigFile()
-    editConfigFile(target, ["extension", packageName], undefined)
-    out(`Removed ${packageName}`)
-    out(`  updated ${target}`)
+  if (sub === "disable" || sub === "enable") {
+    const spec = args[1]
+    if (!spec) fail(`Usage: titah extension ${sub} <package|path>`)
+
+    const declared = extensionDeclaredIn(spec)
+    if (declared.length === 0) {
+      fail(
+        `"${spec}" is not in any config file, so there is nothing to ${sub}.\n` +
+          "Run `titah extension list` to see what is configured.",
+      )
+    }
+
+    /*
+     * `enable` MENGHAPUS kuncinya, bukan menulis `true`.
+     *
+     * `enabled: true` adalah bawaan schema. Menuliskannya kembali meninggalkan
+     * baris yang tidak menyatakan apa pun di berkas yang dirawat tangan — dan
+     * config yang penuh baris bawaan berhenti bisa dibaca sebagai pernyataan
+     * niat.
+     */
+    const value = sub === "disable" ? false : undefined
+    for (const file of declared) {
+      editConfigFile(file, ["extension", spec, "enabled"], value)
+      out(`  updated ${file}`)
+    }
+    out(sub === "disable" ? `Disabled ${spec}` : `Enabled ${spec}`)
+    out("")
+    out(
+      sub === "disable"
+        ? "Nothing was deleted — the code stays on disk. Restart Titah to stop loading it."
+        : "Restart Titah to load it.",
+    )
     return
   }
 
-  fail(`Unknown extension subcommand: "${sub}". Options: list, install, update, remove.`)
+  if (sub === "remove" || sub === "uninstall") {
+    const spec = args[1]
+    if (!spec) fail("Usage: titah extension remove <package|path>")
+
+    /*
+     * Berkas yang DISUNTING adalah berkas yang benar-benar menyebut spec ini,
+     * bukan selalu config global.
+     *
+     * `install ./x` menulis ke config PROYEK — path relatif hanya berarti
+     * sesuatu dari direktori tempat ia ditulis. Pencabutan yang selalu
+     * menyunting global mencetak "Removed" untuk entri yang masih utuh, dan
+     * panelnya muncul lagi di sesi berikutnya tanpa sebab yang bisa dilihat.
+     */
+    const declared = extensionDeclaredIn(spec)
+
+    /*
+     * Kunci config adalah SPEC, operasi npm memakai NAMA PAKET. Untuk
+     * `market:<id>` keduanya berbeda, dan memakai yang satu di tempat yang lain
+     * berarti menghapus kunci yang tidak pernah ada.
+     */
+    const source = parseExtensionSpec(spec)
+    if (source.kind === "npm") await removeExtension({ packageName: source.package })
+
+    for (const file of declared) {
+      editConfigFile(file, ["extension", spec], undefined)
+    }
+
+    if (declared.length === 0) {
+      // Dikatakan, bukan dilaporkan sebagai keberhasilan. "Removed" untuk spec
+      // yang tidak pernah ada di config mengajarkan bahwa perintah ini selalu
+      // berhasil — termasuk saat user salah ketik nama panel yang ia cari.
+      out(`${spec} is not in any config file.`)
+      if (source.kind === "npm") out(`  ${source.package} was uninstalled from ${extensionRoot()} if it was there`)
+      return
+    }
+
+    out(`Removed ${spec}`)
+    for (const file of declared) out(`  updated ${file}`)
+    return
+  }
+
+  fail(
+    `Unknown extension subcommand: "${sub}". Options: list, install, update, disable, enable, remove.`,
+  )
 }
 
 /**

@@ -29,6 +29,7 @@ import {
 } from "./editing.ts"
 import { ChildPage } from "./child-page.tsx"
 import {
+  ConfirmDialog,
   Editor,
   Footer,
   History,
@@ -56,15 +57,27 @@ import {
   type PanelLine,
   type StackBox,
 } from "./panels.ts"
-import { loadExtensions, type ExtensionFailure, type LoadedExtension } from "../core/extension.ts"
+import {
+  loadExtensions,
+  parseExtensionSpec,
+  type ExtensionFailure,
+  type LoadedExtension,
+} from "../core/extension.ts"
 import { errorLines, renderPanel } from "./extension-host.ts"
 import { checkUpdate, updateNotice } from "../core/update.ts"
 import { loadRegistry } from "../core/extension-registry.ts"
-import { installLabel, pickerRows } from "../core/extension-picker.ts"
+import {
+  disableLabel,
+  installLabel,
+  pickerAction,
+  pickerRows,
+  removeLabel,
+  type PickerRow,
+} from "../core/extension-picker.ts"
 import { installedExtensions } from "../core/extension.ts"
-import { installExtension } from "../core/extension-install.ts"
-import { editConfigFile } from "../core/config-edit.ts"
-import { globalConfigFile } from "../core/paths.ts"
+import { installExtension, removeExtension } from "../core/extension-install.ts"
+import { editConfigFile, extensionDeclaredIn } from "../core/config-edit.ts"
+import { globalConfigFile, projectConfigFile } from "../core/paths.ts"
 import { LoginPanel, loginLines, type LoginProgress } from "./login.tsx"
 import {
   AccountError,
@@ -468,6 +481,33 @@ export function App({
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(DRAFT)
   const stash = useRef("")
+
+  /*
+   * Baris picker extension yang sedang ditampilkan, utuh.
+   *
+   * Item popup cuma membawa satu `value` berupa string, dan aksi di picker
+   * butuh DUA hal yang berbeda: `spec` untuk kunci config dan `packageName`
+   * untuk npm. Keduanya sama untuk paket npm biasa dan BERBEDA untuk
+   * `market:<id>` — memakai yang satu di tempat yang lain berarti menghapus
+   * kunci yang tidak pernah ada.
+   */
+  const [extensionRows, setExtensionRows] = useState<PickerRow[]>([])
+
+  /*
+   * Konfirmasi untuk aksi yang menyunting config user atau menghapus dari disk.
+   *
+   * Dipisah dari `popup` karena ia menuntut jawaban: popup ditutup Esc dan
+   * dilupakan, dialog ini tidak boleh dilewati dengan mengetik.
+   */
+  const [confirm, setConfirm] = useState<
+    | {
+        title: string
+        lines: string[]
+        confirmLabel: string
+        run: () => void
+      }
+    | undefined
+  >(undefined)
 
   // Popup pilihan: autocomplete `@`/`/`, pemilih model, pemilih skill.
   const [popup, setPopup] = useState<
@@ -1055,50 +1095,77 @@ export function App({
    * masing-masing — dan yang paling berbeda adalah `available`, yang MENULIS ke
    * config user. Lihat `installLabel` di core/extension-picker.ts.
    */
-  const openExtensionPicker = useCallback(() => {
-    void loadRegistry()
-      .then((snapshot) => {
-        const rows = pickerRows({
-          configured: Object.keys(config.extension),
-          installed: installedExtensions(),
-          registry: snapshot.entries,
-          proposedKeys: Object.fromEntries(
-            extensions.filter((entry) => entry.key !== undefined).map((entry) => [entry.spec, entry.key as string]),
-          ),
-          keymap,
-        })
+  const openExtensionPicker = useCallback(
+    (preselect?: string) => {
+      void loadRegistry()
+        .then((snapshot) => {
+          const rows = pickerRows({
+            configured: Object.keys(config.extension),
+            installed: installedExtensions(),
+            /*
+             * Yang dimatikan diambil dari config, dan dikunci pada SPEC.
+             * `enabled: false` ditulis di bawah kunci config, dan kunci itu bisa
+             * berbentuk `market:git` sementara paketnya bukan.
+             */
+            disabled: Object.entries(config.extension)
+              .filter(([, entry]) => entry.enabled === false)
+              .map(([spec]) => spec),
+            registry: snapshot.entries,
+            proposedKeys: Object.fromEntries(
+              extensions.filter((entry) => entry.key !== undefined).map((entry) => [entry.spec, entry.key as string]),
+            ),
+            keymap,
+          })
 
-        if (rows.length === 0) {
-          return flash(
-            snapshot.stale
-              ? `no extensions listed — registry unreachable (${snapshot.reason ?? "offline"})`
-              : "no extensions listed yet",
-          )
-        }
+          if (rows.length === 0) {
+            return flash(
+              snapshot.stale
+                ? `no extensions listed — registry unreachable (${snapshot.reason ?? "offline"})`
+                : "no extensions listed yet",
+            )
+          }
 
-        setPopup({
-          // Keusangan disebut DI JUDUL, bukan disembunyikan. Daftar yang mungkin
-          // ketinggalan tetap berguna selama user tahu ia sedang melihat cache.
-          title: snapshot.stale ? "Extensions (offline — cached list)" : "Extensions",
-          items: rows.map((row) => ({
-            kind: "extension" as const,
-            value: row.packageName,
-            label: `${STATE_MARK[row.state]} ${row.title}`,
-            detail: [
-              installLabel(row),
-              row.version !== undefined ? `v${row.version}` : "",
-              row.keyConflict !== undefined ? `key ${row.key} is taken by ${row.keyConflict}` : "",
-            ]
-              .filter(Boolean)
-              .join(" · "),
-            disabled: row.state === "installed",
-          })),
-          selected: 0,
-          fromMenu: true,
+          setExtensionRows(rows)
+
+          /*
+           * Baris yang tersorot saat picker dibuka dari panel yang sedang fokus
+           * adalah panel ITU, bukan baris pertama.
+           *
+           * Di situlah "tombol di panel" berada. Menambahkan tombol tersendiri
+           * akan melanggar aturan yang sudah ditulis di penangan panel fokus —
+           * tombol biasa milik `onKey` extension selama panelnya fokus — dan
+           * `<leader>x` sudah sampai ke sini hari ini tanpa aturan itu disentuh.
+           */
+          const at = preselect === undefined ? -1 : rows.findIndex((row) => row.spec === preselect)
+
+          setPopup({
+            // Keusangan disebut DI JUDUL, bukan disembunyikan. Daftar yang mungkin
+            // ketinggalan tetap berguna selama user tahu ia sedang melihat cache.
+            title: snapshot.stale ? "Extensions (offline — cached list)" : "Extensions",
+            items: rows.map((row) => ({
+              kind: "extension" as const,
+              /*
+               * SPEC, bukan nama paket. Itu kunci config-nya, dan seluruh aksi
+               * di picker bermuara ke penyuntingan kunci itu.
+               */
+              value: row.spec,
+              label: `${STATE_MARK[row.state]} ${row.title}`,
+              detail: [
+                installLabel(row),
+                row.version !== undefined ? `v${row.version}` : "",
+                row.keyConflict !== undefined ? `key ${row.key} is taken by ${row.keyConflict}` : "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+            })),
+            selected: at < 0 ? 0 : at,
+            fromMenu: true,
+          })
         })
-      })
-      .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
-  }, [config.extension, extensions, keymap, flash])
+        .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
+    },
+    [config.extension, extensions, keymap, flash],
+  )
 
   /*
    * Memasang dari picker: unduh dulu, TULIS config sesudahnya.
@@ -1109,18 +1176,105 @@ export function App({
    * tahu pernah tercatat.
    */
   const installFromPicker = useCallback(
-    (packageName: string): void => {
+    (row: PickerRow): void => {
+      if (row.state === "installed") return flash(`${row.spec} is already installed — D disable · R remove`)
+      if (row.state === "disabled") return flash(`${row.spec} is disabled — D enables it again`)
+
+      const { packageName, spec } = row
       flash(`installing ${packageName} …`)
       void installExtension({ packageName })
         .then((result) => {
-          if (config.extension[packageName] === undefined) {
-            editConfigFile(globalConfigFile(), ["extension", packageName], {})
+          if (config.extension[spec] === undefined) {
+            editConfigFile(globalConfigFile(), ["extension", spec], {})
           }
           flash(`${packageName}@${result.version} installed — restart Titah to load it`)
         })
         .catch((error: unknown) => flash(error instanceof Error ? error.message : String(error)))
     },
     [config.extension, flash],
+  )
+
+  /*
+   * Berkas config yang benar-benar menyebut sebuah spec.
+   *
+   * Dibaca dari disk dan bukan dari `config` yang sudah di-merge: `loadConfig`
+   * menggabungkan global dan proyek lalu membuang asal tiap kunci, dan yang
+   * dibutuhkan di sini justru asalnya. Path lokal `./x` selalu ditulis ke config
+   * PROYEK — menyuntingnya di global berarti mengaku berhasil pada entri yang
+   * masih utuh, dan panelnya kembali di sesi berikutnya.
+   */
+  const declaringFiles = useCallback(
+    (spec: string): string[] => extensionDeclaredIn(spec, [globalConfigFile(), projectConfigFile(cwd)]),
+    [cwd],
+  )
+
+  /**
+   * Menyiapkan konfirmasi untuk satu aksi picker. Tidak menjalankan apa pun.
+   *
+   * Aksinya dirakit di sini supaya kalimat yang dibaca user dan kode yang
+   * berjalan sesudah `y` disusun berdampingan — dua tempat yang berbeda akan
+   * menyimpang, dan yang menyimpang di sini adalah janji tentang berkas orang.
+   */
+  const askExtensionAction = useCallback(
+    (row: PickerRow, verb: "disable" | "enable" | "remove"): void => {
+      let files: string[]
+      try {
+        files = declaringFiles(row.spec)
+      } catch (error) {
+        return flash(error instanceof Error ? error.message : String(error))
+      }
+
+      if (files.length === 0) {
+        return flash(`${row.spec} is not in any config file — nothing to ${verb}`)
+      }
+
+      const touched = files.map((file) => `  edits ${file}`)
+
+      if (verb === "enable") {
+        /*
+         * Menyalakan kembali tidak menghapus apa pun dan tidak butuh
+         * konfirmasi. Dialog untuk aksi yang bisa dibatalkan dengan satu tombol
+         * lain hanya mengajarkan orang menekan `y` tanpa membaca.
+         */
+        for (const file of files) editConfigFile(file, ["extension", row.spec, "enabled"], undefined)
+        return flash(`${row.spec} enabled — restart Titah to load it`)
+      }
+
+      if (verb === "disable") {
+        return setConfirm({
+          title: `Disable ${row.spec}?`,
+          lines: [disableLabel(row) ?? "", ...touched],
+          confirmLabel: "disable",
+          run: () => {
+            for (const file of files) editConfigFile(file, ["extension", row.spec, "enabled"], false)
+            flash(`${row.spec} disabled — panel stays until you restart Titah`)
+          },
+        })
+      }
+
+      setConfirm({
+        title: `Remove ${row.spec}?`,
+        lines: [removeLabel(row) ?? "", ...touched],
+        confirmLabel: "remove",
+        run: () => {
+          for (const file of files) editConfigFile(file, ["extension", row.spec], undefined)
+          /*
+           * Config disunting lebih dulu, npm sesudahnya — kebalikan dari urutan
+           * `install`, dan sengaja. Yang membuat panel dimuat adalah entri
+           * config; `npm uninstall` yang gagal meninggalkan berkas yang tidak
+           * dipakai siapa pun, sementara entri config yang tertinggal
+           * meninggalkan panel yang gagal dimuat setiap kali Titah dibuka.
+           */
+          if (parseExtensionSpec(row.spec).kind === "npm") {
+            void removeExtension({ packageName: row.packageName }).catch((error: unknown) =>
+              flash(error instanceof Error ? error.message : String(error)),
+            )
+          }
+          flash(`${row.spec} removed — panel stays until you restart Titah`)
+        },
+      })
+    },
+    [declaringFiles, flash],
   )
 
   const openSessionPicker = useCallback(() => {
@@ -1301,7 +1455,7 @@ export function App({
           toggleFold(focusedSpec)
           return
         case "extension_picker":
-          openExtensionPicker()
+          openExtensionPicker(focusedSpec)
           return
         default:
           break
@@ -1383,7 +1537,10 @@ export function App({
   const runSuggestion = useCallback(
     (item: Suggestion): void => {
       if (item.kind === "action") return runLeaderAction(item.value as Action)
-      if (item.kind === "extension") return installFromPicker(item.value)
+      if (item.kind === "extension") {
+        const row = extensionRows.find((entry) => entry.spec === item.value)
+        return row === undefined ? undefined : installFromPicker(row)
+      }
       if (item.kind === "model") {
         setModel(item.value)
         return flash(`model: ${item.value}`)
@@ -1683,7 +1840,24 @@ export function App({
      * saat menekan Esc adalah bisa mengetik lagi, bukan kehilangan panel yang
      * baru saja ia buka.
      */
-    if (focusedSpec !== undefined && !state.permission && !state.question && !leaderActive) {
+    /*
+     * Popup mendahului panel yang fokus.
+     *
+     * Tanpa `popup === undefined` di sini, `<leader>x` yang dibuka DARI panel
+     * yang sedang fokus menggambar pickernya lalu menyerahkan setiap tombol
+     * berikutnya ke `onKey` extension — daftar yang terbuka di depan mata
+     * dengan papan ketik yang masih dipegang kotak di belakangnya. Picker yang
+     * dibuka dari panel adalah justru jalan utama ke tombol disable/remove,
+     * jadi ini bukan sudut yang jarang ditempuh.
+     */
+    if (
+      focusedSpec !== undefined &&
+      popup === undefined &&
+      confirm === undefined &&
+      !state.permission &&
+      !state.question &&
+      !leaderActive
+    ) {
       const owner = extensions.find((entry) => entry.spec === focusedSpec)
       const plain = press.ctrl !== true && press.alt !== true
       if (owner === undefined) {
@@ -1831,6 +2005,29 @@ export function App({
       }
     }
 
+    /*
+     * Dialog konfirmasi memakan tombol SEBELUM popup dan sebelum penyunting.
+     *
+     * Ia menuntut jawaban: popup ditutup Esc lalu dilupakan, tapi aksi yang
+     * sudah ditawarkan di sini akan berjalan begitu `y` ditekan — jadi tidak
+     * boleh ada tombol yang menembusnya dan mendarat di prompt.
+     */
+    if (confirm !== undefined) {
+      const plainAnswer = press.ctrl !== true && press.alt !== true
+      if (!plainAnswer) return
+      if (press.key === "y") {
+        const run = confirm.run
+        setConfirm(undefined)
+        setPopup(undefined)
+        run()
+        return
+      }
+      // Apa pun selain `y` membatalkan, Esc dan `n` termasuk. Tombol yang tidak
+      // dikenali dan tidak melakukan apa-apa membuat dialog terlihat mati.
+      setConfirm(undefined)
+      return
+    }
+
     // Popup memakan navigasi lebih dulu. Tanpa ini, panah bawah menggulir
     // riwayat sementara mata user ada di daftar pilihan.
     if (popup && !state.permission) {
@@ -1850,6 +2047,26 @@ export function App({
         if (!item || item.disabled === true) return
         setPopup(undefined)
         return runSuggestion(item)
+      }
+
+      /*
+       * Tombol aksi picker extension. Hanya di picker itu, dan hanya di baris
+       * yang memang menawarkan aksinya — `pickerAction` yang memutuskan, di
+       * modul yang sama dengan kalimat yang dibaca user.
+       *
+       * Aman menelan huruf di sini: picker extension dibuka dengan
+       * `fromMenu: true`, dan detektor `@`/`/` pulang lebih awal untuk popup
+       * seperti itu. Mengetik di picker ini tidak pernah menyaring apa pun — ia
+       * hanya mengetik ke prompt yang sedang tertutup popup.
+       */
+      const selectedItem = popup.items[popup.selected]
+      if (selectedItem?.kind === "extension" && press.ctrl !== true && press.alt !== true) {
+        const row = extensionRows.find((entry) => entry.spec === selectedItem.value)
+        const verb = row === undefined ? undefined : pickerAction(row, press.key)
+        if (row !== undefined && verb !== undefined && verb !== "install") {
+          askExtensionAction(row, verb)
+          return
+        }
       }
       // Tombol lain jatuh ke penyunting di bawah, sehingga mengetik terus
       // mempersempit daftar alih-alih menutupnya.
@@ -2271,7 +2488,18 @@ export function App({
   const usage = totalUsage(state.messages)
   const editorBox = <Editor value={draft} cursor={cursor} disabled={state.status === "working"} />
   const popupBox = popup ? (
-    <Popup title={popup.title} items={popup.items} selected={popup.selected} />
+    <Popup
+      title={popup.title}
+      items={popup.items}
+      selected={popup.selected}
+      {...(popup.items[popup.selected]?.kind === "extension"
+        ? { hint: extensionHint(extensionRows, popup.items[popup.selected]?.value) }
+        : {})}
+    />
+  ) : null
+
+  const confirmBox = confirm ? (
+    <ConfirmDialog title={confirm.title} lines={confirm.lines} confirmLabel={confirm.confirmLabel} />
   ) : null
   const subagentPanelBox = subagentPanelOpen ? (
     <SubagentPanel
@@ -2356,7 +2584,11 @@ export function App({
   const questionHeight = state.question
     ? Math.min(14, state.question.question.split("\n").length + state.question.options.length + 4)
     : 0
-  const popupHeight = popup ? Math.min(10, Math.max(1, popup.items.length)) + 3 : 0
+  const popupHeight =
+    (popup ? Math.min(10, Math.max(1, popup.items.length)) + 3 : 0) +
+    // Dialog konfirmasi menumpuk DI ATAS popup, bukan menggantikannya:
+    // baris yang sedang dibicarakan harus tetap terlihat saat ditanya.
+    (confirm ? confirm.lines.length + 4 : 0)
   const workingHeight = state.status === "working" ? 1 : 0
   // Angka `SUBAGENT_PANEL_ROWS` di sini HARUS sama dengan yang dipakai
   // SubagentPanel untuk mem-windowing barisnya — sebelumnya reservasi ini
@@ -2700,6 +2932,7 @@ export function App({
             <>
               {loginBox}
               {subagentPanelBox}
+              {confirmBox}
               {popupBox}
               {editorBox}
             </>
@@ -2780,6 +3013,7 @@ export function App({
       {loginBox}
 
       {subagentPanelBox}
+      {confirmBox}
       {popupBox}
       {workingBox}
       {editorBox}
@@ -2832,6 +3066,23 @@ function failureNotice(failures: ExtensionFailure[]): string {
  * berbeda pada masing-masing, dan tombol yang artinya berubah tanpa tampilan
  * yang membedakan barisnya adalah tombol yang orang tekan lalu menyesal.
  */
-const STATE_MARK = { installed: "✓", configured: "↓", available: "+" } as const
+const STATE_MARK = { installed: "✓", configured: "↓", available: "+", disabled: "⊘" } as const
+
+/**
+ * Tombol tambahan yang berlaku di baris picker yang sedang tersorot.
+ *
+ * Disusun dari `pickerAction`, bukan ditulis tetap: hint yang menyebut tombol
+ * yang tidak berlaku di baris itu adalah hint yang mengajarkan tombol mati —
+ * dan baris `+` yang belum ada di config memang tidak punya keduanya.
+ */
+function extensionHint(rows: PickerRow[], spec: string | undefined): string | undefined {
+  const row = rows.find((entry) => entry.spec === spec)
+  if (row === undefined) return undefined
+  const parts = [
+    pickerAction(row, "d") === "enable" ? "D enable" : pickerAction(row, "d") ? "D disable" : "",
+    pickerAction(row, "r") ? "R remove" : "",
+  ].filter(Boolean)
+  return parts.length === 0 ? undefined : parts.join(" · ")
+}
 
 export type { TuiState }

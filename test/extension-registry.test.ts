@@ -4,7 +4,13 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { loadRegistry, parseRegistry, REGISTRY_TTL_MS } from "../src/core/extension-registry.ts"
-import { installLabel, pickerRows } from "../src/core/extension-picker.ts"
+import {
+  disableLabel,
+  installLabel,
+  pickerAction,
+  pickerRows,
+  removeLabel,
+} from "../src/core/extension-picker.ts"
 import { buildKeymap } from "../src/tui/keybinds.ts"
 
 function scratch(): string {
@@ -185,4 +191,105 @@ test("tombol yang bebas tidak dilaporkan bertabrakan", () => {
   })
   assert.equal(rows[0]?.key, "<leader>g")
   assert.equal(rows[0]?.keyConflict, undefined)
+})
+
+// --- disable & remove -----------------------------------------------------
+
+test("extension yang dimatikan punya keadaan sendiri, bukan tampak terpasang", () => {
+  /*
+   * `enabled: false` berarti modulnya tidak pernah di-`import` sama sekali
+   * (loadExtensions melewatinya sebelum menyentuh disk). Baris yang mengaku
+   * "installed" untuk sesuatu yang tidak akan pernah dimuat adalah baris yang
+   * berbohong — dan `D` di atasnya berarti hal yang berbeda dari yang dijanjikan.
+   */
+  const rows = pickerRows({
+    configured: ["@titah/extension-git", "./local-notes"],
+    installed: ["@titah/extension-git"],
+    disabled: ["@titah/extension-git"],
+    registry: parseRegistry(INDEX),
+  })
+  assert.equal(rows[0]?.state, "disabled")
+  assert.equal(rows[1]?.state, "configured")
+})
+
+test("dimatikan menang atas terunduh maupun belum terunduh", () => {
+  const rows = pickerRows({
+    configured: ["./local-notes"],
+    installed: [],
+    disabled: ["./local-notes"],
+    registry: parseRegistry(INDEX),
+  })
+  assert.equal(rows[0]?.state, "disabled")
+})
+
+test("baris yang belum ada di config tidak punya disable maupun remove", () => {
+  // Mematikan sesuatu yang tidak pernah user pilih berarti menulis `enabled:
+  // false` untuk entri yang belum ada — config yang menyatakan niat yang tidak
+  // pernah dinyatakan siapa pun.
+  const rows = pickerRows({ configured: [], installed: [], registry: parseRegistry(INDEX) })
+  const available = rows.find((row) => row.state === "available")!
+  assert.equal(disableLabel(available), undefined)
+  assert.equal(removeLabel(available), undefined)
+  assert.equal(pickerAction(available, "d"), undefined)
+  assert.equal(pickerAction(available, "r"), undefined)
+})
+
+test("baris terpasang menawarkan disable dan remove", () => {
+  const rows = pickerRows({
+    configured: ["@titah/extension-git"],
+    installed: ["@titah/extension-git"],
+    registry: parseRegistry(INDEX),
+  })
+  assert.match(disableLabel(rows[0]!) ?? "", /keep .*disk/)
+  assert.match(removeLabel(rows[0]!) ?? "", /@titah\/extension-git/)
+  assert.equal(pickerAction(rows[0]!, "d"), "disable")
+  assert.equal(pickerAction(rows[0]!, "r"), "remove")
+})
+
+test("baris yang dimatikan menawarkan enable, bukan disable lagi", () => {
+  const rows = pickerRows({
+    configured: ["@titah/extension-git"],
+    installed: ["@titah/extension-git"],
+    disabled: ["@titah/extension-git"],
+    registry: parseRegistry(INDEX),
+  })
+  assert.equal(pickerAction(rows[0]!, "d"), "enable")
+  assert.equal(pickerAction(rows[0]!, "r"), "remove")
+  assert.match(installLabel(rows[0]!), /disabled/)
+})
+
+test("huruf besar dan kecil sama artinya", () => {
+  // Tombolnya disebut `D`/`R` di hint, dan orang yang membacanya akan menekan
+  // shift. Tombol yang hanya bekerja tanpa shift adalah tombol yang tampak mati.
+  const rows = pickerRows({
+    configured: ["@titah/extension-git"],
+    installed: ["@titah/extension-git"],
+    registry: parseRegistry(INDEX),
+  })
+  assert.equal(pickerAction(rows[0]!, "D"), "disable")
+  assert.equal(pickerAction(rows[0]!, "R"), "remove")
+})
+
+test("baris yang belum terunduh tetap bisa dicabut dari config", () => {
+  // `↓` berarti ada di config tapi belum di disk. Satu-satunya jalan keluar dari
+  // spec yang salah tulis adalah membuang entrinya — tanpa ini, baris yang tidak
+  // bisa dipasang juga tidak bisa dihapus.
+  const rows = pickerRows({
+    configured: ["./local-notes"],
+    installed: [],
+    registry: parseRegistry(INDEX),
+  })
+  assert.equal(rows[0]?.state, "configured")
+  assert.equal(pickerAction(rows[0]!, "r"), "remove")
+  assert.equal(pickerAction(rows[0]!, "d"), "disable")
+})
+
+test("tombol lain tidak berarti apa-apa di picker", () => {
+  const rows = pickerRows({
+    configured: ["@titah/extension-git"],
+    installed: ["@titah/extension-git"],
+    registry: parseRegistry(INDEX),
+  })
+  assert.equal(pickerAction(rows[0]!, "q"), undefined)
+  assert.equal(pickerAction(rows[0]!, "escape"), undefined)
 })
