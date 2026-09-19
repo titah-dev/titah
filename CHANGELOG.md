@@ -5,6 +5,8 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-19
+
 ### Panel bisa mengirim teks ke prompt utama — `EXTENSION_API` naik ke 0.5.0
 
 - **`KeyVerdict` bertambah `prompt`.** `onKey` dan `onClick` sekarang boleh
