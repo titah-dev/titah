@@ -105,17 +105,30 @@ test("versi Titah yang tidak masuk akal tidak meloloskan apa pun", () => {
 })
 
 
-test("EXTENSION_API masih menerima extension yang menargetkan 0.4.0", () => {
+test("EXTENSION_API masih menerima extension yang menargetkan 0.5.0", () => {
   /*
    * Pin yang paling penting di berkas ini.
    *
-   * Setiap extension yang sudah terbit menyatakan `^0.4.0`. Hari seseorang
-   * menaikkan `EXTENSION_API` melewati 0.4.x, test ini gagal — dan itulah
-   * gunanya: menaikkannya MEMATIKAN semuanya sampai masing-masing diterbitkan
-   * ulang, jadi keputusan itu tidak boleh terjadi tanpa disengaja.
+   * Hari seseorang menaikkan `EXTENSION_API` melewati 0.5.x, test ini gagal —
+   * dan itulah gunanya: menaikkannya MEMATIKAN setiap extension yang sudah
+   * terbit sampai masing-masing diterbitkan ulang, jadi keputusan itu tidak
+   * boleh terjadi tanpa disengaja.
    *
    * Kalau kamu memang bermaksud memutus kontraknya, ganti angka di bawah dan
    * tulis alasannya di CHANGELOG.
+   *
+   * Sudah pernah naik sekali: 0.4.0 → 0.5.0, saat `KeyVerdict` bertambah
+   * `prompt`.
    */
-  assert.equal(satisfiesEngine(EXTENSION_API, "^0.4.0"), true)
+  assert.equal(satisfiesEngine(EXTENSION_API, "^0.5.0"), true)
+
+  /*
+   * Dan pin itu harus benar-benar MENAHAN.
+   *
+   * Tanpa baris ini, test di atas hanya ikut diperbarui setiap kali angkanya
+   * naik dan berhenti membuktikan apa pun. Yang dinyatakan di sini adalah
+   * fakta yang memang dimaksudkan: extension `^0.4.0` SUDAH mati, dan matinya
+   * itu keputusan yang diambil, bukan efek samping yang tak terlihat.
+   */
+  assert.equal(satisfiesEngine(EXTENSION_API, "^0.4.0"), false)
 })

@@ -5,6 +5,29 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Panel bisa mengirim teks ke prompt utama — `EXTENSION_API` naik ke 0.5.0
+
+- **`KeyVerdict` bertambah `prompt`.** `onKey` dan `onClick` sekarang boleh
+  menjawab `{ prompt: { text, mode } }`, dan Titah menyisipkan teksnya ke draft
+  prompt user. `"append"` (bawaan) menyisip di posisi kursor, `"replace"`
+  menimpa seluruh draft. Sebelumnya satu-satunya jawaban yang mungkin adalah
+  `{ refresh }` — panel bisa menggambar apa saja tapi tidak bisa membawa apa pun
+  keluar dari dirinya.
+- **`EXTENSION_API` naik dari `0.4.0` ke `0.5.0`,** karena bentuk sebuah tipe
+  publik berubah. **Ini memutus setiap extension yang menyatakan `^0.4.0`**
+  sampai masing-masing menaikkan `engines.titah` ke `^0.5.0` dan diterbitkan
+  ulang. Yang terpengaruh: `@titah/extension-git`, `@titah/extension-diff`.
+  Panel yang belum diperbarui ditolak saat load dengan kalimat yang menyebut
+  sebabnya, terlihat di footer dan di `titah doctor`.
+- Teks dari extension **dibersihkan seperti tempelan** (`sanitizePaste`): ia
+  input pihak ketiga yang ikut terkirim ke model, jadi karakter kontrol dibuang
+  sebelum masuk editor.
+- Penyisipan dari `onClick` lewat ref, bukan closure. Penangan mouse
+  berlangganan sekali (`useEffect([mouse])`) dan menutupi nilai render pertama,
+  jadi menyisip langsung di sana akan memakai `cursor` yang selamanya 0 — teks
+  selalu mendarat di awal draft, tanpa satu pun error. Ada test yang menjaganya,
+  dengan draft yang sengaja TIDAK kosong.
+
 ### Extension bisa dimatikan dan dicabut dari tempat ia dipasang
 
 - **Picker `<leader>x` sekarang punya `D` dan `R`.** `D` mematikan

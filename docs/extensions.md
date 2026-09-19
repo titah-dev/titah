@@ -136,7 +136,7 @@ tidak perlu mempelajari pola kedua.
 {
   "name": "@titah/extension-git",
   "type": "module",
-  "engines": { "titah": "^0.3.0" },
+  "engines": { "titah": "^0.5.0" },
   "titah": { "panel": "./dist/panel.js" }
 }
 ```
@@ -159,20 +159,34 @@ Sekarang ia dibandingkan dengan **`EXTENSION_API`**: versi dari kontrak di
 `titah-code/extension`, yang hanya bergerak kalau kontrak itu sendiri berubah.
 
 ```js
-import { EXTENSION_API } from "titah-code/extension"   // "0.4.0"
+import { EXTENSION_API } from "titah-code/extension"   // "0.5.0"
 ```
 
 Dua nomor untuk dua pertanyaan yang memang berbeda: *"Titah mana yang kamu
 jalankan"* dan *"kontrak mana yang kamu tulis di atasnya"*. Selama keduanya satu
 angka, jawaban kedua ikut berubah tiap kali yang pertama berubah.
 
-Yang perlu kamu lakukan sebagai penulis extension: **tidak ada.** Nilai awalnya
-`0.4.0`, jadi setiap paket yang sudah terbit — semuanya menyatakan `^0.4.0` —
-tetap jalan tanpa diterbitkan ulang.
-
 Angka itu naik ketika ada yang bisa kamu amati berubah: nama yang diekspor,
 bentuk sebuah tipe, arti sebuah field. Saat itu terjadi, extension lama ditolak
 dengan kalimat yang menyebut sebabnya — bukan `TypeError` di tengah render.
+
+#### Riwayat angka ini
+
+| Versi | Yang berubah |
+|---|---|
+| `0.4.0` | Bentuk awal kontrak. |
+| `0.5.0` | `KeyVerdict` bertambah `prompt` — panel bisa menyisipkan teks ke prompt utama. |
+
+**Kenaikan ke `0.5.0` memutus setiap extension yang menyatakan `^0.4.0`.** Kalau
+kamu penulis extension, yang perlu kamu lakukan adalah menaikkan `engines.titah`
+ke `^0.5.0` lalu menerbitkan ulang. Selama belum, panelmu ditolak saat load
+dengan kalimat `needs extension API ^0.4.0, but Titah <versi> provides 0.5.0` —
+terlihat di footer dan di `titah doctor`.
+
+Caret di bawah 1.0.0 mengunci minor, jadi `^0.4.0` memang TIDAK menerima 0.5.0.
+Itu perilaku npm, dan menyimpang darinya akan membuat extension pecah pada rilis
+yang penulisnya yakin sudah ia batasi. Kalau kamu ingin satu paket menerima
+keduanya, tulis `^0.4.0 || ^0.5.0`.
 
 `titah.panel` dan `engines.titah` keduanya tetap **WAJIB**. Extension tanpa
 `engines.titah` ditolak, bukan diterima: paket yang tidak menyatakan kontrak yang
@@ -272,6 +286,52 @@ dari cara menghentikan giliran.
 subprocess dan `fetch`: extension yang mengabaikannya tetap bekerja untuk hasil
 yang tidak akan dipakai, dan pekerjaan itu bersaing dengan giliran agent di
 proses yang sama.
+
+### Mengirim teks ke prompt utama
+
+*Sejak `EXTENSION_API` 0.5.0.*
+
+`onKey` dan `onClick` boleh menjawab dengan `prompt`, dan Titah menyisipkan
+teksnya ke draft prompt user:
+
+```js
+onKey({ key }) {
+  if (key === "y") {
+    return { prompt: { text: `@${path}:${awal}-${akhir} ` }, refresh: true }
+  }
+}
+```
+
+```ts
+interface KeyVerdict {
+  refresh?: boolean
+  prompt?: { text: string; mode?: "append" | "replace" }
+}
+```
+
+`"append"` (bawaan) menyisip di posisi kursor; `"replace"` menimpa seluruh draft
+dan hanya masuk akal untuk panel yang memang menyusun seluruh prompt.
+
+Panel **mengusulkan** teks, bukan menulis ke editor. Ke mana kursor pergi
+sesudahnya, dan apa yang terjadi kalau user sedang menelusuri riwayat prompt,
+diputuskan Titah — extension yang boleh memindahkan kursor sendiri berarti dua
+hal memiliki satu kursor.
+
+Teksnya **dibersihkan seperti tempelan**: CRLF jadi `\n` dan karakter kontrol
+dibuang. Ia datang dari luar dan ikut terkirim ke model, jadi ia diperlakukan
+sama dengan apa pun yang user tempel sendiri.
+
+Dua hal yang perlu kamu tahu saat menyusun teksnya:
+
+- **Panel tidak bisa memakai `Esc`, `+`, `-`, dan `=`.** Keempatnya dicegat
+  Titah sebelum `onKey` dipanggil — `Esc` melepas fokus, tiga sisanya mengubah
+  lebar panel. Mengiklankannya di baris petunjuk berarti mengiklankan tombol
+  yang mati.
+- **Hati-hati dengan `@` di awal baris.** `@kata ` di awal prompt dibaca Titah
+  sebagai delegasi ke agent lain, jadi `@Makefile perbaiki ini` gagal dengan
+  `Unknown agent "Makefile"`. Referensi berkas selamat dari itu selama ia
+  membawa sesuatu sesudah `:` — `@Makefile:12-20` tidak pernah cocok dengan pola
+  delegasi.
 
 ### Kenapa `render` mengembalikan data, bukan JSX
 
@@ -486,14 +546,18 @@ Kegagalan yang paling sering terjadi bukan bug di extension-nya:
 
 ```
 ✗ @titah/extension-git
-    @titah/extension-git needs Titah ^0.4.0, but this is 0.6.0.
+    @titah/extension-git needs extension API ^0.4.0, but Titah 0.7.0 provides 0.5.0.
 ```
 
+Perhatikan angka mana yang dibandingkan: `^0.4.0` milik extension lawan `0.5.0`
+milik **kontrak**, bukan lawan `0.7.0` milik produk. Versi produk ada di kalimat
+itu hanya supaya "provides 0.5.0" sendirian tidak terbaca seperti kerusakan.
+
 Di bawah 1.0.0, caret npm berarti **hanya minor itu** — `^0.4.0` adalah 0.4.x dan
-bukan 0.5 atau 0.6. Jadi setiap kenaikan minor Titah mematikan setiap extension
-yang belum diterbitkan ulang dengan rentang yang lebih lebar. `titah extension
-update` hanya bisa menolong kalau versi kompatibelnya memang sudah ada di npm;
-kalau belum, yang perlu diperbarui adalah paketnya, bukan pemasangannya.
+bukan 0.5. Jadi setiap kenaikan `EXTENSION_API` mematikan setiap extension yang
+belum diterbitkan ulang dengan rentang yang lebih lebar. `titah extension update`
+hanya bisa menolong kalau versi kompatibelnya memang sudah ada di npm; kalau
+belum, yang perlu diperbarui adalah paketnya, bukan pemasangannya.
 
 ## Kontrak API
 
