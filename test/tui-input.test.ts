@@ -7,6 +7,7 @@ import test from "node:test"
 import { createElement } from "react"
 import { render } from "ink"
 import { App, failureHint, sanitizePaste, toKeyPress } from "../dist/tui/app.js"
+import { EXTENSION_API } from "../dist/extension.js"
 import { buildKeymap, resolve } from "../dist/tui/keybinds.js"
 import { createMouseSource } from "../dist/tui/mouse.js"
 import { markLines } from "../dist/tui/logo.js"
@@ -294,9 +295,18 @@ function mount(
       session,
       cwd: options.cwd ?? "/proyek",
       model: "uji/model",
-      // Wajib: `checkEngine` membandingkan `engines.titah` extension terhadap
-      // angka ini, dan `undefined` membuat setiap extension ditolak dengan
-      // sebab yang menunjuk versi, bukan menunjuk harness.
+      /*
+       * Versi PRODUK, dan hanya itu — `checkEngine` membandingkan
+       * `engines.titah` terhadap `EXTENSION_API`, bukan terhadap angka ini.
+       * Angka ini cuma muncul di kalimat penolakan.
+       *
+       * Sengaja DIBIARKAN berbeda dari `EXTENSION_API`: selama keduanya
+       * kebetulan sama, fixture di berkas ini lolos tanpa ada yang tahu mana
+       * dari dua angka itu yang sebenarnya memutuskan.
+       *
+       * Tetap wajib diisi: `undefined` membuat setiap extension ditolak dengan
+       * sebab yang menunjuk harness, bukan menunjuk kontrak.
+       */
       version: "0.4.0",
       config: Config.parse({
         agent: { plan: { description: "Plan only" }, build: { description: "Build" } },
@@ -2519,7 +2529,7 @@ function writePanelExtension(): string {
       name: "uji-panel",
       type: "module",
       version: "1.0.0",
-      engines: { titah: "^0.4.0" },
+      engines: { titah: `^${EXTENSION_API}` },
       titah: { panel: "./panel.mjs" },
     }),
   )
@@ -2647,7 +2657,7 @@ function writeClickableExtension(): string {
       name: "uji-klik",
       type: "module",
       version: "1.0.0",
-      engines: { titah: "^0.4.0" },
+      engines: { titah: `^${EXTENSION_API}` },
       titah: { panel: "./panel.mjs" },
     }),
   )
@@ -2736,12 +2746,178 @@ test("klik di luar kolom panel TIDAK memanggil onClick", async () => {
   }
 })
 
+/**
+ * Panel yang menjawab dengan `prompt` — kontrak 0.5.0.
+ *
+ * Extension sungguhan, dengan alasan yang sama seperti `writePanelExtension`:
+ * yang diuji adalah PENYAMBUNGANNYA. `KeyVerdict.prompt` bisa ada di tipe,
+ * diisi extension, dan tidak pernah dibaca `app.tsx` — persis kegagalan yang
+ * pernah terjadi pada `onKey`.
+ */
+function writePromptExtension(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-prompt-ext-"))
+  fs.writeFileSync(
+    path.join(directory, "package.json"),
+    JSON.stringify({
+      name: "uji-prompt",
+      type: "module",
+      version: "1.0.0",
+      engines: { titah: `^${EXTENSION_API}` },
+      titah: { panel: "./panel.mjs" },
+    }),
+  )
+  fs.writeFileSync(
+    path.join(directory, "panel.mjs"),
+    `export default function () {
+       return {
+         title: "Kirim",
+         side: "left",
+         render() { return { kind: "rows", rows: [{ text: "baris-nol" }, { text: "baris-satu" }] } },
+         onKey({ key }) {
+           if (key === "p") return { prompt: { text: "@uji.ts:12-14 " } }
+           if (key === "q") return { prompt: { text: "AWAL\u0007\u001b[31mAKHIR" } }
+           if (key === "w") return { prompt: { text: "DITIMPA", mode: "replace" } }
+         },
+         onClick() { return { prompt: { text: "Z" } } },
+       }
+     }`,
+  )
+  return directory
+}
+
+/**
+ * Buka panel kiri (`ctrl+x ←`) LALU fokuskan box-nya (`ctrl+x f`).
+ *
+ * Dua langkah, bukan satu: membuka panel tidak memindahkan fokus ke sana, dan
+ * tombol yang dikirim ke panel yang belum fokus mendarat di editor — persis
+ * kegagalan yang membuat test ini gagal saat pertama ditulis.
+ */
+async function focusLeftPanel(h: ReturnType<typeof mount>): Promise<void> {
+  h.stdin.press("\u0018")
+  await tick(1)
+  h.stdin.press("\u001b[D")
+  await tick()
+  await tick()
+
+  h.stdin.press("\u0018")
+  await tick(1)
+  h.stdin.press("f")
+  await tick()
+  await tick()
+}
+
+test("onKey yang menjawab prompt MENYISIPKAN teksnya ke draft", async () => {
+  const h = mount({ extension: { [writePromptExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    await focusLeftPanel(h)
+
+    h.stdin.press("p")
+    await tick()
+    await tick()
+
+    assert.match(h.frame(), /@uji\.ts:12-14/, "teks dari panel tidak sampai ke prompt")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("teks dari extension DIBERSIHKAN seperti tempelan", async () => {
+  /*
+   * Teks panel adalah input pihak ketiga dan ikut terkirim ke model. Tanpa
+   * `sanitizePaste`, sebuah extension bisa menyuntik escape sequence ke editor
+   * — dan gejalanya bukan error, melainkan terminal yang berubah warna.
+   */
+  const h = mount({ extension: { [writePromptExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    await focusLeftPanel(h)
+
+    h.stdin.press("q")
+    await tick()
+    await tick()
+
+    assert.match(h.frame(), /AWAL\[31mAKHIR/, "teksnya sendiri harus tetap sampai")
+    assert.doesNotMatch(h.frame(), /AWAL\u0007/, "BEL harus dibuang")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("mode replace menimpa seluruh draft", async () => {
+  const h = mount({ extension: { [writePromptExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("SEBELUM")
+    await tick()
+    await focusLeftPanel(h)
+
+    // Akumulator dikosongkan dulu: `h.frame()` adalah SELURUH tulisan Ink sejak
+    // mount, jadi "SEBELUM" dari render-render awal akan tetap ada di sana
+    // betapapun benarnya penimpaan itu.
+    h.clear()
+    h.stdin.press("w")
+    await tick()
+    await tick()
+
+    assert.match(h.frame(), /DITIMPA/)
+    assert.doesNotMatch(h.frame(), /SEBELUM/, "draft lama masih tergambar — tidak ditimpa")
+  } finally {
+    h.cleanup()
+  }
+})
+
+test("onClick menyisip di posisi KURSOR, bukan di awal draft", async () => {
+  /*
+   * Test yang paling penting di antara keempatnya, dan satu-satunya yang
+   * membedakan implementasi yang benar dari yang rusak secara senyap.
+   *
+   * `onClick` dipanggil dari `useEffect([mouse])`, yang berlangganan SEKALI dan
+   * menutupi nilai render PERTAMA. Menyisip di sana dengan `cursor` yang
+   * tertangkap closure berarti `cursor` selamanya 0: teks selalu mendarat di
+   * awal draft. Tidak ada yang dilempar, dan draft KOSONG tidak membedakan
+   * keduanya — karena itu draftnya diisi lebih dulu dan kursornya digeser ke
+   * tengah.
+   *
+   * Draft "AB" dengan kursor di 1, menyisipkan "Z": benar "AZB", rusak "ZAB".
+   */
+  const h = mount({ extension: { [writePromptExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+
+    h.stdin.press("AB")
+    await tick()
+    // Kursor ke tengah SEBELUM panel difokuskan — sesudahnya panah dimakan panel.
+    h.stdin.press("\u001b[D")
+    await tick()
+
+    await focusLeftPanel(h)
+
+    // Seluruh kolom panel disapu dari bawah, sama seperti test onClick lainnya:
+    // menebak koordinat dari keluaran akumulatif Ink menguji harness, bukan produk.
+    for (let y = 14; y >= 1; y--) {
+      h.mouse.emit({ kind: "press", x: 4, y })
+      await tick(2)
+      if (/AZB/.test(h.frame())) break
+    }
+
+    assert.match(h.frame(), /AZB/, "sisipan tidak mendarat di posisi kursor")
+    assert.doesNotMatch(h.frame(), /ZAB/, "mendarat di awal draft — cursor dari render pertama")
+  } finally {
+    h.cleanup()
+  }
+})
+
 /** Panel yang selalu memenuhi lebarnya, supaya lebar bisa DIUKUR dari teks. */
 function writeWideExtension(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-wide-ext-"))
   fs.writeFileSync(
     path.join(directory, "package.json"),
-    JSON.stringify({ name: "uji-lebar", type: "module", version: "1.0.0", engines: { titah: "^0.4.0" }, titah: { panel: "./panel.mjs" } }),
+    JSON.stringify({ name: "uji-lebar", type: "module", version: "1.0.0", engines: { titah: `^${EXTENSION_API}` }, titah: { panel: "./panel.mjs" } }),
   )
   fs.writeFileSync(
     path.join(directory, "panel.mjs"),
@@ -2821,7 +2997,7 @@ test("tombol resize TIDAK diteruskan ke onKey extension", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "titah-reserved-"))
   fs.writeFileSync(
     path.join(directory, "package.json"),
-    JSON.stringify({ name: "uji-pesan", type: "module", version: "1.0.0", engines: { titah: "^0.4.0" }, titah: { panel: "./panel.mjs" } }),
+    JSON.stringify({ name: "uji-pesan", type: "module", version: "1.0.0", engines: { titah: `^${EXTENSION_API}` }, titah: { panel: "./panel.mjs" } }),
   )
   fs.writeFileSync(
     path.join(directory, "panel.mjs"),
@@ -2865,7 +3041,7 @@ function writeWideSide(side: "left" | "right", fill: string): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `titah-${side}-ext-`))
   fs.writeFileSync(
     path.join(directory, "package.json"),
-    JSON.stringify({ name: `uji-${side}`, type: "module", version: "1.0.0", engines: { titah: "^0.4.0" }, titah: { panel: "./panel.mjs" } }),
+    JSON.stringify({ name: `uji-${side}`, type: "module", version: "1.0.0", engines: { titah: `^${EXTENSION_API}` }, titah: { panel: "./panel.mjs" } }),
   )
   fs.writeFileSync(
     path.join(directory, "panel.mjs"),
@@ -3244,9 +3420,10 @@ function writeCountingExtension(title: string, side: "left" | "right"): { dir: s
       name: `uji-${title.toLowerCase()}`,
       type: "module",
       version: "1.0.0",
-      // Harness me-mount App dengan version "0.4.0"; menyebut rentang lain di
-      // sini membuat `checkEngine` menolaknya sebelum panelnya pernah dimuat.
-      engines: { titah: "^0.4.0" },
+      // Diturunkan dari `EXTENSION_API`, bukan dari version harness: yang
+      // diperiksa `checkEngine` adalah kontraknya. Rentang lain di sini membuat
+      // panelnya ditolak sebelum pernah dimuat.
+      engines: { titah: `^${EXTENSION_API}` },
       titah: { panel: "./panel.mjs" },
     }),
   )

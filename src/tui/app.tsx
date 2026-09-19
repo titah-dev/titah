@@ -64,6 +64,7 @@ import {
   type LoadedExtension,
 } from "../core/extension.ts"
 import { errorLines, renderPanel } from "./extension-host.ts"
+import type { KeyVerdict } from "../extension.ts"
 import { checkUpdate, updateNotice } from "../core/update.ts"
 import { loadRegistry } from "../core/extension-registry.ts"
 import {
@@ -390,6 +391,14 @@ export function App({
   const subagentsRef = useRef<TuiState["subagents"]>([])
   const openChildRef = useRef<(sessionID: string, agent: string) => void>(() => {})
   const toggleFoldRef = useRef<(spec: string) => void>(() => {})
+  /*
+   * Alasan yang SAMA, dan di sini akibatnya paling senyap: `applyVerdict`
+   * menyisip di posisi `cursor`, dan `cursor` dari render pertama selamanya 0.
+   * Klik yang menyisipkan di awal draft tidak melempar apa pun — ia cuma
+   * menaruh teks di tempat yang salah, dan test berdraf kosong tidak
+   * membedakannya.
+   */
+  const applyVerdictRef = useRef<(verdict: KeyVerdict | void) => void>(() => {})
   /*
    * Tumpukan terakhir yang digambar.
    *
@@ -839,8 +848,7 @@ export function App({
           }
 
           const owner = extensionsRef.current.find((entry) => entry.spec === hit.spec)
-          const verdict = owner?.panel.onClick?.({ row: hit.row })
-          if (verdict?.refresh === true) setRefreshToken((value) => value + 1)
+          applyVerdictRef.current(owner?.panel.onClick?.({ row: hit.row }))
           return
         }
         /*
@@ -874,6 +882,46 @@ export function App({
     setNotice(text)
     setTimeout(() => setNotice(undefined), 4000)
   }, [])
+
+  /**
+   * Menjalankan jawaban sebuah panel — SATU tempat, dipakai `onKey` dan `onClick`.
+   *
+   * Dua penyalinan yang "sama" adalah dua penyalinan yang akan menyimpang: yang
+   * satu akan ingat membersihkan teksnya dan yang lain tidak, dan bedanya baru
+   * terlihat saat ada extension yang mengirim escape sequence.
+   *
+   * Penyisipannya menyalin handler tempelan di `useInput` utuh, keempat
+   * langkahnya, karena keempatnya punya sebab:
+   *
+   * - `sanitizePaste` — teks dari extension adalah input pihak ketiga persis
+   *   seperti tempelan, dan ia ikut terkirim ke model.
+   * - guard string kosong — jawaban `{ prompt: { text: "" } }` tidak boleh
+   *   mengotori riwayat.
+   * - `setHistoryIndex(DRAFT)` — tanpa ini, menyisip sementara user sedang
+   *   menelusuri riwayat prompt membuat suntingannya hilang pada panah
+   *   berikutnya.
+   * - geser kursor RELATIF, bukan set absolut.
+   */
+  const applyVerdict = useCallback((verdict: KeyVerdict | void) => {
+    if (!verdict) return
+    if (verdict.refresh === true) setRefreshToken((value) => value + 1)
+
+    const ask = verdict.prompt
+    if (ask === undefined) return
+
+    const clean = sanitizePaste(ask.text)
+    if (clean === "") return
+    setHistoryIndex(DRAFT)
+
+    if (ask.mode === "replace") {
+      setDraft(clean)
+      setCursor(clean.length)
+      return
+    }
+
+    setDraft((value) => value.slice(0, cursor) + clean + value.slice(cursor))
+    setCursor((value) => value + clean.length)
+  }, [cursor])
 
   /**
    * Melipat atau membuka satu box.
@@ -1895,8 +1943,7 @@ export function App({
         setPanelWidth((value) => ({ ...value, [side]: next }))
         return
       } else if (plain) {
-        const verdict = owner.panel.onKey?.({ key: press.key })
-        if (verdict?.refresh === true) setRefreshToken((value) => value + 1)
+        applyVerdict(owner.panel.onKey?.({ key: press.key }))
         /*
          * Ditelan apa pun jawabannya, selama panel sedang fokus.
          *
@@ -2418,6 +2465,7 @@ export function App({
   subagentsRef.current = state.subagents
   openChildRef.current = openChild
   toggleFoldRef.current = toggleFold
+  applyVerdictRef.current = applyVerdict
 
 
   /*

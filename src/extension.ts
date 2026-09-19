@@ -34,8 +34,14 @@
  * angka, jawaban yang kedua ikut berubah setiap kali yang pertama berubah.
  *
  * Nilainya mulai dari 0.4.0 dan bukan 1.0.0 dengan sengaja: itu versi saat
- * bentuk berkas ini mulai berlaku, jadi setiap extension yang sudah terbit —
- * semuanya menyatakan `^0.4.0` — tetap jalan tanpa diterbitkan ulang.
+ * bentuk berkas ini mulai berlaku.
+ *
+ * # RIWAYAT
+ *
+ * - 0.4.0 — bentuk awal berkas ini.
+ * - 0.5.0 — `KeyVerdict` bertambah `prompt`, sehingga panel bisa menyisipkan
+ *   teks ke draft prompt. Setiap extension yang menyatakan `^0.4.0` MATI sampai
+ *   diterbitkan ulang dengan `^0.5.0`; alasannya ada di CHANGELOG.
  *
  * # KAPAN ANGKA INI NAIK
  *
@@ -48,7 +54,7 @@
  * masing diterbitkan ulang. Ada test yang menahan angka ini supaya keputusan itu
  * tidak pernah terjadi tanpa sengaja.
  */
-export const EXTENSION_API = "0.4.0"
+export const EXTENSION_API = "0.5.0"
 
 /** Sisi tempat panel duduk. User boleh menimpanya di config. */
 export type ExtensionSide = "left" | "right"
@@ -107,10 +113,26 @@ export interface RenderRequest {
   rows: number
 }
 
-/** Apa yang boleh dikembalikan `onKey`. */
+/** Apa yang boleh dikembalikan `onKey` dan `onClick`. */
 export interface KeyVerdict {
   /** Minta `render` dipanggil lagi. */
   refresh?: boolean
+  /**
+   * Bawa teks ini ke draft prompt utama.
+   *
+   * Panel MENGUSULKAN teks, bukan menulis ke editor: yang memutuskan di mana
+   * kursor berada sesudahnya, dan apa yang terjadi kalau user sedang menelusuri
+   * riwayat prompt, adalah host. Extension yang boleh memindahkan kursor sendiri
+   * berarti dua hal memiliki satu kursor.
+   *
+   * Teksnya dibersihkan seperti tempelan — karakter kontrol dibuang — karena ia
+   * datang dari luar dan ikut terkirim ke model.
+   *
+   * `mode` bawaannya `"append"`: menyisip di posisi kursor. `"replace"` menimpa
+   * seluruh draft, dan hanya masuk akal untuk panel yang memang menyusun
+   * seluruh prompt.
+   */
+  prompt?: { text: string; mode?: "append" | "replace" }
 }
 
 export interface ExtensionPanel {

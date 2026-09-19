@@ -286,12 +286,19 @@ test("versi PRODUK Titah tidak lagi ikut memutuskan", () => {
   /*
    * Inti dari pemisahan dua nomor ini, dan test yang akan gagal pada kode lama.
    *
-   * Extension menyatakan `^0.4.0`. Dulu itu dibandingkan dengan versi produk,
-   * jadi Titah 9.9.9 menolaknya — padahal `src/extension.ts` yang ia tulis di
-   * atasnya tidak berubah satu byte pun. Sekarang yang dibandingkan kontraknya,
-   * dan versi produk hanya muncul di kalimat kesalahan.
+   * Extension menyatakan kontrak yang berlaku. Dulu itu dibandingkan dengan
+   * versi produk, jadi Titah 9.9.9 menolaknya — padahal `src/extension.ts` yang
+   * ia tulis di atasnya tidak berubah satu byte pun. Sekarang yang dibandingkan
+   * kontraknya, dan versi produk hanya muncul di kalimat kesalahan.
+   *
+   * Rentangnya DITURUNKAN dari `EXTENSION_API`: yang diuji di sini adalah bahwa
+   * "9.9.9" diabaikan, bukan angka kontrak tertentu. Angka tetap di sini
+   * membuat test ini pecah lagi setiap kali kontraknya naik, dengan kegagalan
+   * yang menunjuk ke tempat yang salah.
    */
-  assert.doesNotThrow(() => checkEngine({ name: "git", engines: { titah: "^0.4.0" } }, "9.9.9"))
+  assert.doesNotThrow(() =>
+    checkEngine({ name: "git", engines: { titah: `^${EXTENSION_API}` } }, "9.9.9"),
+  )
 
   // Dan ia tetap MENOLAK saat kontraknya yang tidak cocok — pemeriksaannya
   // dipindahkan, bukan dilemahkan.
@@ -302,9 +309,12 @@ test("versi PRODUK Titah tidak lagi ikut memutuskan", () => {
 })
 
 test("kalimat penolakan menyebut KEDUA angka", () => {
-  // "provides 0.4.0" sendirian di pemasangan 0.6.1 terbaca seperti kerusakan.
+  // "provides <kontrak>" sendirian di pemasangan 0.6.1 terbaca seperti
+  // kerusakan. Angka kontraknya diturunkan, bukan ditulis tetap — lihat test di
+  // atas untuk sebabnya.
+  const api = EXTENSION_API.replace(/\./g, "\\.")
   assert.throws(
     () => checkEngine({ name: "git", engines: { titah: "^9.0.0" } }, "0.6.1"),
-    /but Titah 0\.6\.1 provides 0\.4\.0/,
+    new RegExp(`but Titah 0\\.6\\.1 provides ${api}`),
   )
 })
