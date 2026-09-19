@@ -546,11 +546,11 @@ Kegagalan yang paling sering terjadi bukan bug di extension-nya:
 
 ```
 ✗ @titah/extension-git
-    @titah/extension-git needs extension API ^0.4.0, but Titah 0.7.0 provides 0.5.0.
+    @titah/extension-git needs extension API ^0.4.0, but Titah 0.8.0 provides 0.5.0.
 ```
 
 Perhatikan angka mana yang dibandingkan: `^0.4.0` milik extension lawan `0.5.0`
-milik **kontrak**, bukan lawan `0.7.0` milik produk. Versi produk ada di kalimat
+milik **kontrak**, bukan lawan `0.8.0` milik produk. Versi produk ada di kalimat
 itu hanya supaya "provides 0.5.0" sendirian tidak terbaca seperti kerusakan.
 
 Di bawah 1.0.0, caret npm berarti **hanya minor itu** — `^0.4.0` adalah 0.4.x dan
