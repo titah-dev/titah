@@ -1674,17 +1674,46 @@ export function App({
       setDraft(next.draft)
       setCursor(next.cursor)
     },
+    /*
+     * KEJADIAN KEEMPAT dari kelas bug yang dinamai di bagian atas berkas ini.
+     *
+     * `extensionRows` hilang dari daftar ini, jadi `runSuggestion` menutup atas
+     * nilai render PERTAMA — array kosong. Enter di picker extension mencari
+     * baris yang tersorot di dalamnya, tidak menemukannya, lalu `return
+     * undefined`: tidak melempar, tidak mengatakan apa pun, tidak memasang apa
+     * pun.
+     *
+     * Yang membuatnya sulit dilihat adalah `D` dan `R` BEKERJA. Keduanya dibaca
+     * dari `useInput`, yang didaftarkan ulang setiap render, begitu juga hint di
+     * bawah picker. Hanya Enter yang diam — dan itu tombol yang paling sering
+     * ditekan orang.
+     *
+     * `runLeaderAction` hilang dengan akibat yang sama tapi lebih senyap: dep
+     * array-nya sendiri memuat `effort`, `focusedSpec`, dan `mouseCapture`, jadi
+     * aksi leader yang dipilih lewat Enter di menu bekerja atas keadaan saat
+     * aplikasi baru menyala, bukan keadaan sekarang.
+     *
+     * Aturannya, dan ia tidak punya pengecualian di berkas ini: SETIAP nilai
+     * yang dibaca di dalam badan callback masuk ke sini. Yang tidak masuk tidak
+     * gagal dengan error — ia gagal dengan tombol yang tidak melakukan apa-apa.
+     */
     [
       agentRing,
       client,
       cursor,
+      cwd,
       doLogout,
       draft,
+      exit,
+      extensionRows,
       flash,
+      installFromPicker,
       openAgentPicker,
+      openChild,
       openModelPicker,
       openSessionPicker,
       openSkillPicker,
+      runLeaderAction,
       send,
       showAccount,
       startLogin,
