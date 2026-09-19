@@ -7,8 +7,10 @@ import { loadRegistry, parseRegistry, REGISTRY_TTL_MS } from "../src/core/extens
 import {
   disableLabel,
   installLabel,
+  isPickerFetch,
   pickerAction,
   pickerRows,
+  PICKER_FETCH_HINT,
   removeLabel,
 } from "../src/core/extension-picker.ts"
 import { buildKeymap } from "../src/tui/keybinds.ts"
@@ -292,4 +294,49 @@ test("tombol lain tidak berarti apa-apa di picker", () => {
   })
   assert.equal(pickerAction(rows[0]!, "q"), undefined)
   assert.equal(pickerAction(rows[0]!, "escape"), undefined)
+})
+
+test("F memuat ulang daftar, dan tidak bertabrakan dengan aksi baris", () => {
+  /*
+   * `r` sudah berarti remove di picker ini. Tombol yang kadang mencabut
+   * extension dan kadang memuat ulang daftar — tergantung baris mana yang
+   * kebetulan tersorot — adalah tombol yang tidak bisa dipakai siapa pun.
+   */
+  assert.equal(isPickerFetch("f"), true)
+  assert.equal(isPickerFetch("F"), true, "hint menyebut F, orang akan menekan shift")
+
+  for (const key of ["r", "R", "d", "D", "e", "i", "escape", "return", "up"]) {
+    assert.equal(isPickerFetch(key), false, `${key} bukan tombol muat ulang`)
+  }
+
+  const rows = pickerRows({
+    configured: ["@titah/extension-git"],
+    installed: ["@titah/extension-git"],
+    registry: parseRegistry(INDEX),
+  })
+  // Dan sebaliknya: `f` tidak boleh diam-diam berarti sebuah aksi baris.
+  assert.equal(pickerAction(rows[0]!, "f"), undefined)
+})
+
+test("hint muat ulang berlaku di SETIAP baris, tidak seperti D dan R", () => {
+  /*
+   * `D` dan `R` menghilang dari hint pada baris yang tidak menawarkannya —
+   * baris `+` yang belum ada di config tidak punya keduanya. Muat ulang tidak
+   * pernah begitu: ia memuat ulang DAFTARNYA, bukan barisnya, jadi ia berlaku
+   * bahkan saat satu-satunya baris adalah yang belum dipasang.
+   */
+  const rows = pickerRows({
+    configured: [],
+    installed: [],
+    registry: parseRegistry(INDEX),
+  })
+  const available = rows.find((row) => row.state === "available")
+  assert.ok(available, "fixture harus punya baris yang belum dipasang")
+  assert.equal(pickerAction(available, "d"), undefined)
+  assert.equal(pickerAction(available, "r"), undefined)
+  assert.equal(isPickerFetch("f"), true)
+
+  // Hurufnya cocok dengan kata kerjanya; hint yang menyebut huruf lain dari
+  // yang benar-benar bekerja mengajarkan tombol mati.
+  assert.match(PICKER_FETCH_HINT, /^F /)
 })

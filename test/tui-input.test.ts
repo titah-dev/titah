@@ -3677,6 +3677,81 @@ test("picker menyebutkan tombol disable dan remove, bukan hanya Enter", async ()
   }
 })
 
+test("picker menyebut F, dan F benar-benar memaksa pengambilan ulang", async () => {
+  /*
+   * Pin untuk cacat yang sudah pernah dikirim.
+   *
+   * `loadRegistry` menerima `force`, dan ada test yang membuktikan `force`
+   * melewati cache yang masih segar. Tapi TIDAK ADA yang pernah mengirimkannya:
+   * satu-satunya pemanggil memanggil `loadRegistry()` telanjang, sementara
+   * komentar di berkasnya menjanjikan "tombol refresh di picker" yang tidak
+   * pernah dibuat.
+   *
+   * Akibatnya baru terasa saat registry berubah: TTL dua puluh empat jam, dan
+   * satu-satunya jalan memuat daftar baru adalah menghapus berkas cache dengan
+   * tangan — yang tidak disebutkan di mana pun. Picker menyebut versi lama dan
+   * tidak ada apa pun di layar yang menjelaskan kenapa.
+   *
+   * Yang diuji di sini PERSIS bagian yang hilang itu: tombolnya sampai ke
+   * `loadRegistry` dengan `force`. Cache-nya sengaja dibuat MASIH SEGAR, jadi
+   * pembukaan biasa tidak pernah menyentuh `fetch`; kalau `fetch` terpanggil,
+   * itu hanya bisa karena force.
+   */
+  offlineRegistry()
+
+  const asli = globalThis.fetch
+  let dipanggil = 0
+  /*
+   * Hanya permintaan REGISTRY yang dihitung.
+   *
+   * App juga memanggil npm saat start untuk kabar versi baru, dan menghitung
+   * setiap `fetch` membuat test ini gagal karena permintaan yang tidak ada
+   * hubungannya — dengan kalimat yang menunjuk ke tempat yang salah.
+   *
+   * Yang registry dimatikan, bukan dibiarkan memanggil jaringan sungguhan:
+   * test yang menyentuh raw.githubusercontent gagal saat wifi mati dan lambat
+   * saat tidak.
+   */
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
+    if (!url.includes("titah-extensions")) return await asli(input, init)
+    dipanggil++
+    throw new Error("uji: jaringan dimatikan")
+  }) as typeof globalThis.fetch
+
+  const h = mount({ extension: { [writePanelExtension()]: {} } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /Extensions/)
+
+    // Hint menyebutnya, dan menyebutnya di baris yang TIDAK menawarkan D atau R
+    // sekalipun — ia memuat ulang daftarnya, bukan barisnya.
+    assert.match(h.frame(), /F fetch/)
+
+    assert.equal(dipanggil, 0, "pembukaan biasa harus pulang dari cache yang segar")
+
+    h.clear()
+    h.stdin.press("F")
+    await tick()
+    await tick()
+    await tick()
+
+    assert.equal(dipanggil, 1, "F tidak sampai ke loadRegistry dengan force")
+    // Dan kegagalannya DIKATAKAN, bukan ditelan: tombol yang tidak mengubah apa
+    // pun dan tidak mengatakan apa pun terbaca sebagai tombol mati.
+    assert.match(h.frame(), /registry unreachable/)
+  } finally {
+    globalThis.fetch = asli
+    h.cleanup()
+  }
+})
+
 test("R membuka konfirmasi yang menyebut berkas yang akan disunting", async () => {
   offlineRegistry()
   const project = projectWithExtension()

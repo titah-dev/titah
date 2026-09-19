@@ -642,8 +642,10 @@ dimaksud orang saat mengetik `update`.
 ## Picker
 
 `<leader>x` membuka picker: popup di tengah layar, **Enter** memasang baris yang
-tersorot, **D** mematikan atau menyalakannya lagi, dan **R** mencabutnya.
-Memperbarui tetap lewat `titah extension update`.
+tersorot, **D** mematikan atau menyalakannya lagi, **R** mencabutnya, dan **F**
+mengambil ulang daftarnya dari registry. Memperbarui versi yang terpasang tetap
+lewat `titah extension update` — itu pertanyaan yang berbeda dari "apa saja yang
+ditawarkan".
 
 Empat keadaan dibedakan tampilannya, karena tombolnya berarti hal berbeda pada
 masing-masing:
@@ -654,6 +656,12 @@ masing-masing:
 | `↓` | ada di config, belum terunduh | unduh | matikan | buang dari config |
 | `⊘` | ada di config, `enabled: false` | tidak ada | **nyalakan lagi** | cabut |
 | `+` | ada di registry, belum dipilih | **tulis ke config**, lalu unduh | — | — |
+
+**F berlaku di setiap baris**, tidak seperti D dan R: ia memuat ulang DAFTARNYA,
+bukan barisnya. Hurufnya `f` dan bukan `r` karena `r` sudah berarti *cabut* di
+sini — tombol yang kadang mencabut extension dan kadang menyegarkan daftar,
+tergantung baris mana yang kebetulan tersorot, adalah tombol yang tidak bisa
+dipakai siapa pun. `ctrl+r` juga tidak bisa: ia sudah dipegang `effort_cycle`.
 
 Baris `+` tidak punya D maupun R, dan itu bukan kelalaian: mematikan sesuatu yang
 belum pernah user pilih berarti menulis `enabled: false` untuk entri yang belum
@@ -729,6 +737,11 @@ menunjuk sebabnya.
 Offline, picker menampilkan salinan cache dan **mengatakan bahwa ia usang**.
 Daftar yang mungkin ketinggalan lebih berguna daripada daftar kosong, selama
 user tahu yang mana yang sedang ia lihat.
+
+TTL-nya dua puluh empat jam, jadi registry yang baru saja diperbarui tidak akan
+terlihat sampai besok — **kecuali kamu menekan `F`**. Gejala tanpa tombol itu
+sulit dibaca: angka versi di picker tetap yang lama, dan tidak ada apa pun di
+layar yang menyebut cache. `F` mengatakan hasilnya, termasuk saat jaringan mati.
 
 Satu entri registry memetakan ke npm package **dan versi yang pasti** — aturan
 yang sama dengan `MarketEntry` untuk `plugin`, dan alasannya sama: registry yang

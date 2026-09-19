@@ -71,6 +71,8 @@ import {
   disableLabel,
   installLabel,
   pickerAction,
+  isPickerFetch,
+  PICKER_FETCH_HINT,
   pickerRows,
   removeLabel,
   type PickerRow,
@@ -1144,9 +1146,27 @@ export function App({
    * config user. Lihat `installLabel` di core/extension-picker.ts.
    */
   const openExtensionPicker = useCallback(
-    (preselect?: string) => {
-      void loadRegistry()
+    /**
+     * `force` melewati cache registry.
+     *
+     * Tanpa ini tidak ada cara SAMA SEKALI memuat daftar yang baru sebelum TTL
+     * dua puluh empat jam habis: satu-satunya jalan adalah menghapus berkas
+     * cache dengan tangan, yang tidak disebutkan di mana pun. Gejalanya adalah
+     * registry yang sudah diperbarui tapi picker yang keras kepala menyebut
+     * versi lama — dan tidak ada apa pun di layar yang menjelaskan kenapa.
+     */
+    (preselect?: string, force = false) => {
+      void loadRegistry(force ? { force: true } : {})
         .then((snapshot) => {
+          // Hanya saat DIMINTA. Mengabarkan setiap pembukaan picker akan
+          // menjadikan kabar itu latar belakang yang tidak dibaca siapa pun.
+          if (force) {
+            flash(
+              snapshot.stale
+                ? `registry unreachable (${snapshot.reason ?? "offline"}) — showing cached list`
+                : "registry list refreshed",
+            )
+          }
           const rows = pickerRows({
             configured: Object.keys(config.extension),
             installed: installedExtensions(),
@@ -2108,6 +2128,17 @@ export function App({
        */
       const selectedItem = popup.items[popup.selected]
       if (selectedItem?.kind === "extension" && press.ctrl !== true && press.alt !== true) {
+        /*
+         * Memuat ulang daftar, dan MEMPERTAHANKAN baris yang tersorot.
+         *
+         * Tanpa preselect, kursor melompat ke baris pertama setiap kali orang
+         * menekannya — dan orang menekannya justru saat sedang melihat satu
+         * baris tertentu.
+         */
+        if (isPickerFetch(press.key)) {
+          openExtensionPicker(selectedItem.value, true)
+          return
+        }
         const row = extensionRows.find((entry) => entry.spec === selectedItem.value)
         const verb = row === undefined ? undefined : pickerAction(row, press.key)
         if (row !== undefined && verb !== undefined && verb !== "install") {
@@ -3129,6 +3160,8 @@ function extensionHint(rows: PickerRow[], spec: string | undefined): string | un
   const parts = [
     pickerAction(row, "d") === "enable" ? "D enable" : pickerAction(row, "d") ? "D disable" : "",
     pickerAction(row, "r") ? "R remove" : "",
+    // Berlaku di setiap baris: ia memuat ulang DAFTARNYA, bukan barisnya.
+    PICKER_FETCH_HINT,
   ].filter(Boolean)
   return parts.length === 0 ? undefined : parts.join(" · ")
 }

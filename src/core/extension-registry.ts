@@ -80,7 +80,13 @@ export interface LoadRegistryOptions {
   fetcher?: Fetcher
   /** Jam sekarang, disuntikkan supaya test tidak bergantung pada waktu nyata. */
   now?: number
-  /** Melewati cache dan memaksa jaringan. Dipakai tombol refresh di picker. */
+  /**
+   * Melewati cache dan memaksa jaringan. Dipakai `F` di picker extension.
+   *
+   * Tanpa jalan ini, TTL dua puluh empat jam berarti registry yang baru
+   * diperbarui tidak bisa dimuat sama sekali sebelum besok — kecuali dengan
+   * menghapus berkas cache dengan tangan, yang tidak disebutkan di mana pun.
+   */
   force?: boolean
 }
 

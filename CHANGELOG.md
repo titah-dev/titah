@@ -5,6 +5,27 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Diperbaiki
+
+- **`F` di picker extension mengambil ulang daftar dari registry.** Cache
+  registry ber-TTL dua puluh empat jam, jadi registry yang baru diperbarui
+  tidak terlihat sampai besok — dan satu-satunya jalan keluar adalah menghapus
+  `~/.cache/titah/registry.json` dengan tangan, yang tidak disebutkan di mana
+  pun. Gejalanya sulit dibaca: picker menyebut versi lama dan tidak ada apa pun
+  di layar yang menyebut cache.
+
+  `loadRegistry` sudah menerima `force`, lengkap dengan test yang membuktikan ia
+  melewati cache yang masih segar — tapi **tidak ada satu pun pemanggil yang
+  pernah mengirimkannya**, sementara komentar di berkasnya menjanjikan "tombol
+  refresh di picker" yang tidak pernah dibuat. Sekarang tombolnya ada, dan ada
+  test yang menekan `F` sungguhan lalu menuntut permintaan registry benar-benar
+  terjadi.
+
+  Hurufnya `F` dan bukan `R`: `R` sudah berarti *cabut* di picker itu, dan
+  `ctrl+r` sudah dipegang `effort_cycle`. Ia berlaku di setiap baris — yang
+  dimuat ulang adalah daftarnya, bukan barisnya — dan hasilnya dikatakan,
+  termasuk saat jaringan mati.
+
 ## [0.8.0] — 2026-09-19
 
 ### Panel bisa mengirim teks ke prompt utama — `EXTENSION_API` naik ke 0.5.0
