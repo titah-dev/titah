@@ -1056,6 +1056,35 @@ export const Config = z.object({
         ),
     })
     .default({ enabled: true, exclude: [], git: true, sync: false }),
+  /*
+   * Blok sendiri, bukan field di dalam `tracking`, karena sumbunya berbeda:
+   * `tracking` adalah "apa yang DICATAT tentang saya", `artifacts` adalah "apa
+   * yang saya TERBITKAN dengan sengaja". Menggabungkannya berarti mematikan
+   * telemetri juga mematikan kemampuan agent membuat halaman, dan tidak ada
+   * yang menginginkan kaitan itu.
+   */
+  artifacts: z
+    .object({
+      /*
+       * Bawaannya NYALA, tidak seperti `tracking.sync` yang mati.
+       *
+       * Alasan `sync` mati tidak merentang ke sini. `sync` mengunggah secara
+       * OTOMATIS, tanpa user di dalam putaran — jadi ia butuh persetujuan
+       * eksplisit lebih dulu. Tool artifact hanya menyala saat model
+       * memanggilnya, dan setiap panggilan melewati dialog izin `network` yang
+       * menyebut host, judul, dan jumlah byte. User ada di dalam putaran pada
+       * SETIAP penerbitan, jadi saklar mati secara bawaan hanya akan jadi
+       * langkah tambahan yang tidak melindungi apa pun.
+       */
+      enabled: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Allow the artifact tool to publish HTML pages to your account dashboard. " +
+            "Nothing is ever published when you are not signed in, whatever this says.",
+        ),
+    })
+    .default({ enabled: true }),
   logLevel: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).default("INFO"),
 })
 

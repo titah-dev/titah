@@ -4,6 +4,7 @@ import { effectivePermission } from "../src/core/permission.ts"
 import { Agent, Config, DEFAULT_AGENTS } from "../src/core/schema.ts"
 import { checkUrl, htmlToText, webfetchTool } from "../src/core/tool/webfetch.ts"
 import { parseDuckDuckGo, searchBackend, websearchTool } from "../src/core/tool/websearch.ts"
+import { artifactTool } from "../src/core/tool/artifact.ts"
 import { ToolError } from "../src/core/tool/types.ts"
 
 /**
@@ -27,14 +28,18 @@ const ctx = (config = Config.parse({})) =>
 
 // ---------- sumbu izin ----------
 
-test("webfetch dan websearch memakai sumbu network, bukan menumpang bash", () => {
+test("webfetch, websearch dan artifact memakai sumbu network, bukan menumpang bash", () => {
   // Menumpang sumbu lain berarti user yang membuka `bash` untuk menjalankan
   // test diam-diam juga membuka jalan keluar untuk isi repo-nya.
   const fetchNeed = webfetchTool.permission?.({ url: "https://example.com", format: "text" }, ctx())
   const searchNeed = websearchTool.permission?.({ query: "apa pun" }, ctx())
+  // artifact mengirim SELURUH dokumen keluar dari mesin, jadi kalau ada satu
+  // tool yang tidak boleh menumpang sumbu lain, ini dia.
+  const publishNeed = artifactTool.permission?.({ title: "Report", body: "<html></html>" }, ctx())
 
   assert.equal(fetchNeed?.kind, "network")
   assert.equal(searchNeed?.kind, "network")
+  assert.equal(publishNeed?.kind, "network")
 })
 
 test("dialog izin webfetch menyebut URL LENGKAP, bukan yang dipotong", () => {

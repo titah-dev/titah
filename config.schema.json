@@ -1082,6 +1082,19 @@
         }
       }
     },
+    "artifacts": {
+      "default": {
+        "enabled": true
+      },
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Allow the artifact tool to publish HTML pages to your account dashboard. Nothing is ever published when you are not signed in, whatever this says.",
+          "type": "boolean"
+        }
+      }
+    },
     "logLevel": {
       "default": "INFO",
       "type": "string",

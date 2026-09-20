@@ -5,6 +5,52 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-20
+
+### Artifact — agent bisa menerbitkan halaman, bukan cuma menuliskan teks
+
+- **Tool baru `artifact`.** Menerbitkan satu dokumen HTML utuh ke dashboard
+  akun dan mengembalikan URL yang bisa dibuka manusia di browser. Dipakai saat
+  jawabannya lebih baik jadi halaman daripada paragraf — laporan, bagan, tabel
+  yang ingin diurutkan. Ada di sumbu izin `network`, sama seperti `webfetch`:
+  ia mengirim dokumen keluar dari mesin.
+
+- **Halaman bersifat PRIVAT, dan CLI tidak bisa mengubahnya.** Menyalakan link
+  publik hanya bisa dilakukan manusia lewat dashboard; API menolak token CLI
+  dengan 403. Ini yang membatasi skenario agent yang disetir oleh sesuatu yang
+  ia baca: agent semacam itu bisa menerbitkan halaman — itu fiturnya bekerja —
+  tapi tidak bisa menyodorkannya ke orang lain.
+
+- **Satu slug, banyak versi.** Mengoper `slug` dari panggilan sebelumnya
+  merevisi halaman yang sama, jadi URL yang sudah kamu kirim tetap URL yang
+  benar meski agent beriterasi tiga puluh kali. Menerbitkan ulang byte yang
+  identik **tidak menulis versi baru** — itu yang membuat percobaan ulang
+  setelah timeout aman.
+
+- **Batas 512 KiB per dokumen**, angka yang sama dengan batas transkrip.
+  Dokumen kebesaran ditolak sebelum meninggalkan mesin, dan penolakannya
+  menyebut kedua angkanya supaya model mengecilkan halamannya alih-alih
+  mengirim yang sama lagi.
+
+- **Salinan lokal di `~/.local/share/titah/artifacts/<slug>.html`.** Halaman
+  terbitan adalah hal pertama yang Titah taruh di server yang mungkin tidak ada
+  salinannya di tempat lain — transkrip cuma salinan sesi yang masih ada di
+  mesinmu, halaman ini bukan salinan apa pun.
+
+- **Config `artifacts.enabled`, bawaannya `true`** — berbeda dari
+  `tracking.sync` yang `false`. `sync` mengunggah otomatis tanpa user di dalam
+  putaran; penerbitan artifact selalu melewati dialog izin yang menyebut host,
+  judul, dan jumlah byte. `titah doctor` menyebut sakelar mana yang mati, bukan
+  sekadar "off".
+
+- **Disajikan dari origin terpisah.** Halaman terbitan dibuka di origin lain,
+  di dalam iframe ber-`sandbox` tanpa `allow-same-origin`, dengan CSP yang
+  mematikan `connect-src`, `form-action`, dan membatasi `img-src` ke daftar
+  host bernama. Akibatnya halaman yang memusuhi pembacanya bisa menggambar
+  kotak "masukkan API key", tapi **tidak punya saluran untuk mengirimkan** apa
+  yang diketik. Isinya tidak pernah disaring atau ditulis ulang — penyaringan
+  akan merusak fiturnya sekaligus memberi rasa aman palsu.
+
 ## [0.8.1] — 2026-09-20
 
 ### Diperbaiki
