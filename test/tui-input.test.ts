@@ -3677,6 +3677,64 @@ test("picker menyebutkan tombol disable dan remove, bukan hanya Enter", async ()
   }
 })
 
+test("Enter di picker BENAR-BENAR sampai ke barisnya", async () => {
+  /*
+   * Pin untuk cacat yang sudah pernah dikirim: `<leader>x x`, lalu Enter, lalu
+   * tidak terjadi apa-apa.
+   *
+   * `runSuggestion` mencari baris yang tersorot di dalam `extensionRows`, tapi
+   * ia di-`useCallback` TANPA `extensionRows` di dep array-nya. Jadi ia menutup
+   * atas nilai render pertama — array kosong — dan pencariannya selalu gagal.
+   * Cabangnya lalu `return undefined`, tanpa melempar dan tanpa mengatakan apa
+   * pun.
+   *
+   * Yang membuatnya sulit dilihat: `D` dan `R` BEKERJA. Keduanya dibaca dari
+   * `useInput`, yang didaftarkan ulang tiap render, jadi mereka melihat daftar
+   * yang benar. Hint di bawah picker juga benar. Hanya Enter yang diam — dan
+   * satu-satunya tombol yang diam adalah tombol yang paling sering ditekan.
+   *
+   * Barisnya sengaja dibuat `disabled`: di keadaan itu `installFromPicker`
+   * pulang lebih awal dengan sebuah kalimat, tanpa memanggil npm. Yang diuji
+   * adalah apakah Enter SAMPAI ke barisnya, bukan apa yang dilakukan npm.
+   */
+  offlineRegistry()
+  /*
+   * Spec PENDEK, dan itu bukan kosmetik: kalimatnya diawali spec-nya sendiri,
+   * dan path direktori sementara sepanjang lima puluh karakter mendorong sisa
+   * kalimatnya keluar dari lebar footer. Test-nya lalu gagal karena
+   * pemotongan, bukan karena perilakunya — kegagalan yang menunjuk ke tempat
+   * yang salah.
+   *
+   * `enabled: false` juga berarti extension-nya tidak pernah di-`import`, jadi
+   * spec yang tidak ada di disk tidak menghasilkan kegagalan muat.
+   */
+  const spec = "./uji-mati"
+  const h = mount({ extension: { [spec]: { enabled: false } } })
+  try {
+    await tick()
+    await tick()
+    h.stdin.press("\u0018")
+    await tick(1)
+    h.stdin.press("x")
+    await tick()
+    await tick()
+    assert.match(h.frame(), /Extensions/)
+
+    h.clear()
+    h.stdin.press("\r")
+    await tick()
+    await tick()
+
+    assert.match(
+      h.frame(),
+      /is disabled — D enables it again/,
+      "Enter tidak sampai ke baris yang tersorot",
+    )
+  } finally {
+    h.cleanup()
+  }
+})
+
 test("picker menyebut F, dan F benar-benar memaksa pengambilan ulang", async () => {
   /*
    * Pin untuk cacat yang sudah pernah dikirim.

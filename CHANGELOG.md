@@ -5,7 +5,29 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-09-20
+
 ### Diperbaiki
+
+- **Enter di picker extension memasang lagi.** `<leader>x`, lalu `x`, lalu
+  Enter pada sebuah baris tidak melakukan apa pun — tidak memasang, tidak
+  melempar, tidak mengatakan apa pun.
+
+  `runSuggestion` mencari baris yang tersorot di dalam `extensionRows`, tapi
+  `extensionRows` tidak ada di dep array-nya. Callback itu menutup atas nilai
+  render PERTAMA — array kosong — jadi pencariannya selalu gagal dan cabangnya
+  `return undefined`. Ini kejadian KEEMPAT dari kelas bug yang sudah dinamai di
+  bagian atas `app.tsx`.
+
+  Yang membuatnya sulit dilihat: `D` dan `R` bekerja, dan hint di bawah picker
+  benar. Keduanya dibaca dari `useInput`, yang didaftarkan ulang setiap render.
+  Hanya Enter yang diam — tombol yang paling sering ditekan orang.
+
+  `runLeaderAction` hilang dari daftar yang sama, dengan akibat yang lebih
+  senyap: dep array-nya sendiri memuat `effort`, `focusedSpec`, dan
+  `mouseCapture`, jadi aksi leader yang dipilih lewat Enter di menu bekerja atas
+  keadaan saat aplikasi baru menyala. Ikut diperbaiki, bersama
+  `installFromPicker`, `openChild`, `cwd`, dan `exit`.
 
 - **`F` di picker extension mengambil ulang daftar dari registry.** Cache
   registry ber-TTL dua puluh empat jam, jadi registry yang baru diperbarui
