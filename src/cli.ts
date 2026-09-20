@@ -101,6 +101,7 @@ import { bus } from "./core/event.ts"
 import { prompt, AgentError } from "./core/agent.ts"
 import { decide, parseRule, type Policy } from "./core/decide.ts"
 import { commandSegments } from "./core/tool/bash.ts"
+import { artifactReason, type ArtifactReason } from "./core/tool/artifact.ts"
 import {
   effectivePermission,
   neverMatchingAllowlistEntries,
@@ -1169,6 +1170,20 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       out("  verified: not checked (pass --probe)")
     }
   }
+  /*
+   * Artifacts dilaporkan DI DALAM blok Account, bukan sebagai blok sendiri.
+   *
+   * Menerbitkan halaman tidak berarti apa-apa tanpa akun, jadi blok terpisah
+   * yang isinya hanya "belum masuk" adalah derau. Alasannya string, bukan
+   * boolean, dengan alasan yang sama seperti Tracking di bawah: "mati" tanpa
+   * menyebut sakelar mana yang mati adalah keadaan yang tidak bisa diperbaiki.
+   */
+  const artifacts: Record<ArtifactReason, string> = {
+    ok: `  artifacts: on — published pages go to ${account?.server ?? accountServer(loaded.config)}`,
+    disabled: "  artifacts: off — artifacts.enabled is false in your config",
+    "not-signed-in": "  artifacts: off — not signed in, so the artifact tool will refuse",
+  }
+  out(artifacts[artifactReason(loaded.config)])
   out()
 
   /*
