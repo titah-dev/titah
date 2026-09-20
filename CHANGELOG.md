@@ -5,6 +5,8 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-20
+
 ### Artifact — agent bisa menerbitkan halaman, bukan cuma menuliskan teks
 
 - **Tool baru `artifact`.** Menerbitkan satu dokumen HTML utuh ke dashboard
