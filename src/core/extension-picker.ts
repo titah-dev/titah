@@ -215,3 +215,29 @@ export function pickerAction(row: PickerRow, key: string): PickerVerb | undefine
   if (letter === "r") return removeLabel(row) === undefined ? undefined : "remove"
   return undefined
 }
+
+/**
+ * Tombol yang MENGAMBIL ULANG daftar dari registry.
+ *
+ * Terpisah dari `pickerAction` karena ia bukan aksi baris: ia tidak peduli
+ * baris mana yang tersorot, dan menaruhnya di sana akan menuntut sebuah `row`
+ * yang tidak ia pakai.
+ *
+ * # Kenapa `f`, bukan `r`
+ *
+ * `r` sudah berarti *remove* di picker ini. Tombol yang kadang mencabut
+ * extension dan kadang memuat ulang daftar — tergantung baris mana yang
+ * kebetulan tersorot — adalah tombol yang tidak bisa dipakai siapa pun.
+ *
+ * `ctrl+r` juga tidak bisa: ia sudah dipegang `effort_cycle` secara global.
+ *
+ * Hurufnya cocok dengan kata kerjanya. *fetch* adalah yang benar-benar terjadi
+ * — satu permintaan HTTP ke registry — dan sengaja BUKAN "update", karena
+ * `titah extension update` berarti hal lain: ia menggerakkan lockfile, bukan
+ * menyegarkan daftar.
+ */
+export const PICKER_FETCH_HINT = "F fetch"
+
+export function isPickerFetch(key: string): boolean {
+  return key.length === 1 && key.toLowerCase() === "f"
+}
