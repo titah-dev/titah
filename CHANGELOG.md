@@ -5,6 +5,8 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-09-20
+
 ### Diperbaiki
 
 - **Enter di picker extension memasang lagi.** `<leader>x`, lalu `x`, lalu
