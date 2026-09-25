@@ -203,3 +203,149 @@ test("deskripsi tool mengatakan halaman privat dan bagaimana merevisinya", () =>
   assert.match(artifactTool.description, /slug/)
   assert.match(artifactTool.description, /dashboard/)
 })
+
+// ---------- fetch yang melempar ----------
+
+/** `TypeError: fetch failed` seperti yang dilempar undici, dengan sebabnya di `cause`. */
+function fetchFailed(code: string, message = `connect ${code} 1.2.3.4:443`): TypeError {
+  return new TypeError("fetch failed", { cause: Object.assign(new Error(message), { code }) })
+}
+
+async function withFetch<T>(impl: typeof fetch, run: () => Promise<T>): Promise<T> {
+  const original = globalThis.fetch
+  globalThis.fetch = impl
+  try {
+    return await run()
+  } finally {
+    globalThis.fetch = original
+  }
+}
+
+const published = () =>
+  new Response(
+    JSON.stringify({
+      slug: "s1",
+      title: "Report",
+      visibility: "private",
+      version: 1,
+      version_count: 1,
+      byte_size: PAGE.length,
+      url: "https://titah.invalid/dashboard/artifacts/s1/",
+      share_url: null,
+      unchanged: false,
+    }),
+    { status: 201, headers: { "content-type": "application/json" } },
+  )
+
+test("pesan fetch gagal menyebut kode sebab dari error.cause, bukan hanya 'fetch failed'", async () => {
+  signIn()
+  let calls = 0
+  await withFetch(
+    (async () => {
+      calls++
+      throw fetchFailed("ENOTFOUND", "getaddrinfo ENOTFOUND titah.invalid")
+    }) as typeof fetch,
+    () =>
+      assert.rejects(
+        () => artifactTool.execute({ title: "Report", body: PAGE }, ctx()),
+        (error: unknown) => {
+          assert.ok(error instanceof ToolError)
+          assert.match(error.message, /ENOTFOUND/)
+          assert.match(error.message, /getaddrinfo/)
+          assert.match(error.message, /Nothing was published/)
+          // Supaya model tidak mengarang "firewall di server Anthropic".
+          assert.match(error.message, /user's own machine/)
+          return true
+        },
+      ),
+  )
+  assert.equal(calls, 2, "DNS gagal = tidak ada yang terkirim, jadi dicoba ulang sekali")
+})
+
+test("gagal koneksi sesaat dicoba ulang sekali dan publish tetap berhasil", async () => {
+  signIn()
+  let calls = 0
+  const result = await withFetch(
+    (async () => {
+      calls++
+      if (calls === 1) throw fetchFailed("ECONNREFUSED")
+      return published()
+    }) as typeof fetch,
+    () => artifactTool.execute({ title: "Report", body: PAGE }, ctx()),
+  )
+  assert.equal(calls, 2)
+  assert.match(result.output, /Published: Report/)
+})
+
+test("kode di dalam AggregateError (happy eyeballs) tetap terbaca", async () => {
+  signIn()
+  const aggregate = new AggregateError([Object.assign(new Error("x"), { code: "EHOSTUNREACH" })], "")
+  await withFetch(
+    (async () => {
+      throw new TypeError("fetch failed", { cause: aggregate })
+    }) as typeof fetch,
+    () =>
+      assert.rejects(
+        () => artifactTool.execute({ title: "Report", body: PAGE }, ctx()),
+        (error: unknown) => error instanceof ToolError && /EHOSTUNREACH/.test(error.message),
+      ),
+  )
+})
+
+test("ECONNRESET tanpa slug TIDAK dicoba ulang — retry bisa membuat halaman kedua", async () => {
+  signIn()
+  let calls = 0
+  await withFetch(
+    (async () => {
+      calls++
+      throw fetchFailed("ECONNRESET", "read ECONNRESET")
+    }) as typeof fetch,
+    () =>
+      assert.rejects(
+        () => artifactTool.execute({ title: "Report", body: PAGE }, ctx()),
+        (error: unknown) => {
+          assert.ok(error instanceof ToolError)
+          assert.match(error.message, /ECONNRESET/)
+          // Request mungkin sudah sampai; "Nothing was published" akan bohong.
+          assert.match(error.message, /may or may not have been/)
+          assert.doesNotMatch(error.message, /Nothing was published/)
+          return true
+        },
+      ),
+  )
+  assert.equal(calls, 1)
+})
+
+test("ECONNRESET dengan slug dicoba ulang, karena body identik tidak menulis versi baru", async () => {
+  signIn()
+  let calls = 0
+  await withFetch(
+    (async () => {
+      calls++
+      if (calls === 1) throw fetchFailed("ECONNRESET", "read ECONNRESET")
+      return published()
+    }) as typeof fetch,
+    () => artifactTool.execute({ title: "Report", body: PAGE, slug: "s1" }, ctx()),
+  )
+  assert.equal(calls, 2)
+})
+
+test("gagal TLS tidak dicoba ulang dan mengatakan retry tidak menolong", async () => {
+  signIn()
+  let calls = 0
+  await withFetch(
+    (async () => {
+      calls++
+      throw fetchFailed("CERT_HAS_EXPIRED", "certificate has expired")
+    }) as typeof fetch,
+    () =>
+      assert.rejects(
+        () => artifactTool.execute({ title: "Report", body: PAGE }, ctx()),
+        (error: unknown) =>
+          error instanceof ToolError &&
+          /CERT_HAS_EXPIRED/.test(error.message) &&
+          /Retrying will not help/.test(error.message),
+      ),
+  )
+  assert.equal(calls, 1)
+})
