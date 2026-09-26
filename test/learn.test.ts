@@ -221,3 +221,29 @@ test("update mempertahankan created dan menaikkan updated", () => {
   assert.match(text, /session: ses_2/)
   assert.match(text, /baru\n$/)
 })
+
+test("user-written file dengan nama frontmatter berbeda ditolak untuk nama folder", () => {
+  // Simulasi berkas milik pengguna di folder "my-notes" tapi dengan nama frontmatter "my-notes-v2"
+  const userDir = path.join(learnedSkillsDir(), "my-notes")
+  fs.mkdirSync(userDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(userDir, "SKILL.md"),
+    "---\nname: my-notes-v2\ndescription: User notes\n---\n\nSome content"
+  )
+  const existing = listLearned()
+  // Folder "my-notes" sekarang ada, jadi create dengan nama "my-notes" harus ditolak
+  const decision = { action: "create" as const, name: "my-notes", description: "d", body: "b" }
+  assert.match(validateLearned(decision, existing, 30) ?? "", /already exists/)
+})
+
+test("writeLearned dengan action create pada folder yang ada melempar error dan tidak mengubah file", () => {
+  const file = writeLearned(GOOD, "ses_1", undefined, new Date("2026-09-27T10:00:00Z"))
+  const originalContent = fs.readFileSync(file, "utf8")
+  // Coba create dengan nama yang sama, harus melempar
+  assert.throws(() => {
+    writeLearned({ ...GOOD, action: "create" }, "ses_2", undefined, new Date("2026-09-27T11:00:00Z"))
+  })
+  // File tidak berubah
+  const finalContent = fs.readFileSync(file, "utf8")
+  assert.equal(finalContent, originalContent)
+})

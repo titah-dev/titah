@@ -154,7 +154,7 @@ export interface LearnedSkill {
 
 export function listLearned(dir = learnedSkillsDir()): LearnedSkill[] {
   return scanSource({ root: dir, namespace: "learned" }).map((skill) => ({
-    name: skill.name,
+    name: path.basename(path.dirname(skill.file)),
     description: skill.description,
     file: skill.file,
     ...(skill.source ? { source: skill.source } : {}),
@@ -185,8 +185,10 @@ export function validateLearned(decision: Write, existing: readonly LearnedSkill
   if (description === "" || description.length > 160 || /[\r\n]/.test(description)) {
     return "description must be one line of 1–160 characters"
   }
-  const bytes = Buffer.byteLength(decision.body, "utf8")
-  if (decision.body.trim() === "" || bytes > MAX_BODY_BYTES) return `body is ${bytes} bytes (limit ${MAX_BODY_BYTES})`
+  const trimmedBody = decision.body.trim()
+  if (trimmedBody === "") return "body must not be empty"
+  const bytes = Buffer.byteLength(trimmedBody, "utf8")
+  if (bytes > MAX_BODY_BYTES) return `body is ${bytes} bytes (limit ${MAX_BODY_BYTES})`
   const text = `${decision.description}\n${decision.body}`
   if (SECRETS.some((pattern) => pattern.test(text))) return "looks like it contains a secret"
 
@@ -212,7 +214,15 @@ export function writeLearned(decision: Write, sessionID: string, dir = learnedSk
   const file = path.join(folder, "SKILL.md")
 
   let created = now.toISOString()
-  if (decision.action === "update") {
+  if (decision.action === "create") {
+    try {
+      fs.statSync(file)
+      throw new Error(`"${decision.name}" already exists; use update`)
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("already exists")) throw error
+      // File does not exist, which is what we want for create
+    }
+  } else if (decision.action === "update") {
     try {
       created = parseFrontmatter(fs.readFileSync(file, "utf8")).fields["created"] ?? created
     } catch {
