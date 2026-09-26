@@ -458,6 +458,36 @@
           "items": {
             "type": "string"
           }
+        },
+        "learn": {
+          "default": {
+            "enabled": false,
+            "minTools": 8,
+            "max": 30
+          },
+          "description": "Automatic skills, written to ~/.config/titah/skills/learned/",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Write reusable skills automatically after substantial turns",
+              "type": "boolean"
+            },
+            "minTools": {
+              "default": 8,
+              "description": "Tool calls a turn needs before it is considered for a skill",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "default": 30,
+              "description": "Cap on learned skills; at the cap existing ones are still updated",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
         }
       }
     },

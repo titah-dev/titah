@@ -25,6 +25,12 @@ export const cacheDir = (): string => xdg("XDG_CACHE_HOME", [".cache"])
 
 export const globalConfigFile = (): string => path.join(configDir(), "titah.json")
 
+/** Skill yang Titah tulis sendiri — lihat `src/core/learn.ts`. */
+export const learnedSkillsDir = (): string => path.join(configDir(), "skills", "learned")
+
+/** Satu baris per refleksi: hasil, alasan, dan token yang dipakai. */
+export const learnLogFile = (): string => path.join(configDir(), "learn.log")
+
 /** Kredensial hidup terpisah dari config (Q19) dan selalu bermode 0600. */
 export const authFile = (): string => path.join(dataDir(), "auth.json")
 
