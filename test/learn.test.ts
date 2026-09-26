@@ -68,10 +68,15 @@ test("setiap syarat yang gagal, sendirian, mencegah refleksi", () => {
   }
 })
 
-function toolPart(tool: string, input: unknown, status: "completed" | "error" = "completed") {
+function toolPart(
+  tool: string,
+  input: unknown,
+  status: "completed" | "error" = "completed",
+  outcome?: "failed" | "stopped"
+) {
   const state =
     status === "completed"
-      ? { status, input, title: "", output: "ok", truncated: false, started: 0, ended: 1 }
+      ? { status, input, title: "", output: "ok", truncated: false, started: 0, ended: 1, ...(outcome ? { outcome } : {}) }
       : { status, input, error: "boom", started: 0, ended: 1 }
   return { type: "tool" as const, callID: `c-${tool}`, tool, state }
 }
@@ -98,6 +103,15 @@ test("digest memuat permintaan, urutan tool, jawaban akhir, dan skill yang ada",
   assert.match(digest, /2\. bash \{"command":"rsync dist\/ staging:"\} → error/)
   assert.match(digest, /Sudah terdeploy\./)
   assert.match(digest, /deploy-prod: Use when deploying to prod/)
+})
+
+test("task yang completed dengan outcome failed tampil sebagai → failed, bukan → ok", () => {
+  const digest = buildDigest({
+    request: "deploy",
+    parts: [toolPart("task", { name: "subtask" }, "completed", "failed")] as never,
+    learned: [],
+  })
+  assert.match(digest, /1\. task \{.*name.*\} → failed/)
 })
 
 test("digest dibatasi, dan yang dibuang adalah tool di TENGAH", () => {

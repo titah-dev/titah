@@ -63,8 +63,8 @@ function clip(text: string, cap: number): string {
 }
 
 function toolLine(index: number, part: Extract<Part, { type: "tool" }>): string {
-  const input = clip(JSON.stringify(part.state.input ?? {}) ?? "{}", TOOL_INPUT_CAP)
-  const outcome = part.state.status === "completed" ? "ok" : part.state.status
+  const input = clip(JSON.stringify(part.state.input ?? {}), TOOL_INPUT_CAP)
+  const outcome = part.state.status === "completed" ? (part.state.outcome ?? "ok") : part.state.status
   return `${index + 1}. ${part.tool} ${input} → ${outcome}`
 }
 
