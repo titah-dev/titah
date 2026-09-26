@@ -17,7 +17,7 @@ process.env.HOME = path.join(root, "home")
 
 const { Config } = await import("../src/core/schema.ts")
 const { learnedSkillsDir, learnLogFile } = await import("../src/core/paths.ts")
-const { buildDigest, countToolCalls, DIGEST_CAP, shouldReflect } = await import("../src/core/learn.ts")
+const { buildDigest, countToolCalls, DIGEST_CAP, shouldReflect, LEARN_SOURCE, listLearned, parseDecision, validateLearned, writeLearned } = await import("../src/core/learn.ts")
 
 beforeEach(() => {
   fs.rmSync(path.join(root, "config"), { recursive: true, force: true })
@@ -131,4 +131,93 @@ test("permintaan dan jawaban panjang dipotong di 2.000 karakter", () => {
   })
   assert.ok(!digest.includes("a".repeat(2001)))
   assert.ok(!digest.includes("b".repeat(2001)))
+})
+
+// ---------- keputusan ----------
+
+test("JSON berpagar diurai; sampah dibaca sebagai none", () => {
+  const fenced = '```json\n{"action":"create","name":"a-b","description":"d","body":"b"}\n```'
+  assert.deepEqual(parseDecision(fenced), { action: "create", name: "a-b", description: "d", body: "b" })
+  assert.deepEqual(parseDecision("bukan json"), { action: "none" })
+  assert.deepEqual(parseDecision('{"action":"delete"}'), { action: "none" })
+  assert.deepEqual(parseDecision('{"action":"create","name":1}'), { action: "none" })
+})
+
+// ---------- validasi ----------
+
+const GOOD = { action: "create" as const, name: "deploy-sims", description: "Use when deploying SIMS", body: "1. build\n2. ship" }
+
+test("keputusan yang baik lolos validasi", () => {
+  assert.equal(validateLearned(GOOD, [], 30), undefined)
+})
+
+test("nama, deskripsi, dan body yang berbahaya ditolak", () => {
+  const bad: Partial<typeof GOOD>[] = [
+    { name: "../evil" },
+    { name: "a/b" },
+    { name: "Deploy" },
+    { name: "a.b" },
+    { name: "a" },
+    { name: "x".repeat(50) },
+    { description: "" },
+    { description: "x".repeat(161) },
+    { description: "dua\nbaris" },
+    { body: "" },
+    { body: "x".repeat(8193) },
+  ]
+  for (const change of bad) {
+    assert.equal(typeof validateLearned({ ...GOOD, ...change }, [], 30), "string", JSON.stringify(change))
+  }
+})
+
+test("bentuk rahasia yang umum ditolak", () => {
+  const secrets = [
+    "export KEY=sk-ant-api03-abcdefghijklmnopqrstuv",
+    "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+    "AKIAABCDEFGHIJKLMNOP",
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345",
+    "password=hunter2",
+    "token: 9f8e7d6c5b4a",
+  ]
+  for (const secret of secrets) {
+    assert.match(validateLearned({ ...GOOD, body: `langkah\n${secret}` }, [], 30) ?? "", /secret/, secret)
+  }
+})
+
+test("plafon menolak create, tapi update tetap boleh", () => {
+  const existing = [{ name: "deploy-sims", description: "d", file: "/x", source: LEARN_SOURCE }]
+  assert.match(validateLearned({ ...GOOD, name: "lain" }, existing, 1) ?? "", /cap/)
+  assert.equal(validateLearned({ ...GOOD, action: "update" }, existing, 1), undefined)
+})
+
+test("update hanya untuk skill milik Titah yang sudah ada", () => {
+  const userWritten = [{ name: "deploy-sims", description: "d", file: "/x" }]
+  assert.match(validateLearned({ ...GOOD, action: "update" }, userWritten, 30) ?? "", /not written by Titah/)
+  assert.match(validateLearned({ ...GOOD, action: "update" }, [], 30) ?? "", /does not exist/)
+  const mine = [{ name: "deploy-sims", description: "d", file: "/x", source: LEARN_SOURCE }]
+  assert.match(validateLearned(GOOD, mine, 30) ?? "", /already exists/)
+})
+
+// ---------- menulis ----------
+
+test("tulis atomik dengan frontmatter lengkap, lalu terbaca lagi", () => {
+  const file = writeLearned(GOOD, "ses_1", undefined, new Date("2026-09-27T10:00:00Z"))
+  assert.equal(file, path.join(learnedSkillsDir(), "deploy-sims", "SKILL.md"))
+  const text = fs.readFileSync(file, "utf8")
+  assert.match(text, /^---\nname: deploy-sims\ndescription: Use when deploying SIMS\nsource: titah-learn\n/)
+  assert.match(text, /created: 2026-09-27T10:00:00.000Z\nupdated: 2026-09-27T10:00:00.000Z\nsession: ses_1\n---\n/)
+  assert.match(text, /1\. build\n2\. ship\n$/)
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ["SKILL.md"], "tidak ada berkas .tmp tertinggal")
+  assert.deepEqual(listLearned().map((s) => [s.name, s.source]), [["deploy-sims", LEARN_SOURCE]])
+})
+
+test("update mempertahankan created dan menaikkan updated", () => {
+  writeLearned(GOOD, "ses_1", undefined, new Date("2026-09-27T10:00:00Z"))
+  const file = writeLearned({ ...GOOD, action: "update", body: "baru" }, "ses_2", undefined, new Date("2026-09-28T10:00:00Z"))
+  const text = fs.readFileSync(file, "utf8")
+  assert.match(text, /created: 2026-09-27T10:00:00.000Z/)
+  assert.match(text, /updated: 2026-09-28T10:00:00.000Z/)
+  assert.match(text, /session: ses_2/)
+  assert.match(text, /baru\n$/)
 })
