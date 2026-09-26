@@ -84,7 +84,9 @@ were omitted: the start and the end of a procedure carry the most information.
 
 ## 5. Decision
 
-One `generateText` call with a fixed system prompt. The answer must be JSON:
+One `streamText` call with a fixed system prompt — `streamText`, not `generateText`,
+for the reason in `src/core/consensus.ts:152`: some openai-compatible endpoints
+fail non-streaming requests. The answer must be JSON:
 
 ```json
 { "action": "none" | "create" | "update",
@@ -145,6 +147,10 @@ A rejected decision writes nothing and logs one line (§8).
   auto-detected sources. Since `buildSkillIndex()` runs per turn, a new skill
   is in the catalog of the next turn with no restart.
 - `parseFrontmatter()` learns to read `source`, so ownership can be checked.
+- A source never scans into a directory that is itself the root of another
+  source. Without this, a user who lists `~/.config/titah/skills` in
+  `skills.paths` (the recursive scan descends into sub-folders) would see every
+  learned skill twice: as `titah:<name>` and as `learned:<name>`.
 
 No permission dialog: like the `memory` tool, this is Titah writing to its own
 directory, not the model writing to the user's files.
@@ -155,16 +161,17 @@ directory, not the model writing to the user's files.
 
 - Runs after `session.idle` is published, detached from the turn: the answer is
   already on screen and the turn's promise does not wait for it.
-- Honours the session's abort: `Esc` on the next turn cancels a reflection still
-  in flight. A reflection never runs concurrently with another for the same
-  session; a second one while the first is running is skipped.
+- A reflection never runs concurrently with another for the same session; a
+  second one while the first is running is skipped.
 - On `create` / `update`: one `session.notice`:
   `Learned a skill: learned:<name> → <path>` (or `Updated learned:<name>`).
 - On `none`, rejection, or any error: no notice. One line goes to
   `~/.config/titah/learn.log` (timestamp, session, outcome, reason), the same
   pattern as `tracking.log`.
-- Token usage of the call is recorded like compaction's, so `titah stats`
-  counts it.
+- Token usage of the call (input / output) is written on that same log line.
+  It is not in `titah stats`; compaction's summariser calls are not either, and
+  counting one without the other would make the two look different in cost.
+- A new turn on the same session cancels a reflection still in flight for it.
 
 ---
 
@@ -174,7 +181,7 @@ directory, not the model writing to the user's files.
 |---|---|
 | `src/core/learn.ts` | new: `shouldReflect`, `buildDigest`, `decide`, `validateLearned`, `writeLearned`, `reflect` |
 | `src/core/schema.ts` | `skills.learn` |
-| `src/core/skill.ts` | read `source` from frontmatter |
+| `src/core/skill.ts` | read `source` from frontmatter; skip nested source roots |
 | `src/core/skill-sources.ts` | add the learned directory as a source when enabled |
 | `src/core/agent.ts` | call `reflect()` from the turn's `finally` when the gate passes |
 | `src/cli.ts` (`doctor`) | one line: learning on/off, count of learned skills, path |
