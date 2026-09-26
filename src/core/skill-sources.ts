@@ -2,7 +2,11 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type { Config } from "./schema.ts"
+import { learnedSkillsDir } from "./paths.ts"
 import { deriveNamespace, type SkillSource } from "./skill.ts"
+
+/** Namespace skill yang ditulis `learn.ts`. */
+export const LEARNED_NAMESPACE = "learned"
 
 /**
  * Menerjemahkan registry milik editor LAIN menjadi sumber skill.
@@ -99,7 +103,11 @@ export function allSources(config: Config, cwd: string, home = os.homedir()): Sk
   const auto: SkillSource[] = []
   if (config.skills.discover.includes("claude")) auto.push(...claudeSources(home))
   if (config.skills.discover.includes("opencode")) auto.push(...opencodeSources(home))
-  const combined = [...configSources(config, cwd), ...auto]
+  // Sesudah milik user (yang selalu menang), sebelum hasil auto-deteksi.
+  const learned: SkillSource[] = config.skills.learn.enabled
+    ? [{ root: learnedSkillsDir(), namespace: LEARNED_NAMESPACE }]
+    : []
+  const combined = [...configSources(config, cwd), ...learned, ...auto]
 
   // Menaruh path yang sama persis dengan hasil auto-deteksi di `skills.paths`
   // (mis. demi override namespace) itu wajar — tapi kalau dibiarkan, direktori

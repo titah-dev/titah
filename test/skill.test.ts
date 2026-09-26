@@ -129,6 +129,7 @@ test("discoverSkills menangani kedua bentuk paths: string dan objek {path, as}",
           { path: objectPath, as: "override" }, // bentuk object dengan as → namespace: "override"
         ],
         always: [],
+        learn: { enabled: false, minTools: 8, max: 30 },
       },
       model: undefined,
       smallModel: undefined,
@@ -358,4 +359,54 @@ test("baris baru di deskripsi diratakan, tidak merusak daftar", () => {
   ])
   assert.equal(out.split("\n").length, 1)
   assert.equal(out, "- ns:d: satu dua")
+})
+
+// ---------- source, nested roots, learned source ----------
+
+test("frontmatter `source` ikut terbaca ke Skill", () => {
+  const root = tree({ "a/SKILL.md": "---\nname: a\ndescription: d\nsource: titah-learn\n---\nisi" })
+  const [skill] = scanSource({ root, namespace: "x" })
+  assert.equal(skill?.source, "titah-learn")
+})
+
+test("sumber tidak memindai masuk ke root milik sumber lain", () => {
+  /*
+   * ~/.config/titah/skills terdaftar sebagai "titah" DAN learned/ di dalamnya
+   * terdaftar sebagai "learned". Tanpa pengecualian, setiap skill yang dipelajari
+   * muncul dua kali: titah:x dan learned:x.
+   */
+  const root = tree({
+    "mine/SKILL.md": "---\nname: mine\n---\nisi",
+    "learned/x/SKILL.md": "---\nname: x\n---\nisi",
+  })
+  const config = Config.parse({
+    skills: {
+      discover: [],
+      paths: [
+        { path: root, as: "titah" },
+        { path: path.join(root, "learned"), as: "learned" },
+      ],
+    },
+  })
+  const ids = buildSkillIndex(config, root, root).skills.map((s) => s.id)
+  assert.deepEqual(ids, ["learned:x", "titah:mine"])
+})
+
+test("folder learned jadi sumber hanya kalau skills.learn menyala", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "titah-skill-home-"))
+  const previous = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = path.join(home, "config")
+  try {
+    const dir = path.join(home, "config", "titah", "skills", "learned", "deploy")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: deploy\ndescription: d\n---\nisi")
+
+    const off = Config.parse({ skills: { discover: [] } })
+    const on = Config.parse({ skills: { discover: [], learn: { enabled: true } } })
+    assert.deepEqual(buildSkillIndex(off, home, home).skills.map((s) => s.id), [])
+    assert.deepEqual(buildSkillIndex(on, home, home).skills.map((s) => s.id), ["learned:deploy"])
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+  }
 })
