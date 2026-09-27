@@ -5,6 +5,19 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### `$schema` menunjuk ke folder config, bukan ke paket
+
+- **`config.schema.json` kini disalin ke `~/.config/titah/`** dan disegarkan
+  setiap kali isinya berbeda dari versi yang sedang jalan. `titah init` menulis
+  `$schema` ke salinan itu, bukan lagi ke folder instalasi npm yang berpindah
+  begitu Node, prefix, atau cara pasangnya berganti.
+- **Config lama dimigrasi sendiri.** `$schema` di config global yang menunjuk ke
+  berkas lokal bernama `config.schema.json` di tempat lain dipindah ke salinan
+  baru, dengan komentar dan format tetap utuh. URL, nama berkas lain, config
+  tanpa `$schema`, config yang tidak bisa diurai, dan `titah.json` proyek tidak
+  disentuh.
+- `titah doctor` menampilkan satu baris `schema:` di bagian Config.
+
 ### Titah bisa menulis skill sendiri — `skills.learn`, mati secara bawaan
 
 - Sesudah giliran yang selesai normal dan memakai ≥ `minTools` tool call (bawaan

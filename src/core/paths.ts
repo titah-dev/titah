@@ -25,6 +25,15 @@ export const cacheDir = (): string => xdg("XDG_CACHE_HOME", [".cache"])
 
 export const globalConfigFile = (): string => path.join(configDir(), "titah.json")
 
+/**
+ * Salinan `config.schema.json` milik user, tempat `$schema` menunjuk.
+ *
+ * Bukan path di dalam paket: folder instalasi npm berpindah setiap kali versi
+ * Node, prefix, atau cara pasangnya berubah, dan `$schema` yang menunjuk ke
+ * sana diam-diam berhenti memberi autocomplete. Folder config tidak berpindah.
+ */
+export const userSchemaFile = (): string => path.join(configDir(), "config.schema.json")
+
 /** Skill yang Titah tulis sendiri — lihat `src/core/learn.ts`. */
 export const learnedSkillsDir = (): string => path.join(configDir(), "skills", "learned")
 

@@ -96,7 +96,9 @@ import {
   dataDir,
   sessionDbFile,
   learnedSkillsDir,
+  userSchemaFile,
 } from "./core/paths.ts"
+import { ensureSchema, readSchemaRef } from "./core/schema-file.ts"
 import { listen } from "./server/index.ts"
 import { bus } from "./core/event.ts"
 import { prompt, AgentError } from "./core/agent.ts"
@@ -291,6 +293,9 @@ async function main(argv: string[]): Promise<void> {
 
   if (values.version === true) return out(VERSION)
   if (values.help === true) return out(HELP)
+
+  // Sesudah --version/--help, yang harus tetap semurah mungkin di skrip.
+  ensureSchema()
 
   // `titah` tanpa argumen membuka TUI (Q5): server lokal di-spawn lalu di-attach.
   if (positionals.length === 0) {
@@ -1114,6 +1119,26 @@ function cmdPermission(argv: string[]): number {
   return 0
 }
 
+/** Satu baris untuk doctor: di mana salinan schema, dan apakah `$schema` menunjuk ke sana. */
+function schemaLine(): string {
+  const file = userSchemaFile()
+  if (!fs.existsSync(file)) return "not installed — this build ships no config.schema.json"
+  const ref = readSchemaRef()
+  switch (ref.state) {
+    case "current":
+      return `${file} — $schema points here`
+    case "absent":
+    case "no-config":
+      return `${file} — add "$schema": "${file}" to titah.json for editor autocomplete`
+    case "stale":
+      return `${file} — ! $schema still points to ${ref.value} and could not be moved (is titah.json writable?)`
+    case "custom":
+      return `${file} — $schema points to ${ref.value} (left as you set it)`
+    case "unparsable":
+      return `${file} — titah.json does not parse, $schema not checked`
+  }
+}
+
 async function cmdDoctor(withProbe: boolean): Promise<void> {
   out(`titah ${VERSION}`)
   out(`node  ${process.version} · ${process.platform}/${process.arch}`)
@@ -1135,6 +1160,7 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   for (const missing of loaded.missingEnv) {
     out(`  ! \${env:${missing.variable}} is not set (used at ${missing.at})`)
   }
+  out(`  schema: ${schemaLine()}`)
   out()
 
   out("Credentials")
@@ -2029,7 +2055,9 @@ async function cmdInit(auto: boolean): Promise<void> {
 }
 
 function finishInit(choice: ProviderChoice): void {
-  const schemaPath = path.join(import.meta.dirname, "..", "config.schema.json")
+  // `ensureSchema()` di `main` sudah menyalinnya; `undefined` hanya kalau paket
+  // ini tidak membawa schema sama sekali.
+  const schemaPath = userSchemaFile()
   const result = writeOnboarding(choice, fs.existsSync(schemaPath) ? schemaPath : undefined)
 
   out()

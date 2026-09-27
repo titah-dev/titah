@@ -40,6 +40,32 @@ const MAX_BODY_BYTES = 512 * 1024
 /** 20 detik, bukan 10 seperti tracking — payload-nya dua orde lebih besar. */
 const TIMEOUT_MS = 20_000
 
+/** Jeda sebelum satu-satunya percobaan ulang. Cukup untuk melewati DNS atau Wi-Fi yang tersendat. */
+const RETRY_DELAY_MS = 500
+
+/**
+ * Kode error jaringan yang berarti request TIDAK PERNAH sampai ke server:
+ * gagal resolve nama, atau koneksi ditolak/tak terjangkau sebelum satu byte
+ * pun terkirim. Hanya kode-kode ini yang boleh dicoba ulang untuk publish BARU
+ * — server hanya mendeduplikasi body identik pada slug yang sama, jadi retry
+ * tanpa slug setelah request sempat sampai akan membuat halaman kedua.
+ */
+const NEVER_SENT = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "UND_ERR_CONNECT_TIMEOUT",
+])
+
+/**
+ * Gagal di TLS: tidak ada yang terkirim, tapi mencoba lagi tidak akan menolong
+ * — sertifikatnya tidak berubah dalam setengah detik.
+ */
+const TLS_CODES = /CERT|SSL|TLS|SELF_SIGNED/
+
 const inputSchema = z.object({
   title: z
     .string()
@@ -188,22 +214,32 @@ export const artifactTool: TitahTool<typeof inputSchema> = {
     const onAbort = () => timer.abort()
     ctx.signal.addEventListener("abort", onAbort, { once: true })
 
-    let response: Response
-    try {
-      response = await fetch(endpoint, {
+    const payload = JSON.stringify({
+      title: input.title,
+      body: input.body,
+      slug: input.slug ?? "",
+      session_id: ctx.sessionID,
+    })
+    const send = () =>
+      fetch(endpoint, {
         method: "POST",
         signal: timer.signal,
         headers: {
           "content-type": "application/json",
           authorization: `${account.tokenType} ${account.token}`,
         },
-        body: JSON.stringify({
-          title: input.title,
-          body: input.body,
-          slug: input.slug ?? "",
-          session_id: ctx.sessionID,
-        }),
+        body: payload,
       })
+
+    let response: Response
+    try {
+      try {
+        response = await send()
+      } catch (error) {
+        if (timer.signal.aborted || !retryable(networkCode(error), input.slug)) throw error
+        await sleep(RETRY_DELAY_MS, timer.signal)
+        response = await send()
+      }
     } catch (error) {
       if (ctx.signal.aborted) throw new ToolError("Cancelled.")
       if (timer.signal.aborted) {
@@ -214,7 +250,7 @@ export const artifactTool: TitahTool<typeof inputSchema> = {
             "second version.",
         )
       }
-      throw new ToolError(`Could not reach ${host}: ${(error as Error).message}. Nothing was published.`)
+      throw unreachable(error, host)
     } finally {
       clearTimeout(stop)
       ctx.signal.removeEventListener("abort", onAbort)
@@ -307,4 +343,66 @@ async function refusal(response: Response, host: string, slug?: string): Promise
           "Nothing was published.",
       )
   }
+}
+
+/**
+ * Kode error yang sebenarnya di balik `TypeError: fetch failed`.
+ *
+ * undici selalu melempar pesan generik yang sama; sebab aslinya ada di
+ * `error.cause` — kadang sebagai AggregateError (happy eyeballs mencoba IPv4
+ * dan IPv6) yang kodenya ada di anggota pertama. Tanpa ini model hanya melihat
+ * "fetch failed" dan mengarang penjelasannya sendiri.
+ */
+function networkCode(error: unknown): string | undefined {
+  const cause = (error as { cause?: { code?: string; errors?: { code?: string }[] } })?.cause
+  return cause?.code ?? cause?.errors?.find((e) => e?.code)?.code
+}
+
+function retryable(code: string | undefined, slug?: string): boolean {
+  if (code === undefined || TLS_CODES.test(code)) return false
+  if (NEVER_SENT.has(code)) return true
+  // Ambigu (ECONNRESET, socket putus di tengah jalan): request mungkin sudah
+  // diterima. Aman hanya kalau ada slug, karena body identik tidak menulis apa-apa.
+  return slug !== undefined
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms)
+    signal.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true })
+  })
+}
+
+/**
+ * Pesan untuk fetch yang melempar. Tiga hal yang dibutuhkan model: sebab
+ * sebenarnya, apakah ada yang terkirim, dan bahwa ini jaringan DI MESIN USER —
+ * bukan sandbox, firewall, atau infrastruktur lain yang tidak ada.
+ */
+function unreachable(error: unknown, host: string): ToolError {
+  const code = networkCode(error)
+  const causeMessage = (error as { cause?: { message?: string } })?.cause?.message
+  const reason = [code, causeMessage && causeMessage !== code ? causeMessage : undefined]
+    .filter(Boolean)
+    .join(": ") || (error as Error).message
+  const where =
+    "This is a network problem on the user's own machine (Titah runs locally), " +
+    `between it and ${host}. Tell the user the reason above; do not guess at other causes.`
+
+  if (code !== undefined && TLS_CODES.test(code)) {
+    return new ToolError(
+      `Could not reach ${host}: TLS failed (${reason}). Nothing was published. ${where} ` +
+        "Retrying will not help until the certificate problem is fixed.",
+    )
+  }
+  if (code !== undefined && NEVER_SENT.has(code)) {
+    return new ToolError(
+      `Could not reach ${host} (${reason}), also after one retry. Nothing was published. ` +
+        `${where} Suggest checking the connection and trying again.`,
+    )
+  }
+  return new ToolError(
+    `Connection to ${host} failed (${reason}). The page may or may not have been ` +
+      "published — check the dashboard before publishing again without a slug. " +
+      where,
+  )
 }
