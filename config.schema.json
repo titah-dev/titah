@@ -405,7 +405,12 @@
           "opencode"
         ],
         "paths": [],
-        "always": []
+        "always": [],
+        "learn": {
+          "enabled": false,
+          "minTools": 8,
+          "max": 30
+        }
       },
       "type": "object",
       "properties": {
