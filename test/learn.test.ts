@@ -3,6 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test, { after, beforeEach } from "node:test"
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 
 /**
  * HOME diisolasi SEBELUM impor apa pun dari src/: modul ini menulis ke
@@ -18,6 +19,8 @@ process.env.HOME = path.join(root, "home")
 const { Config } = await import("../src/core/schema.ts")
 const { learnedSkillsDir, learnLogFile } = await import("../src/core/paths.ts")
 const { buildDigest, countToolCalls, DIGEST_CAP, shouldReflect, LEARN_SOURCE, listLearned, parseDecision, validateLearned, writeLearned } = await import("../src/core/learn.ts")
+const { bus } = await import("../src/core/event.ts")
+const { cancelReflection, LEARN_SYSTEM, reflectionDone, startReflection } = await import("../src/core/learn.ts")
 
 beforeEach(() => {
   fs.rmSync(path.join(root, "config"), { recursive: true, force: true })
@@ -246,4 +249,144 @@ test("writeLearned dengan action create pada folder yang ada melempar error dan 
   // File tidak berubah
   const finalContent = fs.readFileSync(file, "utf8")
   assert.equal(finalContent, originalContent)
+})
+
+// ---------- refleksi ----------
+
+const USAGE = {
+  inputTokens: { total: 1200, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+  outputTokens: { total: 80, text: undefined, reasoning: undefined },
+}
+
+function answering(text: string): { model: MockLanguageModelV4; systems: string[] } {
+  const systems: string[] = []
+  const model = new MockLanguageModelV4({
+    doStream: async (options) => {
+      const system = options.prompt.find((m) => m.role === "system")
+      if (system && typeof system.content === "string") systems.push(system.content)
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: text },
+            { type: "text-end", id: "t" },
+            { type: "finish", finishReason: "stop", usage: USAGE },
+          ],
+        }),
+      }
+    },
+  })
+  return { model, systems }
+}
+
+/**
+ * `bus.subscribe` mengembalikan AsyncIterable. Event didorong sinkron ke
+ * buffer, tapi loop `for await` baru membacanya di mikrotugas berikutnya —
+ * jadi `stop()` memberi satu putaran event loop sebelum berhenti.
+ */
+function notices(sessionID: string): { messages: string[]; stop: () => Promise<void> } {
+  const messages: string[] = []
+  const controller = new AbortController()
+  void (async () => {
+    for await (const event of bus.subscribe({ sessionID, signal: controller.signal, client: false })) {
+      if (event.type === "session.notice") messages.push(event.message)
+    }
+  })()
+  return {
+    messages,
+    stop: async () => {
+      await new Promise((resolve) => setImmediate(resolve))
+      controller.abort()
+    },
+  }
+}
+
+const PARTS = [toolPart("bash", { command: "make deploy" }), { type: "text", text: "done" }] as never
+
+test("create menulis skill, memberi satu notice, dan mencatat token di log", async () => {
+  const { model, systems } = answering(JSON.stringify(GOOD))
+  const seen = notices("ses_r1")
+  startReflection({ sessionID: "ses_r1", streamSessionID: "ses_r1", request: "deploy", parts: PARTS, model, max: 30 })
+  await reflectionDone("ses_r1")
+  await seen.stop()
+
+  assert.equal(systems[0], LEARN_SYSTEM)
+  assert.ok(fs.existsSync(path.join(learnedSkillsDir(), "deploy-sims", "SKILL.md")))
+  assert.equal(seen.messages.length, 1)
+  assert.match(seen.messages[0] ?? "", /^Learned a skill: learned:deploy-sims → /)
+  assert.match(fs.readFileSync(learnLogFile(), "utf8"), /ses_r1 created deploy-sims .*in=1200 out=80/)
+})
+
+test("none tidak menulis apa pun dan tidak memberi notice", async () => {
+  const { model } = answering('{"action":"none"}')
+  const seen = notices("ses_r2")
+  startReflection({ sessionID: "ses_r2", streamSessionID: "ses_r2", request: "r", parts: PARTS, model, max: 30 })
+  await reflectionDone("ses_r2")
+  await seen.stop()
+
+  assert.equal(fs.existsSync(learnedSkillsDir()), false)
+  assert.deepEqual(seen.messages, [])
+  assert.match(fs.readFileSync(learnLogFile(), "utf8"), /ses_r2 none/)
+})
+
+test("keputusan yang ditolak validasi dicatat, tidak ditulis", async () => {
+  const { model } = answering(JSON.stringify({ ...GOOD, body: "password=hunter2" }))
+  startReflection({ sessionID: "ses_r3", streamSessionID: "ses_r3", request: "r", parts: PARTS, model, max: 30 })
+  await reflectionDone("ses_r3")
+  assert.equal(fs.existsSync(learnedSkillsDir()), false)
+  assert.match(fs.readFileSync(learnLogFile(), "utf8"), /ses_r3 rejected .*secret/)
+})
+
+test("model yang melempar tidak bocor keluar — hanya dicatat", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      throw new Error("provider down")
+    },
+  })
+  startReflection({ sessionID: "ses_r4", streamSessionID: "ses_r4", request: "r", parts: PARTS, model, max: 30 })
+  await reflectionDone("ses_r4")
+  assert.match(fs.readFileSync(learnLogFile(), "utf8"), /ses_r4 error .*provider down/)
+})
+
+test("refleksi kedua untuk sesi yang sama dilewati selama yang pertama berjalan", async () => {
+  let calls = 0
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      calls += 1
+      await gate
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: '{"action":"none"}' },
+            { type: "text-end", id: "t" },
+            { type: "finish", finishReason: "stop", usage: USAGE },
+          ],
+        }),
+      }
+    },
+  })
+  startReflection({ sessionID: "ses_r5", streamSessionID: "ses_r5", request: "r", parts: PARTS, model, max: 30 })
+  startReflection({ sessionID: "ses_r5", streamSessionID: "ses_r5", request: "r", parts: PARTS, model, max: 30 })
+  release()
+  await reflectionDone("ses_r5")
+  assert.equal(calls, 1)
+})
+
+test("cancelReflection menghentikan refleksi yang sedang berjalan tanpa menulis", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: async (options) =>
+      new Promise((_, reject) => {
+        options.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")))
+      }),
+  })
+  startReflection({ sessionID: "ses_r6", streamSessionID: "ses_r6", request: "r", parts: PARTS, model, max: 30 })
+  cancelReflection("ses_r6")
+  await reflectionDone("ses_r6")
+  assert.equal(fs.existsSync(learnedSkillsDir()), false)
+  assert.match(fs.readFileSync(learnLogFile(), "utf8"), /ses_r6 cancelled/)
 })

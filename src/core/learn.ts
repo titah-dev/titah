@@ -1,8 +1,10 @@
 import fs from "node:fs"
 import path from "node:path"
+import { streamText, type LanguageModel } from "ai"
+import { bus } from "./event.ts"
 import type { Part } from "./message.ts"
 import { parseStructured } from "./output.ts"
-import { learnedSkillsDir } from "./paths.ts"
+import { learnLogFile, learnedSkillsDir } from "./paths.ts"
 import { parseFrontmatter, scanSource } from "./skill.ts"
 
 /**
@@ -246,4 +248,139 @@ export function writeLearned(decision: Write, sessionID: string, dir = learnedSk
   fs.writeFileSync(temporary, content, "utf8")
   fs.renameSync(temporary, file)
   return file
+}
+
+/**
+ * Prompt penilai. Ditulis supaya "none" adalah jawaban yang paling sering:
+ * skill yang buruk lebih mahal daripada skill yang tidak ada, karena ia ikut
+ * terkirim di katalog setiap langkah sesudahnya.
+ */
+export const LEARN_SYSTEM = [
+  "You decide whether a finished coding-agent turn contains a reusable procedure worth saving as a skill.",
+  "Most turns do not. Answer with ONE JSON object and nothing else.",
+  "",
+  'Save only a multi-step procedure that is likely to recur and is not obvious (a deploy sequence, a project-specific build or test routine, a debugging recipe that worked). Never a single fact — that belongs in memory. Never a one-off task.',
+  "Never include secrets, tokens, passwords, private keys, or URLs with credentials.",
+  'Use "update" only when an existing learned skill covers the same procedure and this turn improved it; "name" must then be that skill\'s name exactly.',
+  "",
+  'Shape: {"action":"none"} or {"action":"create"|"update","name":"kebab-case","description":"Use when ... (one line, max 160 chars)","body":"markdown: when to use, numbered steps, pitfalls seen"}',
+].join("\n")
+
+interface Running {
+  controller: AbortController
+  done: Promise<void>
+}
+
+const running = new Map<string, Running>()
+
+function log(sessionID: string, outcome: string, detail: string, usage?: { input?: number; output?: number }): void {
+  try {
+    fs.mkdirSync(path.dirname(learnLogFile()), { recursive: true })
+    const tokens = usage ? ` in=${usage.input ?? "?"} out=${usage.output ?? "?"}` : ""
+    fs.appendFileSync(learnLogFile(), `${new Date().toISOString()} ${sessionID} ${outcome} ${detail}${tokens}\n`)
+  } catch {
+    // Log yang gagal ditulis tidak boleh jadi masalah kedua.
+  }
+}
+
+export interface ReflectionInput {
+  sessionID: string
+  /** Sesi yang benar-benar didengarkan klien — sama dengan `streamSessionID` di agent.ts. */
+  streamSessionID: string
+  request: string
+  parts: readonly Part[]
+  model: LanguageModel
+  max: number
+}
+
+/**
+ * AI SDK `streamText` TIDAK melempar dari `textStream` kalau providernya gagal —
+ * ia melaporkannya lewat `onError` lalu diam-diam mengakhiri stream, dan abort
+ * pun berakhir dengan cara yang sama. Tanpa `onError` di sini, giliran model
+ * yang gagal atau dibatalkan akan terbaca sebagai jawaban kosong ("none"),
+ * bukan sebagai error atau cancelled.
+ *
+ * Konsumsi `textStream` DIBALAP melawan `signal`, bukan ditunggu apa adanya:
+ * `streamText` meneruskan `signal` ke `doStream` provider apa adanya, dan
+ * kalau `doStream` cuma mendengarkan event `abort` MASA DEPAN (bukan memeriksa
+ * `signal.aborted` lebih dulu) — persis yang dilakukan mock providernya di sini,
+ * dan yang jadi celah nyata pada provider nyata yang lambat bereaksi ke abort —
+ * `abort()` yang sudah terjadi sebelum listener itu terpasang tidak akan pernah
+ * memicunya lagi (event tidak diputar ulang), dan `textStream` menggantung
+ * selamanya. Dibuktikan dengan `node --test --test-timeout=8000` pada test
+ * "cancelReflection menghentikan refleksi yang sedang berjalan tanpa menulis":
+ * kode `reflect()` versi brief (tanpa balapan ini) macet 8 detik penuh.
+ */
+async function reflect(input: ReflectionInput, signal: AbortSignal): Promise<void> {
+  const learned = listLearned()
+  const digest = buildDigest({ request: input.request, parts: input.parts, learned })
+
+  let failure: unknown
+  // `streamText`, bukan `generateText` — lihat src/core/consensus.ts:152.
+  const result = streamText({
+    model: input.model,
+    system: LEARN_SYSTEM,
+    prompt: digest,
+    abortSignal: signal,
+    onError: ({ error }) => {
+      failure = error
+    },
+  })
+
+  const aborted = new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve()
+    signal.addEventListener("abort", () => resolve(), { once: true })
+  })
+  let text = ""
+  const consumed = (async () => {
+    for await (const chunk of result.textStream) text += chunk
+  })()
+  await Promise.race([consumed, aborted])
+  if (signal.aborted) throw new Error("aborted")
+  if (failure !== undefined) throw failure
+  const usage = await result.usage
+  const tokens = { input: usage.inputTokens, output: usage.outputTokens }
+
+  const decision = parseDecision(text)
+  if (decision.action === "none") return log(input.sessionID, "none", "-", tokens)
+
+  const reason = validateLearned(decision, learned, input.max)
+  if (reason !== undefined) return log(input.sessionID, "rejected", `${decision.name}: ${reason}`, tokens)
+
+  const file = writeLearned(decision, input.sessionID)
+  const verb = decision.action === "create" ? "created" : "updated"
+  log(input.sessionID, verb, decision.name, tokens)
+  bus.publish({
+    type: "session.notice",
+    sessionID: input.streamSessionID,
+    message:
+      decision.action === "create"
+        ? `Learned a skill: learned:${decision.name} → ${file}`
+        : `Updated learned skill: learned:${decision.name} → ${file}`,
+  })
+}
+
+/**
+ * Menjalankan refleksi TERLEPAS dari giliran: jawaban sudah tampil, dan janji
+ * giliran tidak menunggu ini. Tidak pernah melempar.
+ */
+export function startReflection(input: ReflectionInput): void {
+  if (running.has(input.sessionID)) return
+  const controller = new AbortController()
+  const done = reflect(input, controller.signal)
+    .catch((error: unknown) => {
+      if (controller.signal.aborted) log(input.sessionID, "cancelled", "-")
+      else log(input.sessionID, "error", error instanceof Error ? error.message : String(error))
+    })
+    .finally(() => running.delete(input.sessionID))
+  running.set(input.sessionID, { controller, done })
+}
+
+/** Giliran baru di sesi yang sama menang atas refleksi giliran sebelumnya. */
+export function cancelReflection(sessionID: string): void {
+  running.get(sessionID)?.controller.abort()
+}
+
+export function reflectionDone(sessionID: string): Promise<void> {
+  return running.get(sessionID)?.done ?? Promise.resolve()
 }
