@@ -95,6 +95,7 @@ import {
   projectConfigFile,
   dataDir,
   sessionDbFile,
+  learnedSkillsDir,
 } from "./core/paths.ts"
 import { listen } from "./server/index.ts"
 import { bus } from "./core/event.ts"
@@ -120,6 +121,7 @@ import {
   type ProviderChoice,
 } from "./core/onboarding.ts"
 import { formatBytes, prune } from "./core/retention.ts"
+import { listLearned } from "./core/learn.ts"
 import { renderSkillReport } from "./core/skill.ts"
 import {
   createSession,
@@ -1456,6 +1458,12 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
 
   out("Skills")
   for (const line of renderSkillReport(loaded.config, process.cwd()).split("\n")) out(`  ${line}`)
+  const learn = loaded.config.skills.learn
+  out(
+    learn.enabled
+      ? `  learning: on — ${listLearned().length} learned skills in ${learnedSkillsDir()} (cap ${learn.max})`
+      : "  learning: off — set skills.learn.enabled to let Titah write skills after long turns",
+  )
   out()
   out('Delegation is live: type "@<agent> <prompt>" inside a session.')
 }

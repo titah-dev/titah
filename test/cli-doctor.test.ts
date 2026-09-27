@@ -347,3 +347,11 @@ test("doctor mengatakan kalau memang tidak ada extension yang dikonfigurasi", ()
   const output = runDoctor(isolatedProject({}, {}))
   assert.match(output, /Extensions\n\s+\(none configured\)/)
 })
+
+test("titah doctor menyebut apakah Titah belajar skill, berapa, dan di mana", () => {
+  const off = runDoctor(isolatedProject({ skills: { discover: [], paths: [] } }, {}))
+  assert.match(off, /learning: off — set skills\.learn\.enabled/)
+
+  const on = runDoctor(isolatedProject({ skills: { discover: [], paths: [], learn: { enabled: true } } }, {}))
+  assert.match(on, /learning: on — 0 learned skills in .*skills[\/]learned \(cap 30\)/)
+})
