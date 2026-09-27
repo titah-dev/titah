@@ -9,7 +9,7 @@ bring the answer back into the conversation. Including **consensus mode**: one
 question fanned out to several agents at once, synthesised, with the
 disagreements marked.
 
-> **Status: 0.9.0, usable.** All milestones M0–M6 are done. 0.2.0 closed six
+> **Status: 0.9.1, usable.** All milestones M0–M6 are done. 0.2.0 closed six
 > gaps measured against `opencode` 1.18.4 and Claude Code 2.1.233 rather than
 > guessed: structured output, cost and limits, hooks, background turns, a web
 > client, and a bash sandbox. 0.3.0–0.4.x added the extension system: side
@@ -22,7 +22,9 @@ disagreements marked.
 > version numbers that had been one, so a Titah minor release stops killing
 > every installed extension. 0.8.0 lets a panel answer with text for the
 > prompt, so what you select in a panel can become what you ask — the first
-> time an extension contributes anything but pixels. Every new axis is off or
+> time an extension contributes anything but pixels. 0.9.0 gives the agent a
+> page to publish when an answer does not fit a terminal, and 0.9.1 lets Titah
+> write reusable skills from its own long turns. Every new axis is off or
 > absent by default.
 >
 > What remains before tagging `v1.0.0` is not code: using Titah to build Titah

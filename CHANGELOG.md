@@ -5,6 +5,23 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-09-27
+
+### Diperbaiki
+
+- **Gagal menjangkau server artifact kini menyebut sebab aslinya.** `fetch` di
+  Node selalu melempar `fetch failed`; sebab sebenarnya (`ENOTFOUND`,
+  `ECONNREFUSED`, `ECONNRESET`, TLS) ada di `error.cause` dan dulu dibuang,
+  sehingga model mengarang penjelasannya sendiri. Pesannya sekarang memuat kode
+  dan pesan sebabnya, dan menyatakan bahwa masalahnya ada di jaringan antara
+  mesin user dan server.
+- **Satu percobaan ulang, hanya kalau tidak bisa menggandakan halaman:** untuk
+  kode yang berarti permintaan tidak pernah terkirim (DNS, ditolak, tak
+  terjangkau), atau untuk kode jaringan apa pun kalau `slug` dikirim. Kegagalan
+  ambigu seperti `ECONNRESET` tanpa `slug` tidak lagi dilaporkan sebagai
+  "Nothing was published" — permintaannya mungkin sudah sampai. Kegagalan TLS
+  tidak dicoba ulang.
+
 ### `$schema` menunjuk ke folder config, bukan ke paket
 
 - **`config.schema.json` kini disalin ke `~/.config/titah/`** dan disegarkan
