@@ -36,6 +36,7 @@ import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
 import { BUILD_MODES, setPlanExiter } from "./tool/exit-plan.ts"
 import { autoCompact } from "./auto-compact.ts"
+import { cancelReflection, countToolCalls, shouldReflect, startReflection } from "./learn.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
 import { runConsensus, synthesizerFor } from "./consensus.ts"
@@ -445,6 +446,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   if (running.has(session.id)) {
     throw new AgentError("This session is already processing another turn.")
   }
+
+  // Giliran baru menang atas refleksi giliran sebelumnya: ia memakai model yang
+  // sama, dan user yang sudah mengetik lagi tidak sedang menunggu skill.
+  cancelReflection(session.id)
 
   // Sesi anak tidak pernah mendapat `task`. Kedalaman tepat satu tingkat —
   // tanpa ini, satu sub-agent bisa memanggil sub-agent lagi, dan seterusnya,
@@ -1415,6 +1420,40 @@ export async function prompt(input: PromptInput): Promise<Message> {
       hasOpenWork(readPlan(session.id)?.text)
 
     if (!willContinue) bus.publish({ type: "session.idle", sessionID: session.id })
+
+    /*
+     * Refleksi dimulai SESUDAH idle: jawabannya sudah di layar, dan giliran
+     * tidak menunggu ini. Semua syarat ada di `shouldReflect` supaya bisa diuji
+     * tanpa menjalankan giliran; resolusi model ditunda sampai syaratnya lolos,
+     * alasan yang sama dengan peringkas pemadatan di atas.
+     */
+    const learn = config.skills.learn
+    if (
+      shouldReflect({
+        enabled: learn.enabled,
+        isChild,
+        aborted: controller.signal.aborted,
+        failed: assistant.error !== undefined,
+        stoppedAtLimit,
+        willContinue,
+        toolCalls: countToolCalls(assistant.parts),
+        minTools: learn.minTools,
+      })
+    ) {
+      try {
+        startReflection({
+          sessionID: session.id,
+          streamSessionID,
+          request: input.text,
+          parts: structuredClone(assistant.parts),
+          model: resolver(config, summariserModelFor(config, turnModel)),
+          max: learn.max,
+        })
+      } catch {
+        // Model peringkas yang tidak bisa di-resolve bukan alasan menggagalkan
+        // giliran yang sudah selesai.
+      }
+    }
   }
 
 
