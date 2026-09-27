@@ -377,6 +377,23 @@ test("refleksi kedua untuk sesi yang sama dilewati selama yang pertama berjalan"
   assert.equal(calls, 1)
 })
 
+test("nama keputusan yang berisi baris baru dan 5000 karakter jadi SATU baris log, ≤ 400 karakter", async () => {
+  // decision.name, alasan validasi, dan pesan error provider dikendalikan
+  // model/provider, bukan Titah — baris baru atau panjang tak terbatas di
+  // sana tidak boleh memecah "satu baris per refleksi" di learn.log.
+  const nastyName = `bad\nname${"x".repeat(5000)}`
+  const decision = JSON.stringify({ action: "create", name: nastyName, description: "d", body: "b" })
+  const { model } = answering(decision)
+  startReflection({ sessionID: "ses_r7", streamSessionID: "ses_r7", request: "r", parts: PARTS, model, max: 30 })
+  await reflectionDone("ses_r7")
+
+  const log = fs.readFileSync(learnLogFile(), "utf8")
+  const lines = log.trim().split("\n")
+  assert.equal(lines.length, 1)
+  assert.ok((lines[0] ?? "").length <= 400, `${(lines[0] ?? "").length}`)
+  assert.doesNotMatch(lines[0] ?? "", /\n/)
+})
+
 test("cancelReflection menghentikan refleksi yang sedang berjalan tanpa menulis", async () => {
   const model = new MockLanguageModelV4({
     doStream: async (options) =>

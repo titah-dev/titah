@@ -438,6 +438,23 @@ export interface PromptInput {
    * Hanya `runSubagent` yang mengisinya.
    */
   resolvedModel?: string
+  /**
+   * Izin refleksi belajar-skill untuk giliran ini. Bawaan `undefined` berarti
+   * boleh — hanya `false` yang mematikannya.
+   *
+   * Dipakai `cmdRun`: proses `titah run` keluar begitu `session.idle` terbit,
+   * jadi refleksi yang baru mulai sesudahnya dibayar tapi tidak pernah selesai.
+   */
+  learn?: boolean
+  /**
+   * Permintaan user yang MEMULAI rantai giliran ini, sebelum auto-lanjutan
+   * mana pun mengubah `text` jadi `CONTINUE_TEXT`.
+   *
+   * Diisi HANYA oleh `prompt()` saat memanggil dirinya sendiri untuk
+   * melanjutkan. Refleksi butuh permintaan asli user, bukan instruksi
+   * lanjutan buatan Titah sendiri.
+   */
+  originalText?: string
 }
 
 export async function prompt(input: PromptInput): Promise<Message> {
@@ -1430,7 +1447,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
     const learn = config.skills.learn
     if (
       shouldReflect({
-        enabled: learn.enabled,
+        enabled: learn.enabled && input.learn !== false,
         isChild,
         aborted: controller.signal.aborted,
         failed: assistant.error !== undefined,
@@ -1444,7 +1461,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         startReflection({
           sessionID: session.id,
           streamSessionID,
-          request: input.text,
+          request: input.originalText ?? input.text,
           parts: structuredClone(assistant.parts),
           model: resolver(config, summariserModelFor(config, turnModel)),
           max: learn.max,
@@ -1495,6 +1512,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       ...input,
       continuation: (input.continuation ?? 0) + 1,
       text: CONTINUE_TEXT,
+      originalText: input.originalText ?? input.text,
     })
   }
 

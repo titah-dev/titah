@@ -18,3 +18,8 @@ asking.
   with the tokens it used.
 - Never from sub-agents, failed or cancelled turns, turns stopped at a limit,
   or turns that auto-continue.
+- `titah run` never learns: the process exits as soon as the answer is
+  printed.
+- Learned skills are written from what happened in a turn, which can include
+  text from fetched pages or files; they are marked in the catalog, and you
+  should read a new skill (the notice gives its path) before relying on it.

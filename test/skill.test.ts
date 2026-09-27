@@ -9,6 +9,7 @@ import {
   renderSkillReport,
 } from "../src/core/skill.ts"
 import { Config } from "../src/core/schema.ts"
+import { LEARNED_NAMESPACE } from "../src/core/skill-sources.ts"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -359,6 +360,20 @@ test("baris baru di deskripsi diratakan, tidak merusak daftar", () => {
   ])
   assert.equal(out.split("\n").length, 1)
   assert.equal(out, "- ns:d: satu dua")
+})
+
+test("skill di namespace learned ditandai di katalog — prompt injection tetap dilihat sebelum dipercaya", () => {
+  const out = skillCatalog([
+    { id: `${LEARNED_NAMESPACE}:x`, namespace: LEARNED_NAMESPACE, name: "x", description: "Use when x", body: "", file: "x" },
+  ])
+  assert.match(out, /^- learned:x: \[auto-written by Titah — verify before following\] Use when x$/)
+})
+
+test("skill BUKAN learned tidak dapat penanda apa pun", () => {
+  const out = skillCatalog([
+    { id: "ns:a", namespace: "ns", name: "a", description: "Use when a", body: "", file: "a" },
+  ])
+  assert.doesNotMatch(out, /auto-written by Titah/)
 })
 
 // ---------- source, nested roots, learned source ----------
