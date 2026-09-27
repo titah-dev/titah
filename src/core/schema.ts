@@ -313,6 +313,36 @@ export const Skills = z.object({
     .array(z.string())
     .default([])
     .describe('Skill ids loaded in full every turn, e.g. "superpowers:using-superpowers"'),
+  /*
+   * Titah menulis skill sendiri sesudah giliran yang substansial.
+   *
+   * # Kenapa bawaannya MATI
+   *
+   * Setiap giliran yang lolos saringan membayar satu panggilan model tanpa
+   * ditanya. Aturan yang sama dengan `continueTurns` dan `tracking.sync`: sumbu
+   * yang membelanjakan uang tidak menyala sendiri.
+   */
+  learn: z
+    .object({
+      enabled: z
+        .boolean()
+        .default(false)
+        .describe("Write reusable skills automatically after substantial turns"),
+      minTools: z
+        .number()
+        .int()
+        .min(1)
+        .default(8)
+        .describe("Tool calls a turn needs before it is considered for a skill"),
+      max: z
+        .number()
+        .int()
+        .min(1)
+        .default(30)
+        .describe("Cap on learned skills; at the cap existing ones are still updated"),
+    })
+    .default({ enabled: false, minTools: 8, max: 30 })
+    .describe("Automatic skills, written to ~/.config/titah/skills/learned/"),
 })
 
 export const Permission = z
@@ -706,7 +736,7 @@ export const Config = z.object({
         })
       }
     }),
-  skills: Skills.default({ discover: ["claude", "opencode"], paths: [], always: [] }),
+  skills: Skills.default({ discover: ["claude", "opencode"], paths: [], always: [], learn: { enabled: false, minTools: 8, max: 30 } }),
   defaultAgent: z
     .string()
     .optional()

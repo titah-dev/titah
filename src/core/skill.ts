@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import type { ModelMessage } from "ai"
 import type { Config } from "./schema.ts"
-import { allSources } from "./skill-sources.ts"
+import { allSources, LEARNED_NAMESPACE } from "./skill-sources.ts"
 
 /**
  * Skill = file markdown yang dimuat ke konteks saat dipanggil (Q26).
@@ -20,6 +20,12 @@ export interface Skill {
   description: string
   body: string
   file: string
+  /**
+   * Siapa yang menulis berkasnya, dari frontmatter `source:`. Hanya dipakai
+   * untuk satu keputusan: `learn.ts` boleh menimpa skill yang `source`-nya
+   * `titah-learn`, dan tidak boleh menyentuh yang lain.
+   */
+  source?: string
 }
 
 /** Satu direktori skill beserta namespace yang mewakilinya. */
@@ -82,6 +88,7 @@ function readSkill(
     description: fields["description"] ?? "",
     body: body.trim(),
     file,
+    ...(fields["source"] ? { source: fields["source"] } : {}),
   }
 }
 
@@ -111,8 +118,14 @@ export function deriveNamespace(root: string): string {
   return base === "skills" ? path.basename(path.dirname(resolved)) : base
 }
 
-/** Semua skill di dalam satu sumber, dipindai sampai ke sub-direktori terdalam. */
-export function scanSource(source: SkillSource): Skill[] {
+/**
+ * Semua skill di dalam satu sumber, dipindai sampai ke sub-direktori terdalam.
+ *
+ * `exclude` berisi root sumber LAIN. Pemindaian rekursif tidak boleh masuk ke
+ * sana: direktori itu milik sumber lain dengan namespace-nya sendiri, dan
+ * memindainya dua kali membuat setiap skill di dalamnya terdaftar dua kali.
+ */
+export function scanSource(source: SkillSource, exclude: ReadonlySet<string> = new Set()): Skill[] {
   const out: Skill[] = []
 
   const walk = (dir: string, depth: number): void => {
@@ -128,6 +141,7 @@ export function scanSource(source: SkillSource): Skill[] {
     for (const entry of entries) {
       const full = path.join(dir, entry.name)
       if (entry.isDirectory()) {
+        if (exclude.has(path.resolve(full))) continue
         const skill = readSkill(path.join(full, "SKILL.md"), entry.name, source.namespace)
         if (skill) out.push(skill)
         // Tetap turun: `skills/productivity/` bukan skill, ia hanya wadah.
@@ -181,8 +195,12 @@ export function buildSkillIndex(config: Config, cwd: string, home?: string): Ski
   const conflicts: SkillConflict[] = []
   const emptySources: string[] = []
 
-  for (const source of allSources(config, cwd, home)) {
-    const skills = scanSource(source)
+  const sources = allSources(config, cwd, home)
+  const roots = sources.map((source) => path.resolve(source.root))
+
+  for (const source of sources) {
+    const own = path.resolve(source.root)
+    const skills = scanSource(source, new Set(roots.filter((root) => root !== own)))
     if (skills.length === 0) emptySources.push(source.root)
 
     for (const skill of skills) {
@@ -302,9 +320,21 @@ function shortDescription(description: string): string {
   return `${(lastSpace > CATALOG_DESCRIPTION_CHARS / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`
 }
 
+/**
+ * Refleksi menulis dari apa yang terjadi di satu giliran, dan itu bisa memuat
+ * teks dari halaman atau berkas yang diambil selama giliran itu (Q3 mitigasi
+ * prompt injection). Penanda ini membuat asalnya kelihatan setiap kali skill
+ * itu muncul di katalog, bukan cuma sekali saat ditulis.
+ */
+const LEARNED_MARKER = "[auto-written by Titah — verify before following] "
+
 export function skillCatalog(skills: Skill[]): string {
   return skills
-    .map((skill) => `- ${skill.id}${skill.description ? `: ${shortDescription(skill.description)}` : ""}`)
+    .map((skill) => {
+      const description = skill.description ? shortDescription(skill.description) : ""
+      const marked = description && skill.namespace === LEARNED_NAMESPACE ? `${LEARNED_MARKER}${description}` : description
+      return `- ${skill.id}${marked ? `: ${marked}` : ""}`
+    })
     .join("\n")
 }
 

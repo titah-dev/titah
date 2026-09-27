@@ -95,6 +95,7 @@ import {
   projectConfigFile,
   dataDir,
   sessionDbFile,
+  learnedSkillsDir,
   userSchemaFile,
 } from "./core/paths.ts"
 import { ensureSchema, readSchemaRef } from "./core/schema-file.ts"
@@ -122,6 +123,7 @@ import {
   type ProviderChoice,
 } from "./core/onboarding.ts"
 import { formatBytes, prune } from "./core/retention.ts"
+import { listLearned } from "./core/learn.ts"
 import { renderSkillReport } from "./core/skill.ts"
 import {
   createSession,
@@ -1482,6 +1484,12 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
 
   out("Skills")
   for (const line of renderSkillReport(loaded.config, process.cwd()).split("\n")) out(`  ${line}`)
+  const learn = loaded.config.skills.learn
+  out(
+    learn.enabled
+      ? `  learning: on — ${listLearned().length} learned skills in ${learnedSkillsDir()} (cap ${learn.max})`
+      : "  learning: off — set skills.learn.enabled to let Titah write skills after long turns",
+  )
   out()
   out('Delegation is live: type "@<agent> <prompt>" inside a session.')
 }
@@ -1629,6 +1637,9 @@ async function cmdRun(
     // di-cache sebagai awalan stabil, dan skema yang berubah tiap pemanggilan
     // akan mematahkan cache itu untuk setiap permintaan.
     text: schema === undefined ? text : `${text}${schemaInstruction(schema)}`,
+    // Proses keluar begitu `session.idle` terbit (di bawah), jadi refleksi yang
+    // baru mulai sesudahnya dibayar tapi tidak pernah sempat selesai.
+    learn: false,
     ...(options.auto === true ? { auto: true } : {}),
     ...(options.model ? { model: options.model } : {}),
     ...(options.agent ? { agent: options.agent } : {}),

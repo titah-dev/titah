@@ -36,6 +36,7 @@ import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
 import { BUILD_MODES, setPlanExiter } from "./tool/exit-plan.ts"
 import { autoCompact } from "./auto-compact.ts"
+import { cancelReflection, countToolCalls, shouldReflect, startReflection } from "./learn.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
 import { runConsensus, synthesizerFor } from "./consensus.ts"
@@ -437,6 +438,23 @@ export interface PromptInput {
    * Hanya `runSubagent` yang mengisinya.
    */
   resolvedModel?: string
+  /**
+   * Izin refleksi belajar-skill untuk giliran ini. Bawaan `undefined` berarti
+   * boleh — hanya `false` yang mematikannya.
+   *
+   * Dipakai `cmdRun`: proses `titah run` keluar begitu `session.idle` terbit,
+   * jadi refleksi yang baru mulai sesudahnya dibayar tapi tidak pernah selesai.
+   */
+  learn?: boolean
+  /**
+   * Permintaan user yang MEMULAI rantai giliran ini, sebelum auto-lanjutan
+   * mana pun mengubah `text` jadi `CONTINUE_TEXT`.
+   *
+   * Diisi HANYA oleh `prompt()` saat memanggil dirinya sendiri untuk
+   * melanjutkan. Refleksi butuh permintaan asli user, bukan instruksi
+   * lanjutan buatan Titah sendiri.
+   */
+  originalText?: string
 }
 
 export async function prompt(input: PromptInput): Promise<Message> {
@@ -445,6 +463,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   if (running.has(session.id)) {
     throw new AgentError("This session is already processing another turn.")
   }
+
+  // Giliran baru menang atas refleksi giliran sebelumnya: ia memakai model yang
+  // sama, dan user yang sudah mengetik lagi tidak sedang menunggu skill.
+  cancelReflection(session.id)
 
   // Sesi anak tidak pernah mendapat `task`. Kedalaman tepat satu tingkat —
   // tanpa ini, satu sub-agent bisa memanggil sub-agent lagi, dan seterusnya,
@@ -1415,6 +1437,40 @@ export async function prompt(input: PromptInput): Promise<Message> {
       hasOpenWork(readPlan(session.id)?.text)
 
     if (!willContinue) bus.publish({ type: "session.idle", sessionID: session.id })
+
+    /*
+     * Refleksi dimulai SESUDAH idle: jawabannya sudah di layar, dan giliran
+     * tidak menunggu ini. Semua syarat ada di `shouldReflect` supaya bisa diuji
+     * tanpa menjalankan giliran; resolusi model ditunda sampai syaratnya lolos,
+     * alasan yang sama dengan peringkas pemadatan di atas.
+     */
+    const learn = config.skills.learn
+    if (
+      shouldReflect({
+        enabled: learn.enabled && input.learn !== false,
+        isChild,
+        aborted: controller.signal.aborted,
+        failed: assistant.error !== undefined,
+        stoppedAtLimit,
+        willContinue,
+        toolCalls: countToolCalls(assistant.parts),
+        minTools: learn.minTools,
+      })
+    ) {
+      try {
+        startReflection({
+          sessionID: session.id,
+          streamSessionID,
+          request: input.originalText ?? input.text,
+          parts: structuredClone(assistant.parts),
+          model: resolver(config, summariserModelFor(config, turnModel)),
+          max: learn.max,
+        })
+      } catch {
+        // Model peringkas yang tidak bisa di-resolve bukan alasan menggagalkan
+        // giliran yang sudah selesai.
+      }
+    }
   }
 
 
@@ -1456,6 +1512,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       ...input,
       continuation: (input.continuation ?? 0) + 1,
       text: CONTINUE_TEXT,
+      originalText: input.originalText ?? input.text,
     })
   }
 

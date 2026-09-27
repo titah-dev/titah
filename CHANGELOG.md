@@ -18,6 +18,21 @@ Versioning follows [SemVer](https://semver.org/).
   disentuh.
 - `titah doctor` menampilkan satu baris `schema:` di bagian Config.
 
+### Titah bisa menulis skill sendiri — `skills.learn`, mati secara bawaan
+
+- Sesudah giliran yang selesai normal dan memakai ≥ `minTools` tool call (bawaan
+  8), satu panggilan `smallModel` membaca digest ringkas giliran itu — bukan
+  transkripnya — dan memutuskan apakah ada prosedur yang layak disimpan.
+- Skill ditulis ke `~/.config/titah/skills/learned/<nama>/SKILL.md` dengan
+  namespace `learned:`, dan langsung terlihat di giliran berikutnya.
+- Titah hanya menimpa berkas bertanda `source: titah-learn`. Nama, ukuran, dan
+  bentuk rahasia yang umum divalidasi sebelum apa pun ditulis.
+- Setiap keputusan tercatat satu baris di `~/.config/titah/learn.log`, beserta
+  token yang dipakai. `titah doctor` menampilkan status dan jumlahnya.
+- Sumber skill tidak lagi memindai masuk ke root sumber lain, sehingga
+  `~/.config/titah/skills` di `skills.paths` tidak mendaftarkan skill yang
+  dipelajari dua kali.
+
 ## [0.9.0] — 2026-09-20
 
 ### Artifact — agent bisa menerbitkan halaman, bukan cuma menuliskan teks
