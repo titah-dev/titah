@@ -910,13 +910,14 @@ export const Config = z.object({
        * pemadatan. Jadi loop ini bukan sekadar menghindari masalah lupa — ia
        * memperbaikinya, sementara langkah tanpa batas memperburuknya.
        *
-       * # Kenapa bawaannya NOL
+       * # Kenapa tanpa nilai bawaan
        *
-       * Ia membelanjakan uang tanpa bertanya. Syaratnya memang ketat — harus
-       * mentok DAN rencananya masih punya butir belum dicentang — tapi "ketat"
-       * bukan "gratis". User yang menyalakannya tahu ia sedang menukar
-       * pengawasan dengan kelanjutan; user yang tidak pernah memintanya tidak
-       * boleh menemukan itu sudah terjadi.
+       * Ia membelanjakan uang tanpa bertanya, jadi jawabannya bergantung pada
+       * siapa yang bisa menghentikannya. TUI dan web punya Esc dan penonton:
+       * di sana kosong berarti sampai selesai (jaring 50, rem dua lanjutan
+       * menganggur). `titah run` tidak punya keduanya: di sana kosong berarti
+       * mati. Nilai di skema akan menghapus beda itu — `0` yang ditulis user
+       * harus tetap bisa dibedakan dari "tidak ditulis".
        */
       /*
        * Anggaran untuk SELURUH sesi, bukan satu giliran.
@@ -943,13 +944,12 @@ export const Config = z.object({
         .number()
         .int()
         .min(0)
-        .default(0)
+        .optional()
         .describe(
-          "How many times Titah may continue on its own after a turn stops at a limit, " +
-            "while the plan still has unchecked items. 0 disables it.",
+          "How many times Titah may continue on its own when a turn ends before the work is done. Unset: until done (up to 50) in the TUI and web client, off for titah run. 0 disables it.",
         ),
     })
-    .default({ continueTurns: 0 }),
+    .default({}),
   /*
    * Sakelar untuk SELURUH pembuatan berkas otomatis.
    *

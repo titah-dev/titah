@@ -14,7 +14,14 @@ import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt, type Effort } from "./prompt.ts"
 import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
-import { hasOpenWork } from "./plan-progress.ts"
+import {
+  continuationText,
+  continueReason,
+  IDLE_LIMIT,
+  isIdleContinuation,
+  UNTIL_DONE_CEILING,
+  type ContinueReason,
+} from "./continuation.ts"
 import { sessionTokens } from "./stats.ts"
 import {
   compactionWindowFor,
@@ -126,26 +133,6 @@ const STEP_BACKSTOP = 200
 // tidak lagi perlu dipotong oleh angka turunan yang tak pernah ditulis user;
 // plafon langkah cukup menjadi jaring pengaman dan `limits.turnTokens` tetap
 // ada untuk yang memang ingin anggaran.
-
-/**
- * Yang dikirim ke model pada giliran lanjutan.
- *
- * Menunjuk ke RENCANA, bukan mengulang permintaan asli. Mengulang teks aslinya
- * membuat model memulai dari nol — membaca ulang berkas yang sudah dibaca,
- * merencanakan ulang yang sudah direncanakan. Rencananya sudah memuat apa yang
- * tersisa, dan ia satu-satunya bagian yang dijamin utuh menyeberangi batas
- * giliran.
- *
- * Diawali penyebutan Titah dengan sengaja. Kalimat ini masuk ke `model_message`
- * dan akan terbaca lagi di giliran-giliran berikutnya; tanpa penanda, model
- * membacanya sebagai perintah yang pernah diketik user — dan itu tidak benar.
- * Bentuknya mengikuti `planPair`, yang juga menjelaskan asal-usulnya sendiri di
- * dalam teksnya.
- */
-const CONTINUE_TEXT =
-  "[titah] Your previous turn stopped at a limit, not because the work was done. " +
-  "Continue the unfinished items in your plan. Do not restart work that is already " +
-  "checked off. Update the plan as you complete each item."
 
 /** Token yang sudah dibayar giliran ini: input + output, lintas semua langkah. */
 function tokensSpent(steps: readonly { usage: LanguageModelUsage }[]): number {
@@ -355,8 +342,26 @@ export function registerCancel(sessionID: string, controller: AbortController): 
   }
 }
 
+/**
+ * Sesi yang Esc-nya sudah ditekan, sekalipun saat itu tidak ada yang berjalan.
+ *
+ * `running` dihapus di `finally` SEBELUM rekursi lanjutan, jadi Esc yang jatuh
+ * tepat di antara dua giliran tidak menemukan controller apa pun — sinyalnya
+ * hilang dan rangkaiannya jalan terus. Penanda ini yang menyeberangkannya:
+ * diperiksa tepat sebelum lanjutan dimulai, dan dibersihkan saat user mengetik
+ * giliran baru supaya Esc lama tidak memotong rangkaian berikutnya.
+ *
+ * Hari ini tidak ada `await` antara `finally` dan rekursinya, jadi celahnya
+ * belum bisa dimasuki dari luar; Esc yang datang lewat bus atau HTTP mendarat
+ * di controller giliran lanjutan dan membatalkannya di sana. Penanda ini
+ * menjaga supaya `await` pertama yang kelak ditambahkan di celah itu tidak
+ * diam-diam membuat Esc hilang.
+ */
+const abortRequested = new Set<string>()
+
 /** `Esc` di TUI membatalkan SELURUH turn, bukan hanya tool yang sedang jalan (Q17). */
 export function abort(sessionID: string): boolean {
+  abortRequested.add(sessionID)
   const controller = running.get(sessionID)
   const handle = cancellable.get(sessionID)
   controller?.abort()
@@ -398,6 +403,21 @@ export interface PromptInput {
    */
   continuation?: number
   /**
+   * Giliran ini datang dari client yang punya Esc — TUI atau web.
+   *
+   * Menentukan bawaan lanjutan saat `limits.continueTurns` tidak ditulis:
+   * sampai selesai di sini, mati untuk `titah run`. Headless tidak punya cara
+   * menghentikan belanja yang tidak ia minta.
+   */
+  interactive?: boolean
+  /**
+   * Waktu (ms) pesan user ASLI dimulai. Diisi HANYA oleh `prompt()` saat
+   * melanjutkan — alasannya sama dengan `continuation`.
+   */
+  chainStarted?: number
+  /** Lanjutan menganggur berturut-turut sejauh ini. Diisi HANYA oleh `prompt()`. */
+  idleStreak?: number
+  /**
    * Model yang SUDAH diputuskan pemanggil, melewati `turnModelFor`.
    *
    * Dibutuhkan karena `turnModelFor` membuat `agent.<id>.model` menang atas
@@ -419,7 +439,7 @@ export interface PromptInput {
   learn?: boolean
   /**
    * Permintaan user yang MEMULAI rantai giliran ini, sebelum auto-lanjutan
-   * mana pun mengubah `text` jadi `CONTINUE_TEXT`.
+   * mana pun mengubah `text` jadi `continuationText(...)`.
    *
    * Diisi HANYA oleh `prompt()` saat memanggil dirinya sendiri untuk
    * melanjutkan. Refleksi butuh permintaan asli user, bukan instruksi
@@ -669,6 +689,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
    * pesan yang berpura-pura datang dari user.
    */
   const isContinuation = (input.continuation ?? 0) > 0
+  if (!isContinuation) abortRequested.delete(session.id)
+  // Dibekukan di awal, bukan dibaca di akhir: yang ditanyakan adalah apakah
+  // giliran INI menyentuh rencananya, dan apakah rencana itu milik rangkaian ini.
+  const chainStarted = input.chainStarted ?? Date.now()
+  const planBefore = readPlan(session.id)?.text
   if (!isContinuation) {
     const userMessage = createMessage(session.id, "user", [{ type: "text", text: input.text }])
     bus.publish({ type: "message.updated", sessionID: session.id, message: userMessage })
@@ -700,6 +725,22 @@ export async function prompt(input: PromptInput): Promise<Message> {
   let stoppedAtLimit = false
   /** Diputuskan di `finally`, dipakai dua kali: menahan `idle`, lalu melanjutkan. */
   let willContinue = false
+  let reason: ContinueReason | undefined
+  // Tanpa nilai di config, client yang punya Esc berjalan sampai selesai;
+  // `0` yang ditulis eksplisit tetap mematikannya, juga di sana.
+  const allowed =
+    config.limits.continueTurns ?? (input.interactive === true ? UNTIL_DONE_CEILING : 0)
+  let idleStreak = input.idleStreak ?? 0
+  /*
+   * Fakta akhir giliran untuk keputusan lanjutan, diisi dari `steps`. Nama
+   * tool yang mutasi diisi `buildTools` dari definisi yang SAMA yang
+   * dijalankan — daftar kedua yang disalin tangan akan tertinggal saat ada
+   * tool baru, dan giliran yang menulis berkas lalu dihitung menganggur.
+   */
+  const mutating = new Set<string>()
+  let toolCalls = 0
+  let mutatingCalls = 0
+  let calledQuestion = false
 
   const controller = new AbortController()
   running.set(session.id, controller)
@@ -959,6 +1000,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       messages,
       tools: buildTools({
         mcpTools: mcp.tools,
+        mutating,
         ...(agentDef?.escalate ? { escalateTo: agentDef.escalate.to } : {}),
         ...(modelID ? { model: modelID } : {}),
         plugins: loaded.plugins,
@@ -1302,6 +1344,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     const steps = await result.steps
+    for (const step of steps) {
+      toolCalls += step.toolCalls.length
+      mutatingCalls += step.toolCalls.filter((call) => mutating.has(call.toolName)).length
+    }
+    calledQuestion = steps.at(-1)?.toolCalls.some((call) => call.toolName === "question") ?? false
 
     /*
      * Giliran yang berhenti karena kehabisan langkah MENGATAKANNYA.
@@ -1394,16 +1441,25 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * `stoppedAtLimit` yang keduanya sudah terisi, dan idle harus tahu
      * jawabannya sebelum memutuskan terbit atau tidak.
      */
-    const allowed = config.limits.continueTurns
     const done = input.continuation ?? 0
+    const plan = readPlan(session.id)
+    const lastText = assistant.parts.findLast((part) => part.type === "text")?.text ?? ""
+    reason = continueReason({ stoppedAtLimit, lastText, calledQuestion, plan, chainStarted })
+    // Hanya lanjutan yang dinilai: giliran asli yang tidak memanggil tool
+    // adalah jawaban biasa, bukan tanda rangkaiannya berputar di tempat.
+    if (isContinuation) {
+      idleStreak = isIdleContinuation(toolCalls, mutatingCalls, planBefore, plan?.text)
+        ? idleStreak + 1
+        : 0
+    }
     willContinue =
       allowed > 0 &&
       done < allowed &&
-      stoppedAtLimit &&
       !isChild &&
       !controller.signal.aborted &&
       assistant.error === undefined &&
-      hasOpenWork(readPlan(session.id)?.text)
+      reason !== undefined &&
+      idleStreak < IDLE_LIMIT
 
     if (!willContinue) bus.publish({ type: "session.idle", sessionID: session.id })
 
@@ -1444,7 +1500,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
 
   /*
-   * LANJUT SENDIRI, kalau rencananya masih punya pekerjaan.
+   * LANJUT SENDIRI, kalau gilirannya berakhir sebelum pekerjaannya selesai.
    *
    * Inilah "jalan sampai semua task selesai" — dan bentuknya sengaja LOOP DARI
    * GILIRAN, bukan satu giliran tanpa batas.
@@ -1459,33 +1515,54 @@ export async function prompt(input: PromptInput): Promise<Message> {
    * SEMUA syarat di bawah harus benar, dan tiap satunya menutup satu cara loop
    * ini bisa berubah jadi pemborosan:
    *
-   *   - dinyalakan user           — ia membelanjakan uang tanpa bertanya
-   *   - berhenti karena BATAS     — giliran yang selesai wajar memang sudah selesai
+   *   - dinyalakan               — oleh config, atau oleh client yang punya Esc
+   *   - ada ALASAN               — `continueReason`: mentok, mengumumkan tanpa aksi,
+   *                                tool call sebagai teks, atau rencana rangkaian ini terbuka
    *   - bukan sub-agent           — anak tidak mengatur nasibnya sendiri; induknya yang mengatur
    *   - tidak dibatalkan          — Esc berarti berhenti, bukan berhenti lalu mulai lagi
    *   - tidak error               — mengulang kegagalan yang sama tidak membuatnya berhasil
-   *   - rencananya punya sisa     — satu-satunya definisi "belum selesai" yang bisa dinilai mesin
+   *   - tidak menganggur          — dua lanjutan tanpa kemajuan berarti berputar di tempat
    *   - jatah lanjutan masih ada  — batas keras, supaya "sampai selesai" tetap punya ujung
    */
-  if (willContinue) {
+  if (willContinue && reason !== undefined) {
     bus.publish({
       type: "session.notice",
       sessionID: streamSessionID,
       message:
-        `Continuing on its own (${(input.continuation ?? 0) + 1} of ` +
-        `${config.limits.continueTurns}) — the plan still has unfinished items. ` +
-        "Press Esc to stop.",
+        `Continuing on its own (${(input.continuation ?? 0) + 1} of ${allowed}) — ` +
+        `${CONTINUE_LABEL[reason]}. Press Esc to stop.`,
     })
+
+    /*
+     * Diperiksa SESUDAH notice, bukan sebelum: notice itulah yang memberi tahu
+     * user bahwa Esc masih berarti. Esc yang jatuh di celah ini tidak punya
+     * controller untuk dibatalkan — lihat `abortRequested`. `idle` sudah
+     * ditahan di atas, jadi berhenti di sini wajib menerbitkannya sendiri.
+     */
+    if (abortRequested.has(session.id)) {
+      bus.publish({ type: "session.idle", sessionID: session.id })
+      return assistant
+    }
 
     return prompt({
       ...input,
       continuation: (input.continuation ?? 0) + 1,
-      text: CONTINUE_TEXT,
+      chainStarted,
+      idleStreak,
+      text: continuationText(reason),
       originalText: input.originalText ?? input.text,
     })
   }
 
   return assistant
+}
+
+/** Alasan lanjutan seperti yang dibaca user di notice. */
+const CONTINUE_LABEL: Record<ContinueReason, string> = {
+  limit: "the plan still has unfinished items",
+  "open-plan": "the plan still has unfinished items",
+  announced: "the model announced a step without taking it",
+  "text-tool-call": "a tool call came back as text",
 }
 
 const PROGRESS_INTERVAL = 2000
@@ -2072,6 +2149,8 @@ interface BuildToolsOptions {
    * memindahkan induknya, dan delegasi diam-diam berjalan di model lain.
    */
   model?: string
+  /** Diisi nama setiap tool aktif yang `mutates`-nya benar. */
+  mutating?: Set<string>
 }
 
 /**
@@ -2232,6 +2311,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
   const set: ToolSet = {}
 
   for (const definition of activeTools({ ...options, ...(options.mcpTools ? { extra: options.mcpTools } : {}) })) {
+    if (definition.mutates === true) options.mutating?.add(definition.name)
     set[definition.name] = tool({
       description: definition.description,
       inputSchema: definition.inputSchema,

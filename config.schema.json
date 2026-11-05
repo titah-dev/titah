@@ -984,9 +984,7 @@
       }
     },
     "limits": {
-      "default": {
-        "continueTurns": 0
-      },
+      "default": {},
       "type": "object",
       "properties": {
         "turnTokens": {
@@ -1002,8 +1000,7 @@
           "maximum": 9007199254740991
         },
         "continueTurns": {
-          "default": 0,
-          "description": "How many times Titah may continue on its own after a turn stops at a limit, while the plan still has unchecked items. 0 disables it.",
+          "description": "How many times Titah may continue on its own when a turn ends before the work is done. Unset: until done (up to 50) in the TUI and web client, off for titah run. 0 disables it.",
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991

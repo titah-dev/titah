@@ -104,8 +104,15 @@ function configWith(extra: Record<string, unknown>): void {
   )
 }
 
-/** Model yang tidak pernah berhenti; merekam teks user tiap giliran. */
-function neverStops(): { prompts: string[]; calls: number } {
+/**
+ * Model yang tidak pernah berhenti; merekam teks user tiap giliran.
+ *
+ * `writes` membuatnya MENULIS berkas alih-alih membaca. Lanjutan yang hanya
+ * membaca tanpa menyentuh rencana dihitung menganggur dan direm setelah dua,
+ * jadi test yang ingin melihat jatahnya sendiri habis butuh model yang
+ * kelihatan bekerja.
+ */
+function neverStops(writes = false): { prompts: string[]; calls: number } {
   const seen: { prompts: string[]; calls: number } = { prompts: [], calls: 0 }
 
   const model = new MockLanguageModelV4({
@@ -125,8 +132,12 @@ function neverStops(): { prompts: string[]; calls: number } {
             {
               type: "tool-call",
               toolCallId: `c${seen.calls}`,
-              toolName: "read",
-              input: JSON.stringify({ path: "a.txt" }),
+              ...(writes
+                ? {
+                    toolName: "write",
+                    input: JSON.stringify({ path: "a.txt", content: `isi ${seen.calls}\n` }),
+                  }
+                : { toolName: "read", input: JSON.stringify({ path: "a.txt" }) }),
             },
             { type: "finish", finishReason: "tool-calls", usage: USAGE },
           ]
@@ -211,11 +222,11 @@ test("tanpa rencana sama sekali, tidak pernah melanjutkan", async () => {
   assert.equal(turns(session.id), 1)
 })
 
-test("bawaannya MATI — tidak ada yang melanjutkan tanpa diminta", async () => {
+test("tanpa client interaktif, bawaannya MATI — tidak ada yang melanjutkan tanpa diminta", async () => {
   /*
-   * Ia membelanjakan uang tanpa bertanya. Syaratnya memang ketat, tapi "ketat"
-   * bukan "gratis": user yang tidak pernah memintanya tidak boleh menemukan itu
-   * sudah terjadi.
+   * Ia membelanjakan uang tanpa bertanya. `titah run` tidak punya Esc dan
+   * tidak punya penonton, jadi di sana `continueTurns` yang tidak ditulis tetap
+   * berarti mati — "sampai selesai" hanya bawaan di TUI dan web.
    */
   configWith({})
   neverStops()
@@ -231,7 +242,7 @@ test("jatah lanjutan adalah batas KERAS", async () => {
   // "Sampai selesai" tetap harus punya ujung, kalau tidak rencana yang tidak
   // pernah dicentang akan berputar sampai kuota provider habis.
   configWith({ limits: { continueTurns: 3 } })
-  neverStops()
+  neverStops(true)
 
   const session = createSession(project)
   savePlan(session.id, "- [ ] tidak pernah dicentang")
@@ -240,11 +251,13 @@ test("jatah lanjutan adalah batas KERAS", async () => {
   assert.equal(turns(session.id), 4, "asli + tiga lanjutan, lalu berhenti")
 })
 
-test("giliran yang selesai WAJAR tidak dilanjutkan, walau rencananya punya sisa", async () => {
+test("giliran yang selesai WAJAR tidak dilanjutkan karena rencana terbuka yang tidak ditulis rangkaian ini", async () => {
   /*
-   * Model berhenti sendiri berarti ia menganggap gilirannya selesai — mungkin
-   * ia sedang menunggu jawaban, mungkin rencananya usang. Melanjutkannya berarti
-   * memaksa bekerja atas keputusan yang bukan miliknya.
+   * Rencananya ditulis SEBELUM pesan user ini, jadi bisa saja usang dari
+   * pekerjaan kemarin. Model yang berhenti wajar di atas rencana seperti itu
+   * menganggap gilirannya selesai; melanjutkannya berarti mengerjakan sesuatu
+   * yang tidak diminta hari ini. Rencana yang ditulis di rangkaian ini memang
+   * dilanjutkan — lihat run-until-done.test.ts.
    */
   configWith({ limits: { continueTurns: 5 } })
   const chunks: LanguageModelV4StreamPart[] = [
@@ -264,6 +277,9 @@ test("giliran yang selesai WAJAR tidak dilanjutkan, walau rencananya punya sisa"
 
   const session = createSession(project)
   savePlan(session.id, "- [ ] masih ada")
+  // `updated` dan awal rangkaian sama-sama `Date.now()`; di milidetik yang
+  // sama rencananya terhitung milik rangkaian ini dan test-nya jadi acak.
+  await new Promise((resolve) => setTimeout(resolve, 5))
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 1)
