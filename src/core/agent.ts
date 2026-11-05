@@ -19,6 +19,7 @@ import {
   continuationText,
   continueReason,
   IDLE_LIMIT,
+  isFreshPlan,
   isIdleContinuation,
   isProgressCall,
   UNTIL_DONE_CEILING,
@@ -1153,9 +1154,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
         // "Punya rencana" di sini HARUS sama dengan yang dibaca `continueReason`:
         // rencana kemarin tidak pernah dilanjutkan, jadi ia juga tidak boleh
         // membungkam pengingat yang meminta rencana untuk permintaan ini.
-        const plan = readPlan(session.id)
-        const freshPlan = plan !== undefined && plan.updated >= chainStarted
-        const planNudge = !isChild && toolCallsSoFar >= PLAN_NUDGE_AFTER && !freshPlan
+        const planNudge =
+          !isChild && toolCallsSoFar >= PLAN_NUDGE_AFTER && !isFreshPlan(readPlan(session.id), chainStarted)
         const closing = (base: Record<string, unknown>): Record<string, unknown> => {
           const notes = [
             ...(planNudge ? [PLAN_NUDGE_NOTE] : []),

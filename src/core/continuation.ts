@@ -39,6 +39,19 @@ export const UNTIL_DONE_CEILING = 50
 /** Lanjutan menganggur berturut-turut sebelum rangkaian dihentikan. */
 export const IDLE_LIMIT = 2
 
+/**
+ * Apakah rencana ditulis atau disentuh di rangkaian ini — bukan sisa pekerjaan
+ * kemarin. Satu definisi untuk pemicu lanjutan DAN pengingat rencana di
+ * agent.ts: kalau keduanya menyimpang, pengingat puas dengan rencana yang
+ * tidak akan pernah dilanjutkan.
+ */
+export function isFreshPlan<T extends { updated: number }>(
+  plan: T | undefined,
+  chainStarted: number,
+): plan is T {
+  return plan !== undefined && plan.updated >= chainStarted
+}
+
 /*
  * Urutannya bagian dari aturan: pengecualian selalu menang. Model yang
  * bertanya sedang menunggu user — melanjutkannya berarti menjawab atas nama
@@ -54,10 +67,7 @@ export function continueReason(ending: TurnEnding): ContinueReason | undefined {
    * membangunkan rencana itu — melanjutkannya berarti mengerjakan sesuatu yang
    * tidak diminta hari ini.
    */
-  const freshPlan =
-    ending.plan !== undefined &&
-    hasOpenWork(ending.plan.text) &&
-    ending.plan.updated >= ending.chainStarted
+  const freshPlan = isFreshPlan(ending.plan, ending.chainStarted) && hasOpenWork(ending.plan.text)
   if (ending.stoppedAtLimit && freshPlan) return "limit"
   if (/<tool_call>|<function=/.test(ending.lastText)) return "text-tool-call"
   if (text.endsWith(":")) return "announced"
