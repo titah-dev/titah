@@ -121,7 +121,9 @@ export function resolveModel(config: Config, full?: string): LanguageModel {
          * di namespace `anthropic` dibuang sebelum menyentuh kabel — diam-diam.
          * Lihat cache-control.ts.
          */
-        ...(provider.cacheControl ? { fetch: withCacheControl() } : {}),
+        ...(provider.cacheControl
+          ? { fetch: withCacheControl(fetch, { references: provider.cacheReferences !== false }) }
+          : {}),
         // Tanpa ini, endpoint OpenAI-compatible tidak melaporkan token saat
         // streaming, dan penghitung biaya di footer (Q24) selalu kosong.
         includeUsage: provider.options?.includeUsage ?? true,

@@ -121,6 +121,11 @@
             "default": false,
             "description": "Send cache_control in the request body. Only for OpenAI-compatible gateways that forward it to Anthropic. Ask your gateway operator before turning this on.",
             "type": "boolean"
+          },
+          "cacheReferences": {
+            "default": true,
+            "description": "With cacheControl on, also mark the end of the pinned references message as a cache breakpoint. Turn off if your gateway rejects more than one cache_control mark.",
+            "type": "boolean"
           }
         }
       }

@@ -16,7 +16,8 @@
  *
  * # Di mana tandanya diletakkan, dan kenapa di situ
  *
- * Pada pesan `system`, yang selalu pertama.
+ * Pada pesan `system`, yang selalu pertama. Tanda kedua, untuk referensi yang
+ * di-pin, dijelaskan di `markCacheControl`.
  *
  * `cache_control` menandai UJUNG sebuah awalan, bukan satu blok sendirian —
  * yang di-cache adalah semua yang mendahuluinya. Urutan Anthropic adalah
@@ -47,48 +48,93 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+export interface CacheControlOptions {
+  /** Tanda kedua di ujung pesan `<references>`. Default true. */
+  references?: boolean
+}
+
 /**
- * Menandai pesan system sebagai titik potong cache.
+ * Menandai blok terakhir sebuah pesan. Mengembalikan `null` bila tidak ada yang
+ * perlu diubah (isi kosong, bentuk asing, atau sudah bertanda).
  *
- * Isi `system` boleh berupa string atau deretan blok. String diubah menjadi
- * satu blok teks supaya ada tempat menaruh tandanya — bentuk itu diterima
- * gateway yang meneruskan ke Anthropic, dan diabaikan dengan aman oleh yang
- * benar-benar OpenAI.
+ * Isi boleh berupa string atau deretan blok. String diubah menjadi satu blok
+ * teks supaya ada tempat menaruh tandanya — bentuk itu diterima gateway yang
+ * meneruskan ke Anthropic, dan diabaikan dengan aman oleh yang benar-benar
+ * OpenAI.
  */
-export function markCacheControl(body: unknown): unknown {
-  if (!isRecord(body)) return body
-  const messages = (body as ChatBody).messages
-  if (!Array.isArray(messages) || messages.length === 0) return body
-
-  const index = messages.findIndex(
-    (message) => isRecord(message) && message["role"] === "system",
-  )
-  if (index === -1) return body
-
-  const system = messages[index] as Record<string, unknown>
-  const content = system["content"]
+function markLastBlock(message: Record<string, unknown>): Record<string, unknown> | null {
+  const content = message["content"]
 
   let blocks: unknown[]
   if (typeof content === "string") {
-    if (content === "") return body
+    if (content === "") return null
     blocks = [{ type: "text", text: content }]
   } else if (Array.isArray(content) && content.length > 0) {
     blocks = [...content]
   } else {
-    return body
+    return null
   }
 
   const last = blocks.at(-1)
-  if (!isRecord(last)) return body
+  if (!isRecord(last)) return null
   // Sudah ditandai: jangan tumpuk. Dua tanda pada blok yang sama bukan sekadar
   // mubazir — sebagian gateway menolak permintaannya.
-  if ("cache_control" in last) return body
+  if ("cache_control" in last) return null
 
   blocks[blocks.length - 1] = { ...last, cache_control: EPHEMERAL }
+  return { ...message, content: blocks }
+}
+
+/** Teks pembuka sebuah pesan user, apa pun bentuk isinya. */
+function leadingText(message: Record<string, unknown>): string | undefined {
+  const content = message["content"]
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return undefined
+  const first = content[0]
+  return isRecord(first) && typeof first["text"] === "string" ? first["text"] : undefined
+}
+
+/**
+ * Menandai pesan system, dan pesan referensi, sebagai titik potong cache.
+ *
+ * Tanda kedua ada karena referensi yang di-pin (`<references>`, lihat
+ * `referencePair` di references.ts) duduk tepat setelah memori dan sebelum
+ * ringkasan/rencana, jadi awalannya stabil antar giliran. Tanpa tanda sendiri
+ * ia ikut dibayar penuh setiap kali ujung system berubah atau kedaluwarsa.
+ * Yang diambil adalah pesan user TERAKHIR yang dibuka `<references>`: bila ada
+ * lebih dari satu, yang paling belakang mencakup paling banyak awalan.
+ */
+export function markCacheControl(body: unknown, options: CacheControlOptions = {}): unknown {
+  if (!isRecord(body)) return body
+  const messages = (body as ChatBody).messages
+  if (!Array.isArray(messages) || messages.length === 0) return body
 
   const next = [...messages]
-  next[index] = { ...system, content: blocks }
-  return { ...body, messages: next }
+  let changed = false
+
+  const systemIndex = next.findIndex((m) => isRecord(m) && m["role"] === "system")
+  if (systemIndex !== -1) {
+    const marked = markLastBlock(next[systemIndex] as Record<string, unknown>)
+    if (marked) {
+      next[systemIndex] = marked
+      changed = true
+    }
+  }
+
+  if (options.references !== false) {
+    const refIndex = next.findLastIndex(
+      (m) => isRecord(m) && m["role"] === "user" && leadingText(m)?.startsWith("<references>") === true,
+    )
+    if (refIndex !== -1) {
+      const marked = markLastBlock(next[refIndex] as Record<string, unknown>)
+      if (marked) {
+        next[refIndex] = marked
+        changed = true
+      }
+    }
+  }
+
+  return changed ? { ...body, messages: next } : body
 }
 
 /**
@@ -98,7 +144,10 @@ export function markCacheControl(body: unknown): unknown {
  * yang lain — daftar model, unggahan, permintaan yang badannya aliran — lewat
  * tanpa disentuh sama sekali.
  */
-export function withCacheControl(base: typeof fetch = fetch): typeof fetch {
+export function withCacheControl(
+  base: typeof fetch = fetch,
+  options: CacheControlOptions = {},
+): typeof fetch {
   return async (input, init) => {
     const body = init?.body
     if (typeof body !== "string") return base(input, init)
@@ -110,7 +159,7 @@ export function withCacheControl(base: typeof fetch = fetch): typeof fetch {
       return base(input, init)
     }
 
-    const marked = markCacheControl(parsed)
+    const marked = markCacheControl(parsed, options)
     if (marked === parsed) return base(input, init)
 
     return base(input, { ...init, body: JSON.stringify(marked) })

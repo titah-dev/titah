@@ -98,6 +98,18 @@ export const Provider = z.object({
       "Send cache_control in the request body. Only for OpenAI-compatible gateways that " +
         "forward it to Anthropic. Ask your gateway operator before turning this on.",
     ),
+  /**
+   * Hanya berarti bila `cacheControl` menyala. Default true: referensi yang
+   * di-pin adalah awalan stabil kedua terbesar, dan menandainya adalah alasan
+   * fitur ini ada. Opsi ini untuk gateway yang menolak lebih dari satu tanda.
+   */
+  cacheReferences: z
+    .boolean()
+    .default(true)
+    .describe(
+      "With cacheControl on, also mark the end of the pinned references message as a " +
+        "cache breakpoint. Turn off if your gateway rejects more than one cache_control mark.",
+    ),
 })
 
 /**
