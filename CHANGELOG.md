@@ -47,6 +47,13 @@ Versioning follows [SemVer](https://semver.org/).
   terverifikasi untuk gateway Anda, karena sebagian gateway menolak lebih dari
   satu tanda `cache_control`.
 
+### Diperbaiki
+
+- **Cache Anthropic native kini benar-benar dipasang untuk model dari
+  `config.model`.** Giliran tanpa override model dikira openai-compatible,
+  sehingga tidak satu pun titik cache native pernah dikirim — bug lama, bukan
+  dari rilis ini, tapi ia juga mematikan tanda referensi yang baru.
+
 ### Skrip pengukuran
 
 - `node scripts/measure-stops.ts [dbPath]` (read-only) mengelompokkan pesan

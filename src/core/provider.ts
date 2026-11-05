@@ -176,15 +176,21 @@ export function listModels(config: Config): ModelListing[] {
 /**
  * Paket AI SDK yang melayani model ini — satu-satunya hal yang memberi tahu
  * apakah `cache_control` akan dipahami atau justru ditolak (lihat cag.ts).
+ *
+ * Jatuh ke `config.model` seperti `contextWindowFor`. Giliran biasa tidak
+ * membawa override, jadi `modelID` paling sering `undefined` — dan tanpa
+ * fallback ini setiap giliran Anthropic dari config bawaan dikira
+ * openai-compatible, sehingga tidak satu pun titik cache native pernah dipasang.
  */
 export function providerNpmFor(
   config: Config,
   modelID: string | undefined,
 ): Config["provider"][string]["npm"] | undefined {
-  if (modelID === undefined) return undefined
-  const slash = modelID.indexOf("/")
+  const target = modelID ?? config.model
+  if (target === undefined) return undefined
+  const slash = target.indexOf("/")
   if (slash <= 0) return undefined
-  return config.provider[modelID.slice(0, slash)]?.npm
+  return config.provider[target.slice(0, slash)]?.npm
 }
 
 export function contextWindowFor(config: Config, full?: string): number | undefined {
