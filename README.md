@@ -1106,6 +1106,7 @@ Tuning, with the defaults shown:
 ```jsonc
 "compaction": {
   "auto": true,        // turn the whole thing off with false
+  "target": 131072,    // compact at this many tokens, even if the window is larger
   "reserved": 8192,    // tokens held back for the next answer and the summary itself
   "tailTurns": 2,      // recent turns kept verbatim, never summarised
   "prune": true        // drop old tool output first — free, and usually enough
@@ -1123,7 +1124,10 @@ it is forgotten as soon as the turn ends. The trigger is therefore
 contextWindow - reserved - (largest tool result this turn)
 ```
 
-with both subtractions capped at a quarter of the window each. Without the cap on
+with both subtractions capped at a quarter of the window each. `compaction.target`
+(or `compactAt` on a single model, next to `contextWindow`) puts a ceiling on that
+number without lying about the window: models often get worse well before their
+window is full, and the window is still what protects against truncation. Without the cap on
 `reserved`, the 8192 default would equal the whole window on a common 8k local
 model, push the threshold to zero, and fire compaction on every single turn
 regardless of how little context was actually in use. The cap on the growth
@@ -1405,22 +1409,37 @@ bound is tokens:
 "limits": {
   "turnTokens": 400000,     // input + output, summed across steps
   "sessionTokens": 2000000, // across every turn in one session
-  "continueTurns": 5        // keep going after a limit, while the plan has open items
+  "continueTurns": 5        // unset = until done (max 50) in the TUI and web; 0 = off
 }
 ```
 
-`turnTokens` **defaults to 5× the model's `contextWindow`.** Titah does not know
-what a model costs you, but it does know the window you declared — so the
-default is derived from it rather than guessed. Declaring it also lifts the step
-ceiling from 40 to 200: once there is a real bound, the arbitrary one steps
-aside.
+`turnTokens` has no derived default; set it if you want a token bound. With a
+declared `contextWindow` the step ceiling is 200 and acts as a breathing point
+rather than a wall: continuation picks up from there.
 
 `continueTurns` is what "keep going until it's done" looks like, and it is a
 loop of *bounded turns*, not one unbounded turn. A thousand-step turn gets
 compacted repeatedly until the model is working from a summary of a summary; a
 fresh turn starts with a clean transcript and re-reads the whole plan from the
-one table compaction never touches. It only fires when the turn stopped at a
-limit **and** the plan still has unchecked `- [ ]` items. Default `0`.
+one table compaction never touches. **Unset, it means until done** (at most 50)
+in the TUI and web; `titah run` stays off unless you set it. It fires when the
+turn hit the step limit or ended naturally with a fresh open plan (`- [ ]`),
+when the last text ends with `:` (announced, never done), or when a tool call
+was written as text. It never fires when the model is asking you something (`?`
+or the `question` tool). Two continuations in a row that did nothing — no tool
+calls, or no file edit or `task` call with the plan unchanged — stop the chain,
+and so does `Esc`.
+
+## Pinned references
+
+`/pin <path>` keeps a file in front of the model across compaction; `/unpin
+<path>` removes it and `/pin` alone lists them. The `plan` tool takes a
+`references` field for the same purpose. A file outside the project needs a
+`permission.rules` entry `external_directory(...)`. References travel in the
+protected prefix (memory, references, summary, plan), capped at 25% of the
+compaction threshold, and are re-read when mtime or size changes. On
+OpenAI-compatible providers with `cacheControl`, a second cache mark follows
+them; set the provider option `cacheReferences` to `false` to drop it.
 
 Every stop says so — the model is told it is on its last step and asked to close
 by naming what remains, and you get a notice that says which limit was hit and

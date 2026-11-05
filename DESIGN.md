@@ -134,6 +134,10 @@ silently truncated by the provider. Design:
 `2026-08-12-storage-and-pruner-design.md`, and
 `2026-08-12-compaction-hardening-design.md`.
 
+Continue-until-done, the compaction threshold (`compaction.target`/`compactAt`)
+and pinned references are designed in
+`docs/superpowers/specs/2026-11-05-run-until-done-design.md`.
+
 Titah tracks execution state but has **no intent state** — the model has nowhere
 to record a plan that survives compaction. That is a known gap with a written
 design and no code yet: `2026-08-12-intent-state-design.md`.

@@ -261,7 +261,29 @@ Tabel `plan` sudah menyimpan **niat**. Bagian ini menambah **referensi**.
 
 ## Pengukuran (wajib per AGENTS.md: perilaku di bawah model)
 
-- **Sebelum:** jalankan Lampiran A pada DB sekarang dan simpan angkanya.
+- **Sebelum (diukur 2026-11-05):** `node scripts/measure-stops.ts` pada
+  `~/.local/share/titah/titah.db`, yang hanya berisi giliran dari sebelum
+  cabang ini, jadi inilah garis dasar yang sebenarnya.
+
+  Pesan "lanjutkan/next/..." menurut keadaan pesan assistant sebelumnya:
+
+  | Keadaan sebelumnya | `9router/ant` | `9router/gapis` | `9router/ocode` | lain |
+  |---|---|---|---|---|
+  | berakhir `:` (diumumkan, tak pernah dipanggil) | 4 | 3 | 0 | 0 |
+  | tool call tertulis sebagai teks | 0 | 0 | 1 | 0 |
+  | kosong | 0 | 1 | 0 | 0 |
+  | lainnya | 2 | 3 | 1 | 1 (`compact`) |
+  | **total** | 6 | 7 | 2 | 1 |
+
+  Penyebut, giliran assistant tanpa error: `9router/ant` 261 (13 berakhir
+  `:`), `9router/gapis` 67 (5 berakhir `:`), `9router/ocode` 19 (1 tool call
+  sebagai teks). Tanpa model yang tercatat atau model uji: 14 giliran, tidak
+  satu pun berakhir `:`.
+
+  Dari 16 intervensi, 8 adalah dua pemicu pertama (teks berakhir `:`, tool call
+  tertulis sebagai teks) yang kini dilanjutkan otomatis. Jumlah giliran
+  berakhir `:` di atas jauh lebih besar dari jumlah intervensi karena user
+  tidak selalu mengetik "lanjutkan" setelahnya.
 - **Sesudah:** satu tugas tetap, yaitu *"bangun web app X dari folder template
   ./template"* di repo uji, dijalankan dengan `9router/ant` dan
   `9router/gapis`. Catat:
