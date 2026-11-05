@@ -1426,9 +1426,11 @@ in the TUI and web; `titah run` stays off unless you set it. It fires when the
 turn hit the step limit or ended naturally with a fresh open plan (`- [ ]`),
 when the last text ends with `:` (announced, never done), or when a tool call
 was written as text. It never fires when the model is asking you something (`?`
-or the `question` tool). Two continuations in a row that did nothing — no tool
-calls, or no file edit or `task` call with the plan unchanged — stop the chain,
-and so does `Esc`.
+or the `question` tool). Two continuations in a row that made no progress stop
+the chain, and so does `Esc`. Progress means the plan text changed, a `task`
+call, or a call to a tool that changes something other than through the shell
+(edit, write, patch, file operations, MCP tools); reads and shell commands
+(`bash`, `bash_start`) alone do not count.
 
 ## Pinned references
 

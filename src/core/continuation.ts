@@ -83,13 +83,26 @@ export function closingText(
 }
 
 /**
- * Tool call yang dihitung kemajuan oleh rem menganggur: yang mengubah sesuatu,
- * atau yang mendelegasikan. `task` sendiri tidak `mutates` — yang menulis
- * adalah sub-agentnya, di sesi lain — jadi lanjutan yang hanya mendelegasikan
- * akan terlihat diam padahal pekerjaannya sedang dikerjakan.
+ * Tool shell: `mutates` (supaya /undo sempat mengambil snapshot), tapi BUKAN
+ * kemajuan. Model yang berputar menjalankan `ls`, `git status`, dan test yang
+ * sama berulang-ulang terlihat persis seperti model yang bekerja kalau shell
+ * dihitung — dan rem menganggur tidak pernah menyala.
+ *
+ * Nama disalin di sini, bukan diimpor dari definisi tool, supaya modul
+ * keputusan ini tidak menarik eksekutor shell. Test memakukan keduanya ke
+ * definisi yang dijalankan.
+ */
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "bash_start"])
+
+/**
+ * Tool call yang dihitung kemajuan oleh rem menganggur: yang mengubah sesuatu
+ * selain lewat shell, atau yang mendelegasikan. `task` sendiri tidak `mutates`
+ * — yang menulis adalah sub-agentnya, di sesi lain — jadi lanjutan yang hanya
+ * mendelegasikan akan terlihat diam padahal pekerjaannya sedang dikerjakan.
  */
 export function isProgressCall(toolName: string, mutating: ReadonlySet<string>): boolean {
-  return toolName === "task" || mutating.has(toolName)
+  if (toolName === "task") return true
+  return mutating.has(toolName) && !SHELL_TOOLS.has(toolName)
 }
 
 /**
@@ -115,8 +128,14 @@ const CONTINUE_TEXT =
 export function continuationText(reason: ContinueReason): string {
   switch (reason) {
     case "limit":
-    case "open-plan":
       return CONTINUE_TEXT
+    // Giliran ini berakhir wajar, bukan mentok: "stopped at a limit" di sini
+    // adalah fakta yang salah, dan ia tersimpan untuk dibaca lagi nanti.
+    case "open-plan":
+      return (
+        "[titah] Your plan for this request still has unchecked items. Continue with them; " +
+        "do not restart checked items. Update the plan as you complete each one."
+      )
     case "announced":
       return (
         "[titah] Your previous message announced a next step but ended without doing it. " +

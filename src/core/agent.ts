@@ -192,6 +192,9 @@ const LAST_STEP_NOTE = [
   "plan, not this transcript.",
 ].join("\n")
 
+/** Ditempelkan ke LAST_STEP_NOTE hanya bila giliran ini boleh dilanjutkan Titah. */
+const NO_ASK_NOTE = "Do not ask whether to continue — Titah will continue on its own."
+
 /**
  * Ditambahkan ke system prompt HANYA untuk /tim. Sengaja tidak menyebut nama
  * agent satu per satu di sini — daftarnya berubah per config, dan menaruhnya
@@ -749,6 +752,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   // `0` yang ditulis eksplisit tetap mematikannya, juga di sana.
   const allowed =
     config.limits.continueTurns ?? (input.interactive === true ? UNTIL_DONE_CEILING : 0)
+  // Satu ekspresi untuk tiga pemakai: catatan langkah terakhir, kabar batas,
+  // dan `willContinue`. Yang dijanjikan ke model dan ke user harus sama dengan
+  // yang sungguh dijalankan.
+  const mayContinue = allowed > 0 && !isChild
   let idleStreak = input.idleStreak ?? 0
   /*
    * Fakta akhir giliran untuk keputusan lanjutan, diisi dari `steps`. Nama
@@ -853,7 +860,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
         referenceBudget,
         summariserWindow,
         summarise,
-        focus: text,
+        // Permintaan user, bukan `text`: di giliran lanjutan `text` adalah
+        // instruksi `[titah]` generik, dan peringkas yang menjaga detailnya
+        // membuang justru yang perlu bertahan melewati pemadatan.
+        focus: input.originalText ?? text,
       })
     } catch {
       // Gagal memadatkan berarti "lewati pemadatan giliran ini", bukan
@@ -1139,10 +1149,20 @@ export async function prompt(input: PromptInput): Promise<Message> {
          * terpasang tetap menempel sesudah rencana ditulis.
          */
         const toolCallsSoFar = steps.reduce((total, step) => total + step.toolCalls.length, 0)
-        const planNudge =
-          !isChild && toolCallsSoFar >= PLAN_NUDGE_AFTER && readPlan(session.id) === undefined
+        // "Punya rencana" di sini HARUS sama dengan yang dibaca `continueReason`:
+        // rencana kemarin tidak pernah dilanjutkan, jadi ia juga tidak boleh
+        // membungkam pengingat yang meminta rencana untuk permintaan ini.
+        const plan = readPlan(session.id)
+        const freshPlan = plan !== undefined && plan.updated >= chainStarted
+        const planNudge = !isChild && toolCallsSoFar >= PLAN_NUDGE_AFTER && !freshPlan
         const closing = (base: Record<string, unknown>): Record<string, unknown> => {
-          const notes = [...(planNudge ? [PLAN_NUDGE_NOTE] : []), ...(lastStep ? [LAST_STEP_NOTE] : [])]
+          const notes = [
+            ...(planNudge ? [PLAN_NUDGE_NOTE] : []),
+            // Penutup "Want me to continue?" berakhir `?`, dan aturan pertanyaan
+            // memutus rantai. Tanpa lanjutan, bertanya ke user justru langkah
+            // yang benar — jadi larangannya bersyarat.
+            ...(lastStep ? [mayContinue ? `${LAST_STEP_NOTE}\n\n${NO_ASK_NOTE}` : LAST_STEP_NOTE] : []),
+          ]
           return {
             ...base,
             ...(lastStep ? { activeTools: [] } : {}),
@@ -1212,7 +1232,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
             referenceBudget,
             summariserWindow,
             summarise,
-            focus: text,
+            // Sama dengan jalur antar-giliran di atas: permintaan asli user.
+            focus: input.originalText ?? text,
             midTurn: {
               keepMessages: MID_TURN_KEEP,
               // `compactWindow` pasti terdefinisi di sini: `overBudget` di atas
@@ -1442,7 +1463,13 @@ export async function prompt(input: PromptInput): Promise<Message> {
         message:
           `Stopped at the ${maxSteps}-step limit for this turn — the work may not be ` +
           `finished. Raise it with "agent.${agentID ?? "build"}.steps" in the config. ` +
-          "Titah continues on its own while the plan has open items; otherwise send another prompt.",
+          // Janji lanjutan hanya bila lanjutan memang hidup: `titah run` tanpa
+          // `continueTurns` tidak pernah melanjutkan, dan user yang menunggu
+          // giliran yang tidak akan datang lebih buruk dari tidak diberi tahu.
+          (mayContinue
+            ? "Titah continues on its own while the plan written for this request has open items; " +
+              "otherwise send another prompt."
+            : "Send another prompt to continue."),
       })
     }
 
@@ -1498,9 +1525,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
         : 0
     }
     willContinue =
-      allowed > 0 &&
+      mayContinue &&
       done < allowed &&
-      !isChild &&
       !controller.signal.aborted &&
       assistant.error === undefined &&
       reason !== undefined &&

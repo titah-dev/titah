@@ -16,8 +16,9 @@ Versioning follows [SemVer](https://semver.org/).
   dulu `0` (mati), sekarang tak diset = sampai selesai; set `0` untuk
   mematikan.
 - **Rem diam:** setelah 2 lanjutan berturut-turut yang tidak berbuat apa-apa
-  (tanpa tool call, atau tanpa edit berkas/`task` dan rencana tidak berubah),
-  rantai berhenti. `Esc` juga menghentikan rantai.
+  (tanpa tool call, atau rencana tidak berubah dan tidak ada `task` maupun
+  tool pengubah selain shell — `bash`/`bash_start` tidak dihitung), rantai
+  berhenti. `Esc` juga menghentikan rantai.
 - **Pengingat rencana:** setelah 8 tool call tanpa rencana, agen utama
   diingatkan menulis rencana berkotak centang.
 

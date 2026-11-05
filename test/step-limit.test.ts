@@ -28,7 +28,7 @@ process.env.TITAH_DB = path.join(root, "step.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver } = await import("../src/core/agent.ts")
-const { createSession } = await import("../src/core/storage/session.ts")
+const { createSession, createChildSession } = await import("../src/core/storage/session.ts")
 const { bus } = await import("../src/core/event.ts")
 
 const project = path.join(root, "proyek")
@@ -159,6 +159,35 @@ test("model diberi tahu bahwa ini langkah terakhir", async () => {
   assert.match(terakhir, /the exact next step/)
 })
 
+test("langkah terakhir melarang bertanya 'lanjut?' hanya bila Titah memang akan melanjutkan", async () => {
+  /*
+   * Penutup "Want me to continue?" berakhir `?`, dan aturan pertanyaan memutus
+   * rantai lanjutan — model yang bersikap sopan menghentikan pekerjaannya
+   * sendiri. Tapi di `titah run` tanpa lanjutan, kalimat itu justru bohong:
+   * tidak ada yang akan melanjutkan, dan bertanya ke user adalah langkah yang
+   * benar.
+   */
+  const NO_ASK = "Do not ask whether to continue — Titah will continue on its own."
+  const lastInstructions = async (interactive: boolean, child = false): Promise<string> => {
+    const seen = neverStops()
+    const parent = createSession(project)
+    const session = child ? createChildSession(parent.id, project, "anak") : parent
+    await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek", interactive })
+    return seen.instructions.at(-1) ?? ""
+  }
+
+  const hidup = await lastInstructions(true)
+  assert.match(hidup, /last step/)
+  assert.ok(hidup.includes(NO_ASK))
+  const mati = await lastInstructions(false)
+  assert.match(mati, /last step/)
+  assert.ok(!mati.includes(NO_ASK))
+  // Sub-agent tidak pernah dilanjutkan Titah; induknya yang memutuskan.
+  const anak = await lastInstructions(true, true)
+  assert.match(anak, /last step/)
+  assert.ok(!anak.includes(NO_ASK))
+})
+
 test("langkah SEBELUM yang terakhir tidak menerima kabar itu", () => {
   // Kalau ia muncul di setiap langkah, model bekerja sepanjang giliran seolah
   // waktunya habis — dan itu menghasilkan pekerjaan tergesa dari langkah satu.
@@ -202,6 +231,32 @@ test("user DIBERI TAHU bahwa gilirannya berhenti di batas", async () => {
   assert.equal(batas.length, 1)
   assert.match(batas[0] ?? "", /may not be/, "menyebut bahwa pekerjaannya bisa jadi belum selesai")
   assert.match(batas[0] ?? "", /agent\.pendek\.steps/, "dan menyebut cara menaikkannya")
+})
+
+test("kabar batas tidak menjanjikan lanjutan saat lanjutan mati", async () => {
+  /*
+   * `titah run` tanpa `continueTurns` tidak pernah melanjutkan sendiri. Kabar
+   * yang tetap berbunyi "continues on its own" membuat user menunggu giliran
+   * yang tidak akan datang. Di client interaktif janjinya benar — dan
+   * disebut syaratnya: rencana yang ditulis untuk permintaan INI.
+   */
+  const run = async (interactive: boolean): Promise<string> => {
+    neverStops()
+    const session = createSession(project)
+    const seen = await collectNotices(session.id)
+    await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek", interactive })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    seen.stop()
+    return seen.messages.find((message) => message.includes("step limit")) ?? ""
+  }
+
+  const mati = await run(false)
+  assert.match(mati, /step limit/)
+  assert.doesNotMatch(mati, /continues on its own/)
+  assert.match(mati, /send another prompt/i)
+
+  const hidup = await run(true)
+  assert.match(hidup, /Titah continues on its own while the plan written for this request has open items/)
 })
 
 test("giliran yang selesai WAJAR tidak diberi kabar apa pun", async () => {
@@ -398,9 +453,10 @@ test("jendela dideklarasikan tanpa turnTokens memakai plafon 200, bukan 40", asy
   assert.equal(seen.calls, 200)
 })
 
-test("anggaran yang DITULIS user mengalahkan yang diturunkan", async () => {
-  // Kalau tidak, mendeklarasikan jendela diam-diam membuang anggaran yang
-  // sengaja dipasang seseorang.
+test("turnTokens yang ditulis user tetap berlaku walau contextWindow dideklarasikan", async () => {
+  // Anggaran turunan dari jendela sudah dihapus; yang dipatok di sini adalah
+  // bahwa jendela yang besar tidak diam-diam membuang anggaran yang sengaja
+  // dipasang seseorang.
   fs.writeFileSync(
     path.join(project, "titah.json"),
     JSON.stringify({
@@ -416,7 +472,7 @@ test("anggaran yang DITULIS user mengalahkan yang diturunkan", async () => {
   const session = createSession(project)
 
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
-  assert.ok(seen.calls <= 5, `anggaran 25 token yang berlaku, bukan 5 juta (${seen.calls} langkah)`)
+  assert.ok(seen.calls <= 5, `anggaran 25 token yang berlaku, bukan plafon 200 langkah (${seen.calls} langkah)`)
 })
 
 // ---------- anggaran SESI ----------

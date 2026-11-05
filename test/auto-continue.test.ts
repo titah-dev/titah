@@ -126,12 +126,12 @@ afterEach(() => {
 /**
  * Model yang tidak pernah berhenti; merekam teks user tiap giliran.
  *
- * `writes` membuatnya MENULIS berkas alih-alih membaca. Lanjutan yang hanya
- * membaca tanpa menyentuh rencana dihitung menganggur dan direm setelah dua,
- * jadi test yang ingin melihat jatahnya sendiri habis butuh model yang
- * kelihatan bekerja.
+ * `action` memilih tool tiap langkah. Lanjutan yang hanya membaca tanpa
+ * menyentuh rencana dihitung menganggur dan direm setelah dua, jadi test yang
+ * ingin melihat jatahnya sendiri habis butuh model yang MENULIS. `bash` ada
+ * untuk memastikan perintah shell tidak dihitung bekerja.
  */
-function neverStops(writes = false): { prompts: string[]; calls: number } {
+function neverStops(action: "read" | "write" | "bash" = "read"): { prompts: string[]; calls: number } {
   const seen: { prompts: string[]; calls: number } = { prompts: [], calls: 0 }
 
   const model = new MockLanguageModelV4({
@@ -155,12 +155,14 @@ function neverStops(writes = false): { prompts: string[]; calls: number } {
             {
               type: "tool-call",
               toolCallId: `c${seen.calls}`,
-              ...(writes
+              ...(action === "write"
                 ? {
                     toolName: "write",
                     input: JSON.stringify({ path: "a.txt", content: `isi ${seen.calls}\n` }),
                   }
-                : { toolName: "read", input: JSON.stringify({ path: "a.txt" }) }),
+                : action === "bash"
+                  ? { toolName: "bash", input: JSON.stringify({ command: "true" }) }
+                  : { toolName: "read", input: JSON.stringify({ path: "a.txt" }) }),
             },
             { type: "finish", finishReason: "tool-calls", usage: USAGE },
           ]
@@ -265,13 +267,30 @@ test("jatah lanjutan adalah batas KERAS", async () => {
   // "Sampai selesai" tetap harus punya ujung, kalau tidak rencana yang tidak
   // pernah dicentang akan berputar sampai kuota provider habis.
   configWith({ limits: { continueTurns: 3 } })
-  neverStops(true)
+  neverStops("write")
 
   const session = createSession(project)
   planInTurn(session.id, "- [ ] tidak pernah dicentang")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 4, "asli + tiga lanjutan, lalu berhenti")
+})
+
+test("dua lanjutan yang hanya menjalankan bash dengan rencana tak berubah menghentikan rangkaian", async () => {
+  /*
+   * `bash` memang `mutates` (supaya /undo mengambil snapshot), tapi model yang
+   * berputar menjalankan `ls` dan `git status` tidak sedang bekerja. Kalau bash
+   * dihitung kemajuan, rem menganggur tidak pernah menyala dan rangkaian ini
+   * berjalan sampai jatah lima habis.
+   */
+  configWith({ limits: { continueTurns: 5 } })
+  neverStops("bash")
+
+  const session = createSession(project)
+  planInTurn(session.id, "- [ ] tidak pernah dicentang")
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+
+  assert.equal(turns(session.id), 3, "asli + 2 lanjutan menganggur, lalu berhenti")
 })
 
 test("giliran yang selesai WAJAR tidak dilanjutkan karena rencana terbuka yang tidak ditulis rangkaian ini", async () => {

@@ -7,11 +7,14 @@ import type { LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 import {
   closingText,
+  continuationText,
   continueReason,
   isIdleContinuation,
   isProgressCall,
   type TurnEnding,
 } from "../src/core/continuation.ts"
+import { bashTool } from "../src/core/tool/bash.ts"
+import { bashStartTool } from "../src/core/tool/background.ts"
 
 /**
  * "Jalan sampai selesai" — lanjutan yang dipicu oleh giliran yang berakhir
@@ -30,7 +33,9 @@ process.env.TITAH_DB = path.join(root, "until.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver, abort } = await import("../src/core/agent.ts")
-const { createSession, createChildSession, listMessages } = await import("../src/core/storage/session.ts")
+const { createSession, createChildSession, listMessages, savePlan } = await import(
+  "../src/core/storage/session.ts"
+)
 const { bus } = await import("../src/core/event.ts")
 
 const project = path.join(root, "proyek")
@@ -147,6 +152,36 @@ test("lanjutan yang hanya mendelegasikan lewat task tetap kemajuan", () => {
   assert.equal(isProgressCall("read", mutating), false)
   const progress = ["task", "read"].filter((name) => isProgressCall(name, mutating)).length
   assert.equal(isIdleContinuation(2, progress, "a", "a"), false)
+})
+
+test("perintah shell tidak dihitung kemajuan walau tool-nya mutates", () => {
+  /*
+   * Nama dibaca dari definisi tool yang SAMA yang dijalankan, bukan disalin:
+   * daftar nama shell di continuation.ts yang tertinggal saat tool di-rename
+   * diam-diam mengembalikan bash menjadi "kemajuan".
+   */
+  const mutating = new Set([bashTool.name, bashStartTool.name, "write"])
+  assert.equal(bashTool.mutates, true)
+  assert.equal(bashStartTool.mutates, true)
+  assert.equal(isProgressCall(bashTool.name, mutating), false)
+  assert.equal(isProgressCall(bashStartTool.name, mutating), false)
+  assert.equal(isProgressCall("write", mutating), true)
+  assert.equal(isProgressCall("mcp_server_tool", new Set(["mcp_server_tool"])), true)
+})
+
+test("lanjutan karena rencana terbuka tidak mengaku mentok batas", () => {
+  /*
+   * Giliran 'open-plan' berakhir wajar. Mengatakan "stopped at a limit" ke
+   * model adalah fakta yang salah, dan teks ini tersimpan di model_message —
+   * dibaca lagi di setiap giliran sesudahnya.
+   */
+  assert.equal(
+    continuationText("open-plan"),
+    "[titah] Your plan for this request still has unchecked items. Continue with them; " +
+      "do not restart checked items. Update the plan as you complete each one.",
+  )
+  assert.doesNotMatch(continuationText("open-plan"), /limit/)
+  assert.match(continuationText("limit"), /stopped at a limit/)
 })
 
 // ---------- loopnya ----------
@@ -480,6 +515,25 @@ test("pengingat berhenti setelah rencana ditulis", async () => {
   const nudged = seen.system.map((text) => text.includes(NUDGE))
   assert.deepEqual(nudged.slice(8, 10), [true, true])
   assert.ok(nudged.slice(10).every((value) => !value), "sesudah rencana ada, tidak ada pengingat")
+})
+
+test("rencana lama dari sebelum giliran tidak menahan pengingat", async () => {
+  /*
+   * Lanjutan hanya membaca rencana yang ditulis rangkaian ini. Pengingat yang
+   * puas dengan rencana kemarin berarti model tidak pernah diminta menulis
+   * rencana yang justru dibutuhkan lanjutan — dua definisi "punya rencana"
+   * yang saling meniadakan.
+   */
+  configWith({ agent: { panjang: { mode: "primary", steps: 30 } } })
+  const seen = reader(10)
+
+  const session = createSession(project)
+  savePlan(session.id, "- [ ] pekerjaan kemarin")
+  // Menjamin `updated` < `chainStarted`; milidetik yang sama dihitung segar.
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "panjang" })
+
+  assert.equal(seen.system[8]?.includes(NUDGE), true, "langkah ke-9 tetap diingatkan")
 })
 
 test("pengingat dan catatan langkah terakhir dikirim bersamaan bila keduanya berlaku", async () => {
