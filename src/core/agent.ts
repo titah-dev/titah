@@ -154,6 +154,22 @@ function lastStepCost(steps: readonly { usage: LanguageModelUsage }[]): number {
 }
 
 /**
+ * Berapa tool call dalam satu giliran sebelum model diingatkan menulis rencana.
+ * Dihitung per giliran, bukan sepanjang rangkaian lanjutan: tiap giliran
+ * lanjutan yang lupa menulis rencana pantas diingatkan lagi.
+ */
+const PLAN_NUDGE_AFTER = 8
+
+/**
+ * Lanjutan-sampai-selesai membaca kotak centang di rencana; tanpa rencana ia
+ * buta. Ditulis sebagai alasan, bukan larangan, supaya pekerjaan kecil tidak
+ * dipaksa ber-rencana.
+ */
+const PLAN_NUDGE_NOTE =
+  "You have taken several actions without a plan. If this work has more than a few steps, " +
+  "write it now with the plan tool as - [ ] checkboxes; Titah uses them to keep going until the work is done."
+
+/**
  * Yang dikatakan ke model pada langkah terakhir.
  *
  * Ditulis sebagai kabar, bukan perintah kerja: yang diminta bukan "selesaikan
@@ -1106,14 +1122,33 @@ export async function prompt(input: PromptInput): Promise<Message> {
          * sebagai pesan berarti ia ikut tersimpan dan terbaca lagi di giliran
          * berikutnya, sebagai perintah yang sudah kedaluwarsa.
          */
-        const closing = (base: Record<string, unknown>): Record<string, unknown> =>
-          lastStep
-            ? {
-                ...base,
-                activeTools: [],
-                instructions: `${system}\n\n${LAST_STEP_NOTE}`,
-              }
-            : base
+        /*
+         * Pengingat rencana lewat `instructions` juga, dengan alasan yang sama
+         * seperti LAST_STEP_NOTE di atas: ini keadaan giliran ini. Sebagai
+         * pesan riwayat ia tersimpan dan terbaca lagi sebagai perintah
+         * kedaluwarsa, padahal rencananya mungkin sudah ditulis.
+         *
+         * Rencana dibaca langsung tiap langkah, bukan dibekukan di awal giliran:
+         * begitu model menulisnya, pengingat harus berhenti di langkah
+         * berikutnya. Sub-agent tidak pernah diingatkan — rencana milik sesi
+         * induk, dan anak tidak punya lanjutan yang membacanya.
+         *
+         * `instructions` SELALU dikirim eksplisit, termasuk saat tidak ada
+         * catatan: AI SDK membawa `instructions` dari prepareStep ke langkah
+         * berikutnya. Tanpa mengembalikannya ke `system`, pengingat yang sudah
+         * terpasang tetap menempel sesudah rencana ditulis.
+         */
+        const toolCallsSoFar = steps.reduce((total, step) => total + step.toolCalls.length, 0)
+        const planNudge =
+          !isChild && toolCallsSoFar >= PLAN_NUDGE_AFTER && readPlan(session.id) === undefined
+        const closing = (base: Record<string, unknown>): Record<string, unknown> => {
+          const notes = [...(planNudge ? [PLAN_NUDGE_NOTE] : []), ...(lastStep ? [LAST_STEP_NOTE] : [])]
+          return {
+            ...base,
+            ...(lastStep ? { activeTools: [] } : {}),
+            instructions: notes.length === 0 ? system : `${system}\n\n${notes.join("\n\n")}`,
+          }
+        }
         try {
           // Pesan langkah yang BARU selesai ditakar sekali di sini, untuk dua
           // besaran yang BEDA dan sempat tertukar:

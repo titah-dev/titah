@@ -30,7 +30,7 @@ process.env.TITAH_DB = path.join(root, "until.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver, abort } = await import("../src/core/agent.ts")
-const { createSession, listMessages } = await import("../src/core/storage/session.ts")
+const { createSession, createChildSession, listMessages } = await import("../src/core/storage/session.ts")
 const { bus } = await import("../src/core/event.ts")
 
 const project = path.join(root, "proyek")
@@ -379,4 +379,116 @@ test("notice lanjutan menyebut alasannya", async () => {
     notice,
     "Continuing on its own (1 of 50) — the model announced a step without taking it. Press Esc to stop.",
   )
+})
+
+// ---------- pengingat rencana ----------
+
+const NUDGE = "You have taken several actions without a plan"
+const LAST_STEP = "--- last step ---"
+
+function systemText(options: LanguageModelV4CallOptions): string {
+  return options.prompt
+    .filter((message) => message.role === "system")
+    .map((message) => (typeof message.content === "string" ? message.content : ""))
+    .join("\n")
+}
+
+function toolCallStep(id: string, toolName: string, input: unknown): LanguageModelV4StreamPart[] {
+  return [
+    { type: "stream-start", warnings: [] },
+    { type: "tool-call", toolCallId: id, toolName, input: JSON.stringify(input) },
+    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+  ]
+}
+
+/**
+ * Model yang membaca `reads` kali (tiap langkah satu tool call), lalu menutup
+ * dengan teks. `planAt` = indeks langkah yang menulis rencana sebagai ganti
+ * membaca. Merekam apa yang DIKIRIM ke model, bukan apa yang dihitung agent.
+ */
+function reader(reads: number, planAt?: number): { system: string[]; nonSystem: string[] } {
+  const seen = { system: [] as string[], nonSystem: [] as string[] }
+  const model = new MockLanguageModelV4({
+    doStream: async (options: LanguageModelV4CallOptions) => {
+      const index = seen.system.length
+      seen.system.push(systemText(options))
+      seen.nonSystem.push(
+        JSON.stringify(options.prompt.filter((message) => message.role !== "system")),
+      )
+      const chunks =
+        index >= reads
+          ? textOnly("selesai.")
+          : index === planAt
+            ? toolCallStep(`p${index}`, "plan", { text: "- [ ] satu\n- [ ] dua" })
+            : toolCallStep(`r${index}`, "read", { path: "a.txt" })
+      return { stream: simulateReadableStream({ chunks }) }
+    },
+  })
+  restore?.()
+  restore = setModelResolver(() => model)
+  return seen
+}
+
+test("agent primary yang sudah 8 tool call tanpa rencana menerima pengingat lewat instructions", async () => {
+  configWith({ agent: { panjang: { mode: "primary", steps: 30 } } })
+  const seen = reader(10)
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "panjang" })
+
+  const nudged = seen.system.map((text) => text.includes(NUDGE))
+  assert.deepEqual(
+    nudged,
+    [false, false, false, false, false, false, false, false, true, true, true],
+    "langkah ke-9 adalah yang pertama punya 8 tool call di belakangnya",
+  )
+})
+
+test("pengingat tidak masuk riwayat model_message", async () => {
+  configWith({ agent: { panjang: { mode: "primary", steps: 30 } } })
+  const seen = reader(10)
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "panjang" })
+  await prompt({ sessionID: session.id, text: "lagi", agent: "panjang" })
+
+  assert.ok(seen.system.some((text) => text.includes(NUDGE)), "pengingatnya memang terkirim")
+  for (const sent of seen.nonSystem) assert.ok(!sent.includes(NUDGE), "bukan bagian pesan yang dikirim")
+  assert.ok(!JSON.stringify(listMessages(session.id)).includes(NUDGE), "bukan bagian riwayat tersimpan")
+})
+
+test("sub-agent tidak pernah menerima pengingat rencana", async () => {
+  configWith({ agent: { panjang: { mode: "primary", steps: 30 } } })
+  const seen = reader(10)
+
+  const parent = createSession(project)
+  const child = createChildSession(parent.id, project, "anak")
+  await prompt({ sessionID: child.id, text: "kerjakan", agent: "panjang" })
+
+  assert.equal(seen.system.length, 11, "anak benar-benar berjalan 10 tool call")
+  assert.ok(seen.system.every((text) => !text.includes(NUDGE)))
+})
+
+test("pengingat berhenti setelah rencana ditulis", async () => {
+  configWith({ agent: { panjang: { mode: "primary", steps: 30 } } })
+  // Rencana ditulis di langkah ke-10, sesudah pengingat pertama muncul.
+  const seen = reader(13, 9)
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "panjang" })
+
+  const nudged = seen.system.map((text) => text.includes(NUDGE))
+  assert.deepEqual(nudged.slice(8, 10), [true, true])
+  assert.ok(nudged.slice(10).every((value) => !value), "sesudah rencana ada, tidak ada pengingat")
+})
+
+test("pengingat dan catatan langkah terakhir dikirim bersamaan bila keduanya berlaku", async () => {
+  configWith({ agent: { pendek10: { mode: "primary", steps: 10 } } })
+  const seen = reader(100)
+
+  const session = createSession(project)
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek10" })
+
+  const last = seen.system.at(-1) ?? ""
+  assert.ok(last.includes(LAST_STEP) && last.includes(NUDGE))
 })
