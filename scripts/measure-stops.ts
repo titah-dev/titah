@@ -16,7 +16,9 @@ const rows = db
   .all() as { s: string; role: string; data: string }[]
 
 // Pesan user yang isinya hanya "teruskan" — itulah intervensi yang diukur.
-const CONTINUE = /^(lanjut(kan)?|next|continue|teruskan|go on|gas|ok lanjut(kan)?|yes|ya)\.?$/i
+// "yes"/"ya"/"gas" sengaja tidak ikut: itu juga jawaban atas pertanyaan, dan
+// giliran yang bertanya memang tidak boleh dilanjutkan otomatis.
+const CONTINUE = /^(lanjut(kan)?|next|continue|teruskan|go on)\.?$/i
 const TOOL_AS_TEXT = /<tool_call>|<function=/
 
 const lastText = (d: Data): string =>
@@ -42,8 +44,12 @@ for (const r of rows) {
     continue
   }
   const t = (d.parts?.find((p) => p.type === "text")?.text ?? "").trim()
-  if (!CONTINUE.test(t) || !prev || prev.s !== r.s || prev.d.error) continue
-  const last = lastText(prev.d)
+  // Dikosongkan di SETIAP pesan user: "lanjut" kedua berturut-turut tidak
+  // boleh dihitung lagi terhadap assistant yang sudah dijawab pesan pertama.
+  const before = prev
+  prev = null
+  if (!CONTINUE.test(t) || !before || before.s !== r.s || before.d.error) continue
+  const last = lastText(before.d)
   const kind = TOOL_AS_TEXT.test(last)
     ? "tool call written as text"
     : /:\s*$/.test(last)
@@ -51,7 +57,7 @@ for (const r of rows) {
       : last === ""
         ? "empty"
         : "other"
-  const key = `${kind} @ ${modelName(prev.d)}`
+  const key = `${kind} @ ${modelName(before.d)}`
   afterState[key] = (afterState[key] ?? 0) + 1
 }
 

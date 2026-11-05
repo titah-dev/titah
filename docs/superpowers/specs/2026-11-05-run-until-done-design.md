@@ -284,6 +284,14 @@ Tabel `plan` sudah menyimpan **niat**. Bagian ini menambah **referensi**.
   tertulis sebagai teks) yang kini dilanjutkan otomatis. Jumlah giliran
   berakhir `:` di atas jauh lebih besar dari jumlah intervensi karena user
   tidak selalu mengetik "lanjutkan" setelahnya.
+
+  Diukur ulang 2026-11-05 sesudah skripnya dipersempit: pola "lanjutkan"
+  kini hanya `lanjut`/`lanjutkan`/`next`/`continue`/`teruskan`/`go on` (tanpa
+  `yes`/`ya`/`gas`/`ok lanjut`, yang juga bisa berarti jawaban atas
+  pertanyaan), dan pesan assistant sebelumnya dilupakan di setiap pesan user
+  supaya "lanjut" berturut-turut tidak dihitung dua kali. Angka di atas tidak
+  berubah — tidak satu pun intervensi di database ini memakai pola yang
+  dibuang atau beruntun.
 - **Sesudah:** satu tugas tetap, yaitu *"bangun web app X dari folder template
   ./template"* di repo uji, dijalankan dengan `9router/ant` dan
   `9router/gapis`. Catat:
