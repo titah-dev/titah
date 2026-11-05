@@ -17,6 +17,7 @@ import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
 import { hasOpenWork } from "./plan-progress.ts"
 import { sessionTokens } from "./stats.ts"
 import {
+  compactionWindowFor,
   contextWindowFor,
   resolveModel,
   summariserModelFor,
@@ -119,42 +120,12 @@ const MAX_STEPS = 40
  * sesuatu yang benar-benar rusak sebelum ia berputar semalaman.
  */
 const STEP_BACKSTOP = 200
-
-/**
- * Anggaran giliran bawaan, sebagai KELIPATAN jendela model.
- *
- * # Kenapa relatif, bukan angka
- *
- * Anggaran absolut apa pun salah untuk salah satu ujung: 500.000 token adalah
- * empat giliran penuh di model 131k dan lima belas giliran di model 32k. Yang
- * sebanding antar model bukan jumlah tokennya, melainkan berapa kali isi
- * jendela boleh dikirim ulang — dan itulah yang sebenarnya menentukan berapa
- * langkah sebuah giliran dapat.
- *
- * Ini juga menjawab keberatan yang membuat sumbu ini lahir tanpa bawaan sama
- * sekali: Titah tidak tahu harga model dan kantong user, jadi ia tidak boleh
- * memilih angka rupiah. Tapi ia TAHU jendelanya — user sendiri yang
- * mendeklarasikannya — jadi ia boleh memilih angka yang diturunkan darinya.
- *
- * # Kenapa lima
- *
- * Diukur: pada `9router/ant` satu langkah memakan ~15.000 token, dan tembok 20
- * langkah memotong 13% giliran. Ekor alaminya mencapai sekitar 40 langkah, yang
- * berarti ~600.000 token — 4,6 kali jendela 131k. Lima menutupnya dengan
- * sedikit kelonggaran, tanpa membuka pintu ke giliran yang berjalan berjam-jam.
- *
- * # Kenapa `undefined` kalau jendelanya tidak diketahui
- *
- * Tidak ada yang bisa diturunkan dari sesuatu yang tidak dinyatakan, dan
- * menebaknya persis kesalahan yang `contextWindow` sendiri menolak lakukan.
- * Di sana `MAX_STEPS` yang menjaga.
- */
-const TURN_BUDGET_WINDOWS = 5
-
-function derivedTurnBudget(contextWindow: number | undefined): number | undefined {
-  if (contextWindow === undefined) return undefined
-  return contextWindow * TURN_BUDGET_WINDOWS
-}
+// Dulu ada anggaran giliran bawaan 5× contextWindow. Dihapus karena ia
+// menyatukan dua hal yang berbeda: kapasitas model (contextWindow) dan fokus
+// kerja (ambang pemadatan). Dengan pemadatan memegang fokus, giliran panjang
+// tidak lagi perlu dipotong oleh angka turunan yang tak pernah ditulis user;
+// plafon langkah cukup menjadi jaring pengaman dan `limits.turnTokens` tetap
+// ada untuk yang memang ingin anggaran.
 
 /**
  * Yang dikirim ke model pada giliran lanjutan.
@@ -766,6 +737,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
   const modelID = turnModel
   const contextWindow = contextWindowFor(config, modelID)
   if (contextWindow === undefined) warnUndeclaredWindow(session, config, modelID)
+  // Fokus, bukan kapasitas: semua yang berurusan dengan pemadatan memakai ini.
+  const compactWindow = compactionWindowFor(config, modelID)
   // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
   // hanya kalau prune saja tidak cukup sehingga ia benar-benar sampai ke
   // langkah meringkas. `smallModel` sebelum ini TIDAK PERNAH dipakai di mana
@@ -809,7 +782,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
       await autoCompact({
         sessionID: session.id,
         compaction: config.compaction,
-        contextWindow,
+        contextWindow: compactWindow,
         lastStepTokens: lastMeasured,
         systemBytes,
         summariserWindow,
@@ -882,8 +855,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * ke `STEP_BACKSTOP`. Itu bukan bonus tersembunyi — itu maksudnya: user baru
      * saja memilih batas yang benar, jadi batas yang arbitrer minggir.
      */
-    const turnBudget = config.limits.turnTokens ?? derivedTurnBudget(contextWindow)
-    const maxSteps = agentDef?.steps ?? (turnBudget === undefined ? MAX_STEPS : STEP_BACKSTOP)
+    const turnBudget = config.limits.turnTokens
+    const maxSteps =
+      agentDef?.steps ??
+      (turnBudget === undefined && compactWindow === undefined ? MAX_STEPS : STEP_BACKSTOP)
 
     /*
      * Asker dipasang PER GILIRAN, tepat sebelum tool dibangun.
@@ -987,7 +962,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         ...(agentDef?.escalate ? { escalateTo: agentDef.escalate.to } : {}),
         ...(modelID ? { model: modelID } : {}),
         plugins: loaded.plugins,
-        contextWindow,
+        ...(compactWindow === undefined ? {} : { contextWindow: compactWindow }),
         sessionID: session.id,
         cwd: session.directory,
         config,
@@ -1118,7 +1093,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             !config.compaction.auto ||
             !overBudget(
               projectedContext(used, arrived),
-              contextWindow,
+              compactWindow,
               config.compaction.reserved,
               largestToolResult,
             )
@@ -1141,7 +1116,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
           const compacted = await autoCompact({
             sessionID: session.id,
             compaction: config.compaction,
-            contextWindow,
+            contextWindow: compactWindow,
             lastStepTokens: used,
             arrivedTokens: arrived,
             // System prompt SAJA di sini: mid-turn, pesan user giliran ini sudah
@@ -1153,9 +1128,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
             focus: text,
             midTurn: {
               keepMessages: MID_TURN_KEEP,
-              // `contextWindow` pasti terdefinisi di sini: `overBudget` di atas
+              // `compactWindow` pasti terdefinisi di sini: `overBudget` di atas
               // sudah pulang false kalau tidak.
-              budgetBytes: tailBudgetBytes(contextWindow ?? 0, config.compaction.reserved),
+              budgetBytes: tailBudgetBytes(compactWindow ?? 0, config.compaction.reserved),
             },
             growthMargin: largestToolResult,
           })
@@ -1364,12 +1339,6 @@ export async function prompt(input: PromptInput): Promise<Message> {
         message:
           `Stopped at this turn's token budget — ${spentTokens.toLocaleString()} of ` +
           `${turnBudget.toLocaleString()} spent across ${steps.length} steps. ` +
-          // Anggaran turunan harus MENYEBUT dirinya turunan. Angka yang tidak
-          // pernah ditulis user, muncul tanpa penjelasan, terbaca sebagai batas
-          // misterius alih-alih sebagai sesuatu yang bisa ia ubah.
-          (config.limits.turnTokens === undefined
-            ? `That is the default: ${TURN_BUDGET_WINDOWS}× the model's context window. `
-            : "") +
           'The work may not be finished. Raise it with "limits.turnTokens", or send another ' +
           "prompt to continue from where it stopped.",
       })
@@ -1379,8 +1348,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
         sessionID: streamSessionID,
         message:
           `Stopped at the ${maxSteps}-step limit for this turn — the work may not be ` +
-          `finished. Raise it with "agent.${agentID ?? "build"}.steps" in the config, or ` +
-          "send another prompt to continue from where it stopped.",
+          `finished. Raise it with "agent.${agentID ?? "build"}.steps" in the config. ` +
+          "Titah continues on its own while the plan has open items; otherwise send another prompt.",
       })
     }
 

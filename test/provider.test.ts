@@ -5,6 +5,7 @@ import {
   resolveCredential,
   resolveModel,
   ProviderError,
+  compactionWindowFor,
   contextWindowFor,
   summariserModelFor,
   summariserWindowFor,
@@ -286,4 +287,36 @@ test("undeclaredContextWindows menyebut model yang dikonfigurasi tanpa batas", (
     },
   })
   assert.deepEqual(undeclaredContextWindows(config), ["ollama/llama3:8b"])
+})
+
+test("ambang pemadatan memakai compactAt model, lalu compaction.target, dan tidak pernah melebihi jendela", () => {
+  const cfg = Config.parse({
+    compaction: { target: 131072 },
+    provider: {
+      p: {
+        models: {
+          besar: { contextWindow: 1_000_000 },
+          fokus: { contextWindow: 1_000_000, compactAt: 200000 },
+          kecil: { contextWindow: 32768 },
+        },
+      },
+    },
+  })
+  assert.equal(compactionWindowFor(cfg, "p/besar"), 131072)
+  // compactAt per model menang atas target global.
+  assert.equal(compactionWindowFor(cfg, "p/fokus"), 200000)
+  // Target lebih besar dari jendela dijepit: kapasitas asli tetap batas keras.
+  assert.equal(compactionWindowFor(cfg, "p/kecil"), 32768)
+
+  const tanpaWindow = Config.parse({
+    compaction: { target: 131072 },
+    provider: { p: { models: { x: {} } } },
+  })
+  // Jendela tidak dideklarasikan berarti pemadatan mati, apa pun targetnya.
+  assert.equal(compactionWindowFor(tanpaWindow, "p/x"), undefined)
+
+  const tanpaTarget = Config.parse({
+    provider: { p: { models: { besar: { contextWindow: 1_000_000 } } } },
+  })
+  assert.equal(compactionWindowFor(tanpaTarget, "p/besar"), 1_000_000)
 })

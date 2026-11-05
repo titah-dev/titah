@@ -83,6 +83,12 @@
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
                 },
+                "compactAt": {
+                  "description": "Compact when the context reaches this many tokens, even if the model's window is larger. Keeps long turns focused. Never exceeds contextWindow. For this model; overrides compaction.target.",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
                 "price": {
                   "description": "Price per 1M tokens. Declared, never guessed — `titah stats` reports unpriced models separately rather than counting them as free.",
                   "type": "object",
@@ -914,6 +920,12 @@
           "default": true,
           "description": "Compact automatically when the context fills up",
           "type": "boolean"
+        },
+        "target": {
+          "description": "Compact when the context reaches this many tokens, even if the model's window is larger. Keeps long turns focused. Never exceeds contextWindow.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "reserved": {
           "default": 8192,

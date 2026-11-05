@@ -52,6 +52,16 @@ export const ProviderModel = z.object({
     .positive()
     .optional()
     .describe("Context window in tokens. Required for automatic compaction on this model."),
+  compactAt: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Compact when the context reaches this many tokens, even if the model's window is larger. " +
+        "Keeps long turns focused. Never exceeds contextWindow. " +
+        "For this model; overrides compaction.target.",
+    ),
   price: ModelPrice.optional().describe(
     "Price per 1M tokens. Declared, never guessed — `titah stats` reports unpriced models " +
       "separately rather than counting them as free.",
@@ -424,6 +434,15 @@ export const Permission = z
 export const Compaction = z
   .object({
     auto: z.boolean().default(true).describe("Compact automatically when the context fills up"),
+    target: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Compact when the context reaches this many tokens, even if the model's window is larger. " +
+          "Keeps long turns focused. Never exceeds contextWindow.",
+      ),
     reserved: z
       .number()
       .int()

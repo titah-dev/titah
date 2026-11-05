@@ -196,6 +196,26 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
 }
 
 /**
+ * Jendela yang dipakai pemadatan — FOKUS, bukan kapasitas.
+ *
+ * Dipisah dari `contextWindowFor` karena model berjendela sejuta token tetap
+ * lebih tajam kalau dipadatkan jauh sebelum penuh. Dijepit ke `contextWindow`
+ * supaya target yang salah ketik tidak pernah melewati kapasitas asli, dan
+ * `undefined` kalau jendela tidak dideklarasikan: aturan "tidak dideklarasikan
+ * berarti mati" tidak boleh bocor lewat target.
+ */
+export function compactionWindowFor(config: Config, full?: string): number | undefined {
+  const window = contextWindowFor(config, full)
+  if (window === undefined) return undefined
+  const target = full ?? config.model
+  const slash = target === undefined ? -1 : target.indexOf("/")
+  const modelId = target === undefined ? "" : target.slice(slash + 1)
+  const providerId = target === undefined ? "" : target.slice(0, slash)
+  const compactAt = config.provider[providerId]?.models[modelId]?.compactAt
+  return Math.min(compactAt ?? config.compaction.target ?? Infinity, window)
+}
+
+/**
  * Model yang MENJALANKAN giliran: milik agent kalau ia menyatakannya, kalau tidak
  * override yang diminta pemanggil.
  *
