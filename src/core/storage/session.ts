@@ -578,6 +578,13 @@ export interface SplitRequest {
   protectedBlock: ModelMessage[]
   /** Percakapan yang sedang berjalan, tumbuh tiap langkah. */
   tail: ModelMessage[]
+  /**
+   * Indeks pesan TERAKHIR pasangan referensi di `protectedBlock`, atau
+   * undefined bila tidak ada referensi. Dihitung di sini dari bagian-bagian
+   * yang sama yang dirakit `requestShape`, bukan dicari ulang dari isi pesan
+   * oleh pemasang tanda cache — dua cara menemukan satu batas akan menyimpang.
+   */
+  referencesEnd?: number
 }
 
 /**
@@ -597,15 +604,20 @@ export function splitModelRequest(sessionID: string, referenceBudget?: number): 
   const { memory, references, plan } = protectedParts(sessionID, referenceBudget)
   const compaction = latestCompaction(sessionID)
 
+  // `requestShape` menaruh memori lalu referensi paling depan.
+  const referencesEnd = references.length > 0 ? memory.length + references.length - 1 : undefined
+
   if (!compaction) {
     return {
       protectedBlock: requestShape(undefined, plan, [], memory, references),
       tail: rows.map((row) => row.message),
+      referencesEnd,
     }
   }
   return {
     protectedBlock: requestShape(compaction.summary, plan, [], memory, references),
     tail: rows.filter((row) => row.seq > compaction.seq).map((row) => row.message),
+    referencesEnd,
   }
 }
 

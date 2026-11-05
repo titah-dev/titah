@@ -896,6 +896,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
     })
     const cached = buildCachedRequest({
       protectedBlock: split.protectedBlock,
+      referencesEnd: split.referencesEnd,
       tail: [...split.tail, userTurn],
       decision: cacheDecision,
     })
@@ -1260,6 +1261,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
           const after = splitModelRequest(session.id, referenceBudget)
           const rebuilt = buildCachedRequest({
             protectedBlock: after.protectedBlock,
+            referencesEnd: after.referencesEnd,
             tail: after.tail,
             decision: shouldCache({
               npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",

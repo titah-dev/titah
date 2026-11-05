@@ -115,6 +115,46 @@ test("breakpoint dipasang di UJUNG blok stabil, bukan di tengahnya", () => {
   assert.equal(messages[2]?.providerOptions, undefined, "ekor tidak pernah ditandai")
 })
 
+test("referensi yang di-pin mendapat breakpoint kedua di ujung pasangannya", () => {
+  /*
+   * Satu-satunya tanda ada di ujung blok terlindung, sesudah rencana — dan
+   * rencana berubah di hampir setiap lanjutan. Tanpa tanda kedua, referensi
+   * yang bisa sebesar seperempat ambang dibayar penuh setiap kali rencana
+   * dicentang. Anthropic mengizinkan empat; ini yang kedua.
+   */
+  const { messages, breakpoints } = buildCachedRequest({
+    protectedBlock: [
+      msg("user", "<references>…"),
+      msg("assistant", "ok"),
+      msg("user", "<plan>…"),
+      msg("assistant", "ok"),
+    ],
+    referencesEnd: 1,
+    tail: [msg("user", "EKOR")],
+    decision: { style: "anthropic", reason: "" },
+  })
+
+  assert.equal(breakpoints, 2)
+  const ephemeral = { cacheControl: { type: "ephemeral" } }
+  assert.equal(messages[0]?.providerOptions, undefined)
+  assert.deepEqual(messages[1]?.providerOptions?.["anthropic"], ephemeral)
+  assert.equal(messages[2]?.providerOptions, undefined)
+  assert.deepEqual(messages[3]?.providerOptions?.["anthropic"], ephemeral)
+  assert.equal(messages[4]?.providerOptions, undefined, "ekor tidak pernah ditandai")
+})
+
+test("referensi di ujung blok terlindung tidak ditandai dua kali", () => {
+  // Tanpa rencana/ringkasan, ujung referensi ADALAH ujung blok — satu tanda.
+  const { messages, breakpoints } = buildCachedRequest({
+    protectedBlock: [msg("user", "<references>…"), msg("assistant", "ok")],
+    referencesEnd: 1,
+    tail: [msg("user", "EKOR")],
+    decision: { style: "anthropic", reason: "" },
+  })
+  assert.equal(breakpoints, 1)
+  assert.deepEqual(messages[1]?.providerOptions?.["anthropic"], { cacheControl: { type: "ephemeral" } })
+})
+
 test("tanpa blok stabil, tanda jatuh pada pesan PERTAMA percakapan", () => {
   // Ia stabil — tidak pernah berubah lagi setelah ditulis — dan tanpa tanda apa
   // pun Anthropic tidak meng-cache apa pun, justru pada giliran awal ketika

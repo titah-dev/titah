@@ -155,7 +155,8 @@ export interface CachedRequest {
 }
 
 /**
- * Merakit permintaan dalam urutan stabil→volatil, dengan SATU titik potong cache.
+ * Merakit permintaan dalam urutan stabil→volatil, dengan satu titik potong
+ * cache di ujung awalan stabil — ditambah satu di ujung referensi bila ada.
  *
  * # Kenapa system prompt tidak ikut di sini, dan kenapa itu tetap ter-cache
  *
@@ -186,13 +187,15 @@ export interface CachedRequest {
  * menulis cache yang tidak akan pernah dibaca.
  */
 export function buildCachedRequest(options: {
-  /** Blok yang bertahan lintas giliran: memori, ringkasan, rencana. */
+  /** Blok yang bertahan lintas giliran: memori, referensi, ringkasan, rencana. */
   protectedBlock: ModelMessage[]
+  /** Indeks ujung pasangan referensi di `protectedBlock` — lihat `SplitRequest`. */
+  referencesEnd?: number
   /** Percakapan yang sedang berjalan. */
   tail: ModelMessage[]
   decision: CacheDecision
 }): CachedRequest {
-  const { protectedBlock, tail, decision } = options
+  const { protectedBlock, referencesEnd, tail, decision } = options
   const messages = [...protectedBlock, ...tail]
 
   if (decision.style !== "anthropic" || messages.length === 0) {
@@ -202,12 +205,23 @@ export function buildCachedRequest(options: {
   // Indeks pesan stabil TERAKHIR. Blok terlindungi kalau ada; kalau tidak,
   // pesan pertama percakapan — yang juga tidak pernah berubah lagi.
   const mark = protectedBlock.length > 0 ? protectedBlock.length - 1 : 0
+  /*
+   * Tanda kedua di ujung referensi. Tanda di atas duduk sesudah rencana, yang
+   * berubah hampir setiap lanjutan; tanpa tanda ini referensi — sampai
+   * seperempat ambang pemadatan — dibayar penuh setiap kali rencana dicentang.
+   * Anthropic mengizinkan empat tanda. Bila referensi adalah ujung blok, ia
+   * sudah tercakup tanda pertama dan tidak ditandai dua kali.
+   */
+  const marks = new Set([mark])
+  if (referencesEnd !== undefined && referencesEnd >= 0 && referencesEnd < protectedBlock.length) {
+    marks.add(referencesEnd)
+  }
 
   return {
     messages: messages.map((message, index) =>
-      index === mark ? withCacheBreakpoint(message, decision.style) : message,
+      marks.has(index) ? withCacheBreakpoint(message, decision.style) : message,
     ),
     decision,
-    breakpoints: 1,
+    breakpoints: marks.size,
   }
 }

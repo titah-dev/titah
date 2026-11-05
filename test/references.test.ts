@@ -3,6 +3,8 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test, { after } from "node:test"
+import type { LanguageModelV4CallOptions, LanguageModelV4Prompt } from "@ai-sdk/provider"
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "titah-refs-")))
 process.env.XDG_DATA_HOME = path.join(root, "data")
@@ -19,10 +21,17 @@ const {
   referenceCacheBytes,
   REFERENCE_OVERHEAD_BYTES,
 } = await import("../src/core/references.ts")
-const { prompt } = await import("../src/core/agent.ts")
+const { prompt, setModelResolver } = await import("../src/core/agent.ts")
 const { planTool } = await import("../src/core/tool/plan.ts")
-const { createSession, appendModelMessages, saveCompaction, savePlan, readPlan, listModelMessages } =
-  await import("../src/core/storage/session.ts")
+const {
+  createSession,
+  appendModelMessages,
+  saveCompaction,
+  savePlan,
+  readPlan,
+  listModelMessages,
+  splitModelRequest,
+} = await import("../src/core/storage/session.ts")
 
 after(() => fs.rmSync(root, { recursive: true, force: true }))
 
@@ -112,6 +121,93 @@ test("referensi ada di permintaan sebelum ringkasan dan rencana", () => {
   assert.ok(references >= 0 && summary >= 0 && plan >= 0, text)
   assert.ok(references < summary, "referensi sebelum ringkasan")
   assert.ok(summary < plan, "ringkasan sebelum rencana")
+})
+
+test("referencesEnd menunjuk ujung pasangan referensi di blok yang SUNGGUH dikirim", () => {
+  /*
+   * Indeks dihitung dari bagian-bagian yang sama yang dirakit jadi
+   * protectedBlock, lalu dicocokkan ke isinya: pesan sebelumnya harus pesan
+   * user yang dibuka <references>. Indeks yang meleset satu menaruh tanda cache
+   * di rencana atau memori, dan satu-satunya gejalanya adalah tagihan.
+   */
+  const { dir, sessionID } = project({ "tpl/index.html": "<p>t</p>" })
+  addReference(sessionID, path.join(dir, "tpl"))
+  savePlan(sessionID, "- [ ] satu")
+
+  const split = splitModelRequest(sessionID)
+  const end = split.referencesEnd
+  assert.ok(end !== undefined)
+  const opener = split.protectedBlock[end - 1]
+  assert.equal(opener?.role, "user")
+  assert.ok(typeof opener?.content === "string" && opener.content.startsWith("<references>"))
+  assert.equal(split.protectedBlock[end]?.role, "assistant")
+  assert.ok(end < split.protectedBlock.length - 1, "rencana menyusul sesudahnya")
+
+  const { sessionID: kosong } = project({})
+  assert.equal(splitModelRequest(kosong).referencesEnd, undefined)
+})
+
+test("giliran Anthropic sungguh mengirim tanda cache di ujung referensi DAN ujung blok", async () => {
+  /*
+   * Unit test `buildCachedRequest` lulus walau agent.ts lupa meneruskan
+   * `referencesEnd` — yang dipatok di sini adalah permintaan yang sampai ke
+   * model.
+   */
+  const { dir, sessionID } = project({ "tpl/index.html": "<p>templat</p>" })
+  fs.writeFileSync(
+    path.join(dir, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      model: "a/m",
+      provider: { a: { npm: "@ai-sdk/anthropic", models: { m: { contextWindow: 200000 } } } },
+    }),
+  )
+  let sent: LanguageModelV4Prompt = []
+  const model = new MockLanguageModelV4({
+    doStream: async (options: LanguageModelV4CallOptions) => {
+      sent = options.prompt
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: "ok" },
+            { type: "text-end", id: "t" },
+            {
+              type: "finish",
+              finishReason: "stop",
+              usage: {
+                inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+                outputTokens: { total: 5, text: undefined, reasoning: undefined },
+              },
+            },
+          ],
+        }),
+      }
+    },
+  })
+  const restore = setModelResolver(() => model)
+  try {
+    // Giliran pertama mengisi riwayat; cache baru dipakai mulai giliran kedua.
+    // `model` eksplisit: tanpa override, `providerNpmFor` menerima undefined
+    // dan jatuh ke openai-compatible (dilaporkan terpisah, di luar perbaikan ini).
+    await prompt({ sessionID, text: "satu", model: "a/m" })
+    addReference(sessionID, path.join(dir, "tpl"))
+    savePlan(sessionID, "- [ ] satu")
+    await prompt({ sessionID, text: "dua", model: "a/m" })
+  } finally {
+    restore()
+  }
+
+  const marked = sent
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => message.providerOptions?.["anthropic"]?.["cacheControl"] !== undefined)
+  assert.equal(marked.length, 2, "dua tanda: ujung referensi dan ujung blok terlindung")
+  const opener = sent[(marked[0]?.index ?? 0) - 1]
+  assert.equal(opener?.role, "user")
+  assert.match(JSON.stringify(opener?.content), /<references>/)
+  assert.match(JSON.stringify(sent[(marked[1]?.index ?? 0) - 1]?.content), /<plan>/)
 })
 
 test("berkas yang tidak muat hanya muncul di manifest", () => {
