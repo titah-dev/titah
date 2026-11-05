@@ -14,9 +14,20 @@ import { bus } from "./event.ts"
 import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt, type Effort } from "./prompt.ts"
 import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
-import { hasOpenWork } from "./plan-progress.ts"
+import {
+  closingText,
+  continuationText,
+  continueReason,
+  IDLE_LIMIT,
+  isFreshPlan,
+  isIdleContinuation,
+  isProgressCall,
+  UNTIL_DONE_CEILING,
+  type ContinueReason,
+} from "./continuation.ts"
 import { sessionTokens } from "./stats.ts"
 import {
+  compactionWindowFor,
   contextWindowFor,
   resolveModel,
   summariserModelFor,
@@ -36,6 +47,7 @@ import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
 import { BUILD_MODES, setPlanExiter } from "./tool/exit-plan.ts"
 import { autoCompact } from "./auto-compact.ts"
+import { addReference, listReferences, referenceBudgetBytes, removeReference, resolveReference } from "./references.ts"
 import { cancelReflection, countToolCalls, shouldReflect, startReflection } from "./learn.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -119,62 +131,12 @@ const MAX_STEPS = 40
  * sesuatu yang benar-benar rusak sebelum ia berputar semalaman.
  */
 const STEP_BACKSTOP = 200
-
-/**
- * Anggaran giliran bawaan, sebagai KELIPATAN jendela model.
- *
- * # Kenapa relatif, bukan angka
- *
- * Anggaran absolut apa pun salah untuk salah satu ujung: 500.000 token adalah
- * empat giliran penuh di model 131k dan lima belas giliran di model 32k. Yang
- * sebanding antar model bukan jumlah tokennya, melainkan berapa kali isi
- * jendela boleh dikirim ulang — dan itulah yang sebenarnya menentukan berapa
- * langkah sebuah giliran dapat.
- *
- * Ini juga menjawab keberatan yang membuat sumbu ini lahir tanpa bawaan sama
- * sekali: Titah tidak tahu harga model dan kantong user, jadi ia tidak boleh
- * memilih angka rupiah. Tapi ia TAHU jendelanya — user sendiri yang
- * mendeklarasikannya — jadi ia boleh memilih angka yang diturunkan darinya.
- *
- * # Kenapa lima
- *
- * Diukur: pada `9router/ant` satu langkah memakan ~15.000 token, dan tembok 20
- * langkah memotong 13% giliran. Ekor alaminya mencapai sekitar 40 langkah, yang
- * berarti ~600.000 token — 4,6 kali jendela 131k. Lima menutupnya dengan
- * sedikit kelonggaran, tanpa membuka pintu ke giliran yang berjalan berjam-jam.
- *
- * # Kenapa `undefined` kalau jendelanya tidak diketahui
- *
- * Tidak ada yang bisa diturunkan dari sesuatu yang tidak dinyatakan, dan
- * menebaknya persis kesalahan yang `contextWindow` sendiri menolak lakukan.
- * Di sana `MAX_STEPS` yang menjaga.
- */
-const TURN_BUDGET_WINDOWS = 5
-
-function derivedTurnBudget(contextWindow: number | undefined): number | undefined {
-  if (contextWindow === undefined) return undefined
-  return contextWindow * TURN_BUDGET_WINDOWS
-}
-
-/**
- * Yang dikirim ke model pada giliran lanjutan.
- *
- * Menunjuk ke RENCANA, bukan mengulang permintaan asli. Mengulang teks aslinya
- * membuat model memulai dari nol — membaca ulang berkas yang sudah dibaca,
- * merencanakan ulang yang sudah direncanakan. Rencananya sudah memuat apa yang
- * tersisa, dan ia satu-satunya bagian yang dijamin utuh menyeberangi batas
- * giliran.
- *
- * Diawali penyebutan Titah dengan sengaja. Kalimat ini masuk ke `model_message`
- * dan akan terbaca lagi di giliran-giliran berikutnya; tanpa penanda, model
- * membacanya sebagai perintah yang pernah diketik user — dan itu tidak benar.
- * Bentuknya mengikuti `planPair`, yang juga menjelaskan asal-usulnya sendiri di
- * dalam teksnya.
- */
-const CONTINUE_TEXT =
-  "[titah] Your previous turn stopped at a limit, not because the work was done. " +
-  "Continue the unfinished items in your plan. Do not restart work that is already " +
-  "checked off. Update the plan as you complete each item."
+// Dulu ada anggaran giliran bawaan 5× contextWindow. Dihapus karena ia
+// menyatukan dua hal yang berbeda: kapasitas model (contextWindow) dan fokus
+// kerja (ambang pemadatan). Dengan pemadatan memegang fokus, giliran panjang
+// tidak lagi perlu dipotong oleh angka turunan yang tak pernah ditulis user;
+// plafon langkah cukup menjadi jaring pengaman dan `limits.turnTokens` tetap
+// ada untuk yang memang ingin anggaran.
 
 /** Token yang sudah dibayar giliran ini: input + output, lintas semua langkah. */
 function tokensSpent(steps: readonly { usage: LanguageModelUsage }[]): number {
@@ -191,6 +153,22 @@ function lastStepCost(steps: readonly { usage: LanguageModelUsage }[]): number {
   if (!last) return 0
   return (last.usage.inputTokens ?? 0) + (last.usage.outputTokens ?? 0)
 }
+
+/**
+ * Berapa tool call dalam satu giliran sebelum model diingatkan menulis rencana.
+ * Dihitung per giliran, bukan sepanjang rangkaian lanjutan: tiap giliran
+ * lanjutan yang lupa menulis rencana pantas diingatkan lagi.
+ */
+const PLAN_NUDGE_AFTER = 8
+
+/**
+ * Lanjutan-sampai-selesai membaca kotak centang di rencana; tanpa rencana ia
+ * buta. Ditulis sebagai alasan, bukan larangan, supaya pekerjaan kecil tidak
+ * dipaksa ber-rencana.
+ */
+const PLAN_NUDGE_NOTE =
+  "You have taken several actions without a plan. If this work has more than a few steps, " +
+  "write it now with the plan tool as - [ ] checkboxes; Titah uses them to keep going until the work is done."
 
 /**
  * Yang dikatakan ke model pada langkah terakhir.
@@ -214,6 +192,9 @@ const LAST_STEP_NOTE = [
   "If you wrote a plan, update your account of it here — the next turn reads the",
   "plan, not this transcript.",
 ].join("\n")
+
+/** Ditempelkan ke LAST_STEP_NOTE hanya bila giliran ini boleh dilanjutkan Titah. */
+const NO_ASK_NOTE = "Do not ask whether to continue — Titah will continue on its own."
 
 /**
  * Ditambahkan ke system prompt HANYA untuk /tim. Sengaja tidak menyebut nama
@@ -384,8 +365,26 @@ export function registerCancel(sessionID: string, controller: AbortController): 
   }
 }
 
+/**
+ * Sesi yang Esc-nya sudah ditekan, sekalipun saat itu tidak ada yang berjalan.
+ *
+ * `running` dihapus di `finally` SEBELUM rekursi lanjutan, jadi Esc yang jatuh
+ * tepat di antara dua giliran tidak menemukan controller apa pun — sinyalnya
+ * hilang dan rangkaiannya jalan terus. Penanda ini yang menyeberangkannya:
+ * diperiksa tepat sebelum lanjutan dimulai, dan dibersihkan saat user mengetik
+ * giliran baru supaya Esc lama tidak memotong rangkaian berikutnya.
+ *
+ * Hari ini tidak ada `await` antara `finally` dan rekursinya, jadi celahnya
+ * belum bisa dimasuki dari luar; Esc yang datang lewat bus atau HTTP mendarat
+ * di controller giliran lanjutan dan membatalkannya di sana. Penanda ini
+ * menjaga supaya `await` pertama yang kelak ditambahkan di celah itu tidak
+ * diam-diam membuat Esc hilang.
+ */
+const abortRequested = new Set<string>()
+
 /** `Esc` di TUI membatalkan SELURUH turn, bukan hanya tool yang sedang jalan (Q17). */
 export function abort(sessionID: string): boolean {
+  abortRequested.add(sessionID)
   const controller = running.get(sessionID)
   const handle = cancellable.get(sessionID)
   controller?.abort()
@@ -427,6 +426,21 @@ export interface PromptInput {
    */
   continuation?: number
   /**
+   * Giliran ini datang dari client yang punya Esc — TUI atau web.
+   *
+   * Menentukan bawaan lanjutan saat `limits.continueTurns` tidak ditulis:
+   * sampai selesai di sini, mati untuk `titah run`. Headless tidak punya cara
+   * menghentikan belanja yang tidak ia minta.
+   */
+  interactive?: boolean
+  /**
+   * Waktu (ms) pesan user ASLI dimulai. Diisi HANYA oleh `prompt()` saat
+   * melanjutkan — alasannya sama dengan `continuation`.
+   */
+  chainStarted?: number
+  /** Lanjutan menganggur berturut-turut sejauh ini. Diisi HANYA oleh `prompt()`. */
+  idleStreak?: number
+  /**
    * Model yang SUDAH diputuskan pemanggil, melewati `turnModelFor`.
    *
    * Dibutuhkan karena `turnModelFor` membuat `agent.<id>.model` menang atas
@@ -448,7 +462,7 @@ export interface PromptInput {
   learn?: boolean
   /**
    * Permintaan user yang MEMULAI rantai giliran ini, sebelum auto-lanjutan
-   * mana pun mengubah `text` jadi `CONTINUE_TEXT`.
+   * mana pun mengubah `text` jadi `continuationText(...)`.
    *
    * Diisi HANYA oleh `prompt()` saat memanggil dirinya sendiri untuk
    * melanjutkan. Refleksi butuh permintaan asli user, bukan instruksi
@@ -698,6 +712,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
    * pesan yang berpura-pura datang dari user.
    */
   const isContinuation = (input.continuation ?? 0) > 0
+  if (!isContinuation) abortRequested.delete(session.id)
+  // Dibekukan di awal, bukan dibaca di akhir: yang ditanyakan adalah apakah
+  // giliran INI menyentuh rencananya, dan apakah rencana itu milik rangkaian ini.
+  const chainStarted = input.chainStarted ?? Date.now()
+  const planBefore = readPlan(session.id)?.text
   if (!isContinuation) {
     const userMessage = createMessage(session.id, "user", [{ type: "text", text: input.text }])
     bus.publish({ type: "message.updated", sessionID: session.id, message: userMessage })
@@ -729,6 +748,27 @@ export async function prompt(input: PromptInput): Promise<Message> {
   let stoppedAtLimit = false
   /** Diputuskan di `finally`, dipakai dua kali: menahan `idle`, lalu melanjutkan. */
   let willContinue = false
+  let reason: ContinueReason | undefined
+  // Tanpa nilai di config, client yang punya Esc berjalan sampai selesai;
+  // `0` yang ditulis eksplisit tetap mematikannya, juga di sana.
+  const allowed =
+    config.limits.continueTurns ?? (input.interactive === true ? UNTIL_DONE_CEILING : 0)
+  // Satu ekspresi untuk tiga pemakai: catatan langkah terakhir, kabar batas,
+  // dan `willContinue`. Yang dijanjikan ke model dan ke user harus sama dengan
+  // yang sungguh dijalankan.
+  const mayContinue = allowed > 0 && !isChild
+  let idleStreak = input.idleStreak ?? 0
+  /*
+   * Fakta akhir giliran untuk keputusan lanjutan, diisi dari `steps`. Nama
+   * tool yang mutasi diisi `buildTools` dari definisi yang SAMA yang
+   * dijalankan — daftar kedua yang disalin tangan akan tertinggal saat ada
+   * tool baru, dan giliran yang menulis berkas lalu dihitung menganggur.
+   */
+  const mutating = new Set<string>()
+  let toolCalls = 0
+  let progressCalls = 0
+  let lastText = ""
+  let calledQuestion = false
 
   const controller = new AbortController()
   running.set(session.id, controller)
@@ -766,6 +806,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
   const modelID = turnModel
   const contextWindow = contextWindowFor(config, modelID)
   if (contextWindow === undefined) warnUndeclaredWindow(session, config, modelID)
+  // Fokus, bukan kapasitas: semua yang berurusan dengan pemadatan memakai ini.
+  const compactWindow = compactionWindowFor(config, modelID)
+  // Dihitung SEKALI dari ambang yang sama, lalu dipakai oleh yang mengirim
+  // (`splitModelRequest`) maupun yang mengukur (`autoCompact`). Dua ekspresi
+  // berarti pasangan referensi yang diukur bisa berbeda dari yang dikirim.
+  const referenceBudget = referenceBudgetBytes(compactWindow)
   // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
   // hanya kalau prune saja tidak cukup sehingga ia benar-benar sampai ke
   // langkah meringkas. `smallModel` sebelum ini TIDAK PERNAH dipakai di mana
@@ -809,12 +855,16 @@ export async function prompt(input: PromptInput): Promise<Message> {
       await autoCompact({
         sessionID: session.id,
         compaction: config.compaction,
-        contextWindow,
+        contextWindow: compactWindow,
         lastStepTokens: lastMeasured,
         systemBytes,
+        referenceBudget,
         summariserWindow,
         summarise,
-        focus: text,
+        // Permintaan user, bukan `text`: di giliran lanjutan `text` adalah
+        // instruksi `[titah]` generik, dan peringkas yang menjaga detailnya
+        // membuang justru yang perlu bertahan melewati pemadatan.
+        focus: input.originalText ?? text,
       })
     } catch {
       // Gagal memadatkan berarti "lewati pemadatan giliran ini", bukan
@@ -839,7 +889,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
     // di tiga giliran akan disela seolah model macet.
     clearLoopWindow(session.id)
 
-    const split = splitModelRequest(session.id)
+    const split = splitModelRequest(session.id, referenceBudget)
     const cacheDecision = shouldCache({
       npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",
       systemText: system,
@@ -847,6 +897,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
     })
     const cached = buildCachedRequest({
       protectedBlock: split.protectedBlock,
+      referencesEnd: split.referencesEnd,
       tail: [...split.tail, userTurn],
       decision: cacheDecision,
     })
@@ -882,8 +933,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * ke `STEP_BACKSTOP`. Itu bukan bonus tersembunyi — itu maksudnya: user baru
      * saja memilih batas yang benar, jadi batas yang arbitrer minggir.
      */
-    const turnBudget = config.limits.turnTokens ?? derivedTurnBudget(contextWindow)
-    const maxSteps = agentDef?.steps ?? (turnBudget === undefined ? MAX_STEPS : STEP_BACKSTOP)
+    const turnBudget = config.limits.turnTokens
+    const maxSteps =
+      agentDef?.steps ??
+      (turnBudget === undefined && compactWindow === undefined ? MAX_STEPS : STEP_BACKSTOP)
 
     /*
      * Asker dipasang PER GILIRAN, tepat sebelum tool dibangun.
@@ -984,10 +1037,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
       messages,
       tools: buildTools({
         mcpTools: mcp.tools,
+        mutating,
         ...(agentDef?.escalate ? { escalateTo: agentDef.escalate.to } : {}),
         ...(modelID ? { model: modelID } : {}),
         plugins: loaded.plugins,
-        contextWindow,
+        ...(compactWindow === undefined ? {} : { contextWindow: compactWindow }),
         sessionID: session.id,
         cwd: session.directory,
         config,
@@ -1080,14 +1134,42 @@ export async function prompt(input: PromptInput): Promise<Message> {
          * sebagai pesan berarti ia ikut tersimpan dan terbaca lagi di giliran
          * berikutnya, sebagai perintah yang sudah kedaluwarsa.
          */
-        const closing = (base: Record<string, unknown>): Record<string, unknown> =>
-          lastStep
-            ? {
-                ...base,
-                activeTools: [],
-                instructions: `${system}\n\n${LAST_STEP_NOTE}`,
-              }
-            : base
+        /*
+         * Pengingat rencana lewat `instructions` juga, dengan alasan yang sama
+         * seperti LAST_STEP_NOTE di atas: ini keadaan giliran ini. Sebagai
+         * pesan riwayat ia tersimpan dan terbaca lagi sebagai perintah
+         * kedaluwarsa, padahal rencananya mungkin sudah ditulis.
+         *
+         * Rencana dibaca langsung tiap langkah, bukan dibekukan di awal giliran:
+         * begitu model menulisnya, pengingat harus berhenti di langkah
+         * berikutnya. Sub-agent tidak pernah diingatkan — rencana milik sesi
+         * induk, dan anak tidak punya lanjutan yang membacanya.
+         *
+         * `instructions` SELALU dikirim eksplisit, termasuk saat tidak ada
+         * catatan: AI SDK membawa `instructions` dari prepareStep ke langkah
+         * berikutnya. Tanpa mengembalikannya ke `system`, pengingat yang sudah
+         * terpasang tetap menempel sesudah rencana ditulis.
+         */
+        const toolCallsSoFar = steps.reduce((total, step) => total + step.toolCalls.length, 0)
+        // "Punya rencana" di sini HARUS sama dengan yang dibaca `continueReason`:
+        // rencana kemarin tidak pernah dilanjutkan, jadi ia juga tidak boleh
+        // membungkam pengingat yang meminta rencana untuk permintaan ini.
+        const planNudge =
+          !isChild && toolCallsSoFar >= PLAN_NUDGE_AFTER && !isFreshPlan(readPlan(session.id), chainStarted)
+        const closing = (base: Record<string, unknown>): Record<string, unknown> => {
+          const notes = [
+            ...(planNudge ? [PLAN_NUDGE_NOTE] : []),
+            // Penutup "Want me to continue?" berakhir `?`, dan aturan pertanyaan
+            // memutus rantai. Tanpa lanjutan, bertanya ke user justru langkah
+            // yang benar — jadi larangannya bersyarat.
+            ...(lastStep ? [mayContinue ? `${LAST_STEP_NOTE}\n\n${NO_ASK_NOTE}` : LAST_STEP_NOTE] : []),
+          ]
+          return {
+            ...base,
+            ...(lastStep ? { activeTools: [] } : {}),
+            instructions: notes.length === 0 ? system : `${system}\n\n${notes.join("\n\n")}`,
+          }
+        }
         try {
           // Pesan langkah yang BARU selesai ditakar sekali di sini, untuk dua
           // besaran yang BEDA dan sempat tertukar:
@@ -1118,7 +1200,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             !config.compaction.auto ||
             !overBudget(
               projectedContext(used, arrived),
-              contextWindow,
+              compactWindow,
               config.compaction.reserved,
               largestToolResult,
             )
@@ -1141,21 +1223,23 @@ export async function prompt(input: PromptInput): Promise<Message> {
           const compacted = await autoCompact({
             sessionID: session.id,
             compaction: config.compaction,
-            contextWindow,
+            contextWindow: compactWindow,
             lastStepTokens: used,
             arrivedTokens: arrived,
             // System prompt SAJA di sini: mid-turn, pesan user giliran ini sudah
             // tertulis jadi baris dan ikut di `current`, jadi menyertakannya lagi
             // berarti menghitungnya dua kali.
             systemBytes: Buffer.byteLength(system),
+            referenceBudget,
             summariserWindow,
             summarise,
-            focus: text,
+            // Sama dengan jalur antar-giliran di atas: permintaan asli user.
+            focus: input.originalText ?? text,
             midTurn: {
               keepMessages: MID_TURN_KEEP,
-              // `contextWindow` pasti terdefinisi di sini: `overBudget` di atas
+              // `compactWindow` pasti terdefinisi di sini: `overBudget` di atas
               // sudah pulang false kalau tidak.
-              budgetBytes: tailBudgetBytes(contextWindow ?? 0, config.compaction.reserved),
+              budgetBytes: tailBudgetBytes(compactWindow ?? 0, config.compaction.reserved),
             },
             growthMargin: largestToolResult,
           })
@@ -1174,9 +1258,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
            * lagi — cache ditulis di tempat yang tidak akan pernah cocok, dan
            * satu-satunya gejalanya adalah tagihan yang tidak turun.
            */
-          const after = splitModelRequest(session.id)
+          const after = splitModelRequest(session.id, referenceBudget)
           const rebuilt = buildCachedRequest({
             protectedBlock: after.protectedBlock,
+            referencesEnd: after.referencesEnd,
             tail: after.tail,
             decision: shouldCache({
               npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",
@@ -1327,6 +1412,12 @@ export async function prompt(input: PromptInput): Promise<Message> {
     }
 
     const steps = await result.steps
+    for (const step of steps) {
+      toolCalls += step.toolCalls.length
+      progressCalls += step.toolCalls.filter((call) => isProgressCall(call.toolName, mutating)).length
+    }
+    lastText = closingText(steps)
+    calledQuestion = steps.at(-1)?.toolCalls.some((call) => call.toolName === "question") ?? false
 
     /*
      * Giliran yang berhenti karena kehabisan langkah MENGATAKANNYA.
@@ -1364,12 +1455,6 @@ export async function prompt(input: PromptInput): Promise<Message> {
         message:
           `Stopped at this turn's token budget — ${spentTokens.toLocaleString()} of ` +
           `${turnBudget.toLocaleString()} spent across ${steps.length} steps. ` +
-          // Anggaran turunan harus MENYEBUT dirinya turunan. Angka yang tidak
-          // pernah ditulis user, muncul tanpa penjelasan, terbaca sebagai batas
-          // misterius alih-alih sebagai sesuatu yang bisa ia ubah.
-          (config.limits.turnTokens === undefined
-            ? `That is the default: ${TURN_BUDGET_WINDOWS}× the model's context window. `
-            : "") +
           'The work may not be finished. Raise it with "limits.turnTokens", or send another ' +
           "prompt to continue from where it stopped.",
       })
@@ -1379,8 +1464,14 @@ export async function prompt(input: PromptInput): Promise<Message> {
         sessionID: streamSessionID,
         message:
           `Stopped at the ${maxSteps}-step limit for this turn — the work may not be ` +
-          `finished. Raise it with "agent.${agentID ?? "build"}.steps" in the config, or ` +
-          "send another prompt to continue from where it stopped.",
+          `finished. Raise it with "agent.${agentID ?? "build"}.steps" in the config. ` +
+          // Janji lanjutan hanya bila lanjutan memang hidup: `titah run` tanpa
+          // `continueTurns` tidak pernah melanjutkan, dan user yang menunggu
+          // giliran yang tidak akan datang lebih buruk dari tidak diberi tahu.
+          (mayContinue
+            ? "Titah continues on its own while the plan written for this request has open items; " +
+              "otherwise send another prompt."
+            : "Send another prompt to continue."),
       })
     }
 
@@ -1425,16 +1516,23 @@ export async function prompt(input: PromptInput): Promise<Message> {
      * `stoppedAtLimit` yang keduanya sudah terisi, dan idle harus tahu
      * jawabannya sebelum memutuskan terbit atau tidak.
      */
-    const allowed = config.limits.continueTurns
     const done = input.continuation ?? 0
+    const plan = readPlan(session.id)
+    reason = continueReason({ stoppedAtLimit, lastText, calledQuestion, plan, chainStarted })
+    // Hanya lanjutan yang dinilai: giliran asli yang tidak memanggil tool
+    // adalah jawaban biasa, bukan tanda rangkaiannya berputar di tempat.
+    if (isContinuation) {
+      idleStreak = isIdleContinuation(toolCalls, progressCalls, planBefore, plan?.text)
+        ? idleStreak + 1
+        : 0
+    }
     willContinue =
-      allowed > 0 &&
+      mayContinue &&
       done < allowed &&
-      stoppedAtLimit &&
-      !isChild &&
       !controller.signal.aborted &&
       assistant.error === undefined &&
-      hasOpenWork(readPlan(session.id)?.text)
+      reason !== undefined &&
+      idleStreak < IDLE_LIMIT
 
     if (!willContinue) bus.publish({ type: "session.idle", sessionID: session.id })
 
@@ -1475,7 +1573,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
 
 
   /*
-   * LANJUT SENDIRI, kalau rencananya masih punya pekerjaan.
+   * LANJUT SENDIRI, kalau gilirannya berakhir sebelum pekerjaannya selesai.
    *
    * Inilah "jalan sampai semua task selesai" — dan bentuknya sengaja LOOP DARI
    * GILIRAN, bukan satu giliran tanpa batas.
@@ -1490,33 +1588,54 @@ export async function prompt(input: PromptInput): Promise<Message> {
    * SEMUA syarat di bawah harus benar, dan tiap satunya menutup satu cara loop
    * ini bisa berubah jadi pemborosan:
    *
-   *   - dinyalakan user           — ia membelanjakan uang tanpa bertanya
-   *   - berhenti karena BATAS     — giliran yang selesai wajar memang sudah selesai
+   *   - dinyalakan               — oleh config, atau oleh client yang punya Esc
+   *   - ada ALASAN               — `continueReason`: mentok, mengumumkan tanpa aksi,
+   *                                tool call sebagai teks, atau rencana rangkaian ini terbuka
    *   - bukan sub-agent           — anak tidak mengatur nasibnya sendiri; induknya yang mengatur
    *   - tidak dibatalkan          — Esc berarti berhenti, bukan berhenti lalu mulai lagi
    *   - tidak error               — mengulang kegagalan yang sama tidak membuatnya berhasil
-   *   - rencananya punya sisa     — satu-satunya definisi "belum selesai" yang bisa dinilai mesin
+   *   - tidak menganggur          — dua lanjutan tanpa kemajuan berarti berputar di tempat
    *   - jatah lanjutan masih ada  — batas keras, supaya "sampai selesai" tetap punya ujung
    */
-  if (willContinue) {
+  if (willContinue && reason !== undefined) {
     bus.publish({
       type: "session.notice",
       sessionID: streamSessionID,
       message:
-        `Continuing on its own (${(input.continuation ?? 0) + 1} of ` +
-        `${config.limits.continueTurns}) — the plan still has unfinished items. ` +
-        "Press Esc to stop.",
+        `Continuing on its own (${(input.continuation ?? 0) + 1} of ${allowed}) — ` +
+        `${CONTINUE_LABEL[reason]}. Press Esc to stop.`,
     })
+
+    /*
+     * Diperiksa SESUDAH notice, bukan sebelum: notice itulah yang memberi tahu
+     * user bahwa Esc masih berarti. Esc yang jatuh di celah ini tidak punya
+     * controller untuk dibatalkan — lihat `abortRequested`. `idle` sudah
+     * ditahan di atas, jadi berhenti di sini wajib menerbitkannya sendiri.
+     */
+    if (abortRequested.has(session.id)) {
+      bus.publish({ type: "session.idle", sessionID: session.id })
+      return assistant
+    }
 
     return prompt({
       ...input,
       continuation: (input.continuation ?? 0) + 1,
-      text: CONTINUE_TEXT,
+      chainStarted,
+      idleStreak,
+      text: continuationText(reason),
       originalText: input.originalText ?? input.text,
     })
   }
 
   return assistant
+}
+
+/** Alasan lanjutan seperti yang dibaca user di notice. */
+const CONTINUE_LABEL: Record<ContinueReason, string> = {
+  limit: "the plan still has unfinished items",
+  "open-plan": "the plan still has unfinished items",
+  announced: "the model announced a step without taking it",
+  "text-tool-call": "a tool call came back as text",
 }
 
 const PROGRESS_INTERVAL = 2000
@@ -1776,6 +1895,7 @@ async function builtinTurn(
   turnModel: string | undefined,
 ): Promise<Message> {
   if (name === "compact") return compactTurn(session, config, args.trim(), input, turnModel)
+  if (name === "pin" || name === "unpin") return pinTurn(session, name, args.trim(), input)
   if (name === "agents") return infoTurn(session, input.text, renderAgents(config))
   if (name === "commands") return infoTurn(session, input.text, renderCommands(config))
   if (name === "skills") return infoTurn(session, input.text, renderSkills(config, session.directory))
@@ -1785,6 +1905,39 @@ async function builtinTurn(
     return infoTurn(session, input.text, "Usage: /consensus <question>", true)
   }
   return consensusTurn(session, config, args.trim(), input)
+}
+
+/**
+ * `/pin` tanpa argumen adalah SATU-SATUNYA tampilan atas apa yang dipegang
+ * model sebagai referensi — tidak ada panel TUI untuknya.
+ */
+function pinTurn(session: Session, name: "pin" | "unpin", arg: string, input: PromptInput): Message {
+  if (arg === "") {
+    if (name === "unpin") return infoTurn(session, input.text, "Usage: /unpin <path>", true)
+    const pinned = listReferences(session.id)
+    return infoTurn(
+      session,
+      input.text,
+      pinned.length === 0
+        ? "No pinned references. Use /pin <path> to keep a template or design in front of the model."
+        : ["Pinned references:", ...pinned.map((p) => `  ${p}`)].join("\n"),
+    )
+  }
+  try {
+    if (name === "pin") {
+      const absolute = resolveReference(session.directory, arg)
+      addReference(session.id, absolute)
+      return infoTurn(session, input.text, `Pinned ${absolute}. It is re-sent with every request, including after compaction.`)
+    }
+    // Tanpa pemeriksaan keberadaan: berkas yang sudah dihapus dari disk tetap
+    // harus bisa dilepas.
+    const absolute = resolveInside(session.directory, arg)
+    return removeReference(session.id, absolute)
+      ? infoTurn(session, input.text, `Unpinned ${absolute}.`)
+      : infoTurn(session, input.text, `${absolute} is not pinned. /pin lists what is.`, true)
+  } catch (error) {
+    return infoTurn(session, input.text, error instanceof Error ? error.message : String(error), true)
+  }
 }
 
 /**
@@ -2103,6 +2256,8 @@ interface BuildToolsOptions {
    * memindahkan induknya, dan delegasi diam-diam berjalan di model lain.
    */
   model?: string
+  /** Diisi nama setiap tool aktif yang `mutates`-nya benar. */
+  mutating?: Set<string>
 }
 
 /**
@@ -2263,6 +2418,7 @@ function buildTools(options: BuildToolsOptions): ToolSet {
   const set: ToolSet = {}
 
   for (const definition of activeTools({ ...options, ...(options.mcpTools ? { extra: options.mcpTools } : {}) })) {
+    if (definition.mutates === true) options.mutating?.add(definition.name)
     set[definition.name] = tool({
       description: definition.description,
       inputSchema: definition.inputSchema,

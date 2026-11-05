@@ -52,6 +52,16 @@ export const ProviderModel = z.object({
     .positive()
     .optional()
     .describe("Context window in tokens. Required for automatic compaction on this model."),
+  compactAt: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Compact when the context reaches this many tokens, even if the model's window is larger. " +
+        "Keeps long turns focused. Never exceeds contextWindow. " +
+        "For this model; overrides compaction.target.",
+    ),
   price: ModelPrice.optional().describe(
     "Price per 1M tokens. Declared, never guessed — `titah stats` reports unpriced models " +
       "separately rather than counting them as free.",
@@ -87,6 +97,20 @@ export const Provider = z.object({
     .describe(
       "Send cache_control in the request body. Only for OpenAI-compatible gateways that " +
         "forward it to Anthropic. Ask your gateway operator before turning this on.",
+    ),
+  /**
+   * Hanya berarti bila `cacheControl` menyala. Default false: tanda kedua
+   * belum diverifikasi terhadap gateway mana pun, dan sebagian gateway menolak
+   * lebih dari satu `cache_control` — permintaan yang ditolak jauh lebih mahal
+   * dari cache yang luput. Opt-in sampai terbukti di gateway user sendiri.
+   */
+  cacheReferences: z
+    .boolean()
+    .default(false)
+    .describe(
+      "With cacheControl on, also mark the end of the pinned references message as a " +
+        "cache breakpoint. Opt-in until verified for your gateway: some gateways reject " +
+        "more than one cache_control mark.",
     ),
 })
 
@@ -424,6 +448,15 @@ export const Permission = z
 export const Compaction = z
   .object({
     auto: z.boolean().default(true).describe("Compact automatically when the context fills up"),
+    target: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Compact when the context reaches this many tokens, even if the model's window is larger. " +
+          "Keeps long turns focused. Never exceeds contextWindow.",
+      ),
     reserved: z
       .number()
       .int()
@@ -891,13 +924,14 @@ export const Config = z.object({
        * pemadatan. Jadi loop ini bukan sekadar menghindari masalah lupa — ia
        * memperbaikinya, sementara langkah tanpa batas memperburuknya.
        *
-       * # Kenapa bawaannya NOL
+       * # Kenapa tanpa nilai bawaan
        *
-       * Ia membelanjakan uang tanpa bertanya. Syaratnya memang ketat — harus
-       * mentok DAN rencananya masih punya butir belum dicentang — tapi "ketat"
-       * bukan "gratis". User yang menyalakannya tahu ia sedang menukar
-       * pengawasan dengan kelanjutan; user yang tidak pernah memintanya tidak
-       * boleh menemukan itu sudah terjadi.
+       * Ia membelanjakan uang tanpa bertanya, jadi jawabannya bergantung pada
+       * siapa yang bisa menghentikannya. TUI dan web punya Esc dan penonton:
+       * di sana kosong berarti sampai selesai (jaring 50, rem dua lanjutan
+       * menganggur). `titah run` tidak punya keduanya: di sana kosong berarti
+       * mati. Nilai di skema akan menghapus beda itu — `0` yang ditulis user
+       * harus tetap bisa dibedakan dari "tidak ditulis".
        */
       /*
        * Anggaran untuk SELURUH sesi, bukan satu giliran.
@@ -924,13 +958,13 @@ export const Config = z.object({
         .number()
         .int()
         .min(0)
-        .default(0)
+        .optional()
         .describe(
-          "How many times Titah may continue on its own after a turn stops at a limit, " +
-            "while the plan still has unchecked items. 0 disables it.",
+          "How many times Titah may continue on its own when a turn ends before the work is done. " +
+            "Unset: until done (up to 50) in the TUI and web client, off for titah run. 0 disables it.",
         ),
     })
-    .default({ continueTurns: 0 }),
+    .default({}),
   /*
    * Sakelar untuk SELURUH pembuatan berkas otomatis.
    *

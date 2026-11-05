@@ -84,6 +84,7 @@ import {
   resolveCredential,
   smallModelWindowMissing,
   undeclaredContextWindows,
+  ignoredCompactionFocus,
   ProviderError,
 } from "./core/provider.ts"
 import { effectiveReserved, reservedCollisions } from "./core/compact.ts"
@@ -1258,6 +1259,7 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
 
   out("Context windows")
   const undeclared = undeclaredContextWindows(loaded.config)
+  const ignored = ignoredCompactionFocus(loaded.config)
   if (undeclared.length === 0) {
     out("  all configured models declare one")
   } else {
@@ -1267,6 +1269,10 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
       const modelId = id.slice(slash + 1)
       out(`  ! ${id} — no contextWindow, automatic compaction is off for it`)
       out(`      add provider.${providerId}.models."${modelId}".contextWindow`)
+      // User yang menulis compactAt mengira pemadatannya hidup; tanpa baris
+      // ini ia tidak punya cara tahu angkanya tidak dipakai.
+      const focus = ignored.find((entry) => entry.model === id)
+      if (focus) out(`      ${focus.setting} (${focus.value}) is ignored until contextWindow is declared`)
     }
   }
   // `smallModel` dilaporkan TERPISAH dari daftar di atas, walau modelnya juga
@@ -1294,13 +1300,13 @@ async function cmdDoctor(withProbe: boolean): Promise<void> {
   // bawaannya sendiri.
   const reservedSet = isExplicit(loaded, ["compaction", "reserved"])
   for (const clash of reservedCollisions(loaded.config)) {
-    const capped = effectiveReserved(clash.contextWindow, clash.reserved)
+    const capped = effectiveReserved(clash.compactionWindow, clash.reserved)
     out(
       reservedSet
         ? `  ! ${clash.model} — compaction.reserved (${clash.reserved}) exceeds a quarter of ` +
-            `this ${clash.contextWindow}-token window; using ${capped}`
+            `this ${clash.compactionWindow}-token compaction window; using ${capped}`
         : `  ${clash.model} — the default compaction.reserved (${clash.reserved}) exceeds a ` +
-            `quarter of this ${clash.contextWindow}-token window; using ${capped}. Nothing to fix.`,
+            `quarter of this ${clash.compactionWindow}-token compaction window; using ${capped}. Nothing to fix.`,
     )
   }
   out()

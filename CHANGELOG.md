@@ -5,6 +5,53 @@ Versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Titah melanjutkan sendiri sampai selesai
+
+- **`limits.continueTurns` tanpa nilai berarti "sampai selesai"** di TUI dan web
+  (maksimum 50 lanjutan); `titah run` tetap mati. Lanjutan terjadi saat: batas
+  langkah tercapai dengan rencana yang masih punya item terbuka, rencana
+  terbuka di akhir giliran yang wajar, teks berakhir `:` (diumumkan, tak pernah
+  dipanggil), atau tool call tertulis sebagai teks. Tidak pernah terjadi saat
+  model bertanya ke user (`?` atau tool `question`). **Arti bawaan berubah:**
+  dulu `0` (mati), sekarang tak diset = sampai selesai; set `0` untuk
+  mematikan.
+- **Rem diam:** setelah 2 lanjutan berturut-turut yang tidak berbuat apa-apa
+  (tanpa tool call, atau rencana tidak berubah dan tidak ada `task` maupun
+  tool pengubah selain shell — `bash`/`bash_start` tidak dihitung), rantai
+  berhenti. `Esc` juga menghentikan rantai.
+- **Pengingat rencana:** setelah 8 tool call tanpa rencana, agen utama
+  diingatkan menulis rencana berkotak centang.
+
+### Pemadatan: ambang terpisah dari `contextWindow`
+
+- **`compaction.target` dan `compactAt` per model** menentukan kapan pemadatan
+  terjadi, terlepas dari `contextWindow`. Dulu satu-satunya cara menurunkan
+  ambang adalah berbohong soal ukuran jendela.
+- **Anggaran giliran turunan (5× jendela) dihapus.** Dengan jendela yang
+  dideklarasikan, batas langkah 200 kini berfungsi sebagai titik jeda, bukan
+  dinding; lanjutan otomatis menyambungnya.
+- Diperbaiki: pengukuran pemadatan sekarang ikut menghitung memori.
+
+### Referensi yang disematkan
+
+- **`/pin <path>`, `/unpin <path>`, dan `/pin` (daftar)**, serta field
+  `references` pada tool `plan`. Berkas di luar proyek butuh aturan
+  `permission.rules` `external_directory(...)`.
+- Referensi dikirim di prefiks terlindung (memori, referensi, ringkasan,
+  rencana), dengan anggaran 25% dari ambang pemadatan (manifest + isi), dibaca
+  ulang saat mtime atau ukuran berubah.
+- **Tanda cache kedua sesudah referensi.** Provider Anthropic native selalu
+  memasangnya, supaya pembaruan rencana tidak menagih ulang referensi.
+  Pada provider OpenAI-compatible yang memakai `cacheControl`, opsi provider
+  **`cacheReferences`** (bawaan `false`) menyalakannya — opt-in sampai
+  terverifikasi untuk gateway Anda, karena sebagian gateway menolak lebih dari
+  satu tanda `cache_control`.
+
+### Skrip pengukuran
+
+- `node scripts/measure-stops.ts [dbPath]` (read-only) mengelompokkan pesan
+  "lanjutkan/next/..." menurut keadaan assistant sebelumnya.
+
 ## [0.9.1] — 2026-09-27
 
 ### Diperbaiki

@@ -28,7 +28,7 @@ process.env.TITAH_DB = path.join(root, "step.db")
 process.env.HOME = path.join(root, "home")
 
 const { prompt, setModelResolver } = await import("../src/core/agent.ts")
-const { createSession } = await import("../src/core/storage/session.ts")
+const { createSession, createChildSession } = await import("../src/core/storage/session.ts")
 const { bus } = await import("../src/core/event.ts")
 
 const project = path.join(root, "proyek")
@@ -72,7 +72,9 @@ const USAGE = {
  * Instruksi tiap langkah direkam supaya bisa diperiksa APA yang diterima model
  * pada langkah terakhir — bukan hanya bahwa toolnya hilang.
  */
-function neverStops(): { instructions: (string | undefined)[]; calls: number } {
+function neverStops(
+  usage: typeof USAGE = USAGE,
+): { instructions: (string | undefined)[]; calls: number } {
   const seen: { instructions: (string | undefined)[]; calls: number } = {
     instructions: [],
     calls: 0,
@@ -96,14 +98,14 @@ function neverStops(): { instructions: (string | undefined)[]; calls: number } {
               toolName: "read",
               input: JSON.stringify({ path: "a.txt" }),
             },
-            { type: "finish", finishReason: "tool-calls", usage: USAGE },
+            { type: "finish", finishReason: "tool-calls", usage },
           ]
         : [
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "t" },
             { type: "text-delta", id: "t", delta: "berhenti di batas" },
             { type: "text-end", id: "t" },
-            { type: "finish", finishReason: "stop", usage: USAGE },
+            { type: "finish", finishReason: "stop", usage },
           ]
 
       return { stream: simulateReadableStream({ chunks }) }
@@ -157,6 +159,35 @@ test("model diberi tahu bahwa ini langkah terakhir", async () => {
   assert.match(terakhir, /the exact next step/)
 })
 
+test("langkah terakhir melarang bertanya 'lanjut?' hanya bila Titah memang akan melanjutkan", async () => {
+  /*
+   * Penutup "Want me to continue?" berakhir `?`, dan aturan pertanyaan memutus
+   * rantai lanjutan — model yang bersikap sopan menghentikan pekerjaannya
+   * sendiri. Tapi di `titah run` tanpa lanjutan, kalimat itu justru bohong:
+   * tidak ada yang akan melanjutkan, dan bertanya ke user adalah langkah yang
+   * benar.
+   */
+  const NO_ASK = "Do not ask whether to continue — Titah will continue on its own."
+  const lastInstructions = async (interactive: boolean, child = false): Promise<string> => {
+    const seen = neverStops()
+    const parent = createSession(project)
+    const session = child ? createChildSession(parent.id, project, "anak") : parent
+    await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek", interactive })
+    return seen.instructions.at(-1) ?? ""
+  }
+
+  const hidup = await lastInstructions(true)
+  assert.match(hidup, /last step/)
+  assert.ok(hidup.includes(NO_ASK))
+  const mati = await lastInstructions(false)
+  assert.match(mati, /last step/)
+  assert.ok(!mati.includes(NO_ASK))
+  // Sub-agent tidak pernah dilanjutkan Titah; induknya yang memutuskan.
+  const anak = await lastInstructions(true, true)
+  assert.match(anak, /last step/)
+  assert.ok(!anak.includes(NO_ASK))
+})
+
 test("langkah SEBELUM yang terakhir tidak menerima kabar itu", () => {
   // Kalau ia muncul di setiap langkah, model bekerja sepanjang giliran seolah
   // waktunya habis — dan itu menghasilkan pekerjaan tergesa dari langkah satu.
@@ -200,6 +231,32 @@ test("user DIBERI TAHU bahwa gilirannya berhenti di batas", async () => {
   assert.equal(batas.length, 1)
   assert.match(batas[0] ?? "", /may not be/, "menyebut bahwa pekerjaannya bisa jadi belum selesai")
   assert.match(batas[0] ?? "", /agent\.pendek\.steps/, "dan menyebut cara menaikkannya")
+})
+
+test("kabar batas tidak menjanjikan lanjutan saat lanjutan mati", async () => {
+  /*
+   * `titah run` tanpa `continueTurns` tidak pernah melanjutkan sendiri. Kabar
+   * yang tetap berbunyi "continues on its own" membuat user menunggu giliran
+   * yang tidak akan datang. Di client interaktif janjinya benar — dan
+   * disebut syaratnya: rencana yang ditulis untuk permintaan INI.
+   */
+  const run = async (interactive: boolean): Promise<string> => {
+    neverStops()
+    const session = createSession(project)
+    const seen = await collectNotices(session.id)
+    await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek", interactive })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    seen.stop()
+    return seen.messages.find((message) => message.includes("step limit")) ?? ""
+  }
+
+  const mati = await run(false)
+  assert.match(mati, /step limit/)
+  assert.doesNotMatch(mati, /continues on its own/)
+  assert.match(mati, /send another prompt/i)
+
+  const hidup = await run(true)
+  assert.match(hidup, /Titah continues on its own while the plan written for this request has open items/)
 })
 
 test("giliran yang selesai WAJAR tidak diberi kabar apa pun", async () => {
@@ -344,19 +401,18 @@ test("`steps` per-agent MENANG atas plafon yang dinaikkan anggaran", async () =>
   assert.equal(seen.calls, 3, "anggaran besar tidak boleh membatalkan steps: 3")
 })
 
-// ---------- anggaran bawaan, diturunkan dari jendela ----------
+// ---------- jendela tidak lagi menurunkan anggaran ----------
 
-test("anggaran BAWAAN diturunkan dari contextWindow, bukan ditebak", async () => {
-  /*
-   * Sumbu ini lahir tanpa bawaan karena Titah tidak tahu harga model dan
-   * kantong user — dan itu masih benar untuk angka rupiah. Tapi ia TAHU
-   * jendelanya: user sendiri yang mendeklarasikannya. Jadi ia boleh memilih
-   * angka yang DITURUNKAN darinya.
-   *
-   * Jendela 200 token × 5 = anggaran 1.000. Tiap langkah palsu 10 token, jadi
-   * gilirannya berhenti sekitar langkah ke-100 — bukan di 40, dan bukan tanpa
-   * batas.
-   */
+// ~3000 token masuk per langkah: jauh di bawah ambang pemadatan jendela 100k,
+// tapi 200 langkah = 600k, di atas anggaran turunan lama (5 × 100k = 500k) yang
+// akan memotong giliran sekitar langkah ke-167. Tanpa selisih ini test tidak
+// membedakan perilaku lama dari baru.
+const USAGE_BESAR = {
+  inputTokens: { total: 3000, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+  outputTokens: { total: 5, text: undefined, reasoning: undefined },
+}
+
+test("contextWindow yang dideklarasikan tidak lagi menurunkan anggaran giliran", async () => {
   fs.writeFileSync(
     path.join(project, "titah.json"),
     JSON.stringify({
@@ -364,21 +420,43 @@ test("anggaran BAWAAN diturunkan dari contextWindow, bukan ditebak", async () =>
       scaffold: false,
       permission: { bash: "allow" },
       model: "mock/kecil",
-      provider: { mock: { models: { kecil: { contextWindow: 200 } } } },
+      provider: { mock: { models: { kecil: { contextWindow: 100_000 } } } },
     }),
   )
-  const seen = neverStops()
+  neverStops(USAGE_BESAR)
+  const session = createSession(project)
+  const seen = await collectNotices(session.id)
+
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  seen.stop()
+
+  assert.ok(!seen.messages.some((m) => m.includes("token budget")))
+})
+
+test("jendela dideklarasikan tanpa turnTokens memakai plafon 200, bukan 40", async () => {
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow" },
+      model: "mock/kecil",
+      provider: { mock: { models: { kecil: { contextWindow: 100_000 } } } },
+    }),
+  )
+  const seen = neverStops(USAGE_BESAR)
   const session = createSession(project)
 
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
 
-  assert.ok(seen.calls > 40, `berhenti di ${seen.calls} — plafon 40 seharusnya sudah dilewati`)
-  assert.ok(seen.calls <= 100, `berhenti di ${seen.calls} — anggaran turunan 1.000 token`)
+  assert.equal(seen.calls, 200)
 })
 
-test("anggaran yang DITULIS user mengalahkan yang diturunkan", async () => {
-  // Kalau tidak, mendeklarasikan jendela diam-diam membuang anggaran yang
-  // sengaja dipasang seseorang.
+test("turnTokens yang ditulis user tetap berlaku walau contextWindow dideklarasikan", async () => {
+  // Anggaran turunan dari jendela sudah dihapus; yang dipatok di sini adalah
+  // bahwa jendela yang besar tidak diam-diam membuang anggaran yang sengaja
+  // dipasang seseorang.
   fs.writeFileSync(
     path.join(project, "titah.json"),
     JSON.stringify({
@@ -394,34 +472,7 @@ test("anggaran yang DITULIS user mengalahkan yang diturunkan", async () => {
   const session = createSession(project)
 
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
-  assert.ok(seen.calls <= 5, `anggaran 25 token yang berlaku, bukan 5 juta (${seen.calls} langkah)`)
-})
-
-test("kabarnya MENYEBUT bahwa anggarannya turunan", async () => {
-  /*
-   * Angka yang tidak pernah ditulis user, muncul tanpa penjelasan, terbaca
-   * sebagai batas misterius alih-alih sesuatu yang bisa ia ubah.
-   */
-  fs.writeFileSync(
-    path.join(project, "titah.json"),
-    JSON.stringify({
-      skills: { discover: [], paths: [] },
-      scaffold: false,
-      permission: { bash: "allow" },
-      model: "mock/kecil",
-      provider: { mock: { models: { kecil: { contextWindow: 200 } } } },
-    }),
-  )
-  neverStops()
-  const session = createSession(project)
-  const seen = await collectNotices(session.id)
-
-  await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
-  await new Promise((resolve) => setTimeout(resolve, 20))
-  seen.stop()
-
-  const kabar = seen.messages.find((message) => message.includes("token budget")) ?? ""
-  assert.match(kabar, /That is the default: 5× the model's context window/)
+  assert.ok(seen.calls <= 5, `anggaran 25 token yang berlaku, bukan plafon 200 langkah (${seen.calls} langkah)`)
 })
 
 // ---------- anggaran SESI ----------

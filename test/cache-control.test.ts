@@ -96,6 +96,99 @@ test("field lain di badan permintaan tidak tersentuh", () => {
   assert.equal(marked["model"], "ant")
 })
 
+// ---------- tanda kedua: referensi ----------
+
+const messagesOf = (result: unknown) => (result as { messages: Record<string, unknown>[] }).messages
+
+test("pesan user yang dibuka <references> mendapat tanda cache di blok terakhirnya", () => {
+  // Bentuk string dan bentuk deretan blok sama-sama muncul di kabel.
+  const asString = markCacheControl(
+    body([
+      { role: "system", content: "S" },
+      { role: "user", content: "<references>\nfile a\n</references>" },
+      { role: "user", content: "halo" },
+    ]),
+  )
+  assert.deepEqual(messagesOf(asString)[1]?.["content"], [
+    { type: "text", text: "<references>\nfile a\n</references>", cache_control: EPHEMERAL },
+  ])
+  assert.equal(JSON.stringify(messagesOf(asString)[2]).includes("cache_control"), false)
+
+  const asBlocks = markCacheControl(
+    body([
+      { role: "system", content: "S" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<references>" },
+          { type: "text", text: "isi" },
+        ],
+      },
+    ]),
+  )
+  const blocks = messagesOf(asBlocks)[1]?.["content"] as Record<string, unknown>[]
+  assert.equal("cache_control" in (blocks[0] as object), false)
+  assert.deepEqual(blocks[1]?.["cache_control"], EPHEMERAL)
+})
+
+test("tanpa pesan referensi, hanya system yang ditandai seperti sebelumnya", () => {
+  const marked = markCacheControl(
+    body([
+      { role: "system", content: "S" },
+      { role: "user", content: "bahas <references> di tengah kalimat" },
+    ]),
+  )
+  assert.ok(JSON.stringify(messagesOf(marked)[0]).includes("cache_control"))
+  assert.equal(messagesOf(marked)[1]?.["content"], "bahas <references> di tengah kalimat")
+})
+
+test("cacheReferences false hanya menandai system", () => {
+  const marked = markCacheControl(
+    body([
+      { role: "system", content: "S" },
+      { role: "user", content: "<references>x</references>" },
+    ]),
+    { references: false },
+  )
+  assert.ok(JSON.stringify(messagesOf(marked)[0]).includes("cache_control"))
+  assert.equal(messagesOf(marked)[1]?.["content"], "<references>x</references>")
+})
+
+test("blok yang sudah bertanda tidak ditandai dua kali", () => {
+  const once = markCacheControl(
+    body([
+      { role: "system", content: "S" },
+      { role: "user", content: "<references>x</references>" },
+    ]),
+  )
+  assert.equal(markCacheControl(once), once)
+
+  // System sudah bertanda, referensi belum: hanya referensi yang bertambah.
+  const partial = markCacheControl(
+    body([
+      { role: "system", content: [{ type: "text", text: "S", cache_control: EPHEMERAL }] },
+      { role: "user", content: "<references>x</references>" },
+    ]),
+  )
+  assert.equal(JSON.stringify(messagesOf(partial)[0]).split("cache_control").length - 1, 1)
+  assert.ok(JSON.stringify(messagesOf(partial)[1]).includes("cache_control"))
+})
+
+test("opsi references sampai ke kabel lewat withCacheControl", async () => {
+  const { url, seen } = await serve()
+  await withCacheControl(fetch, { references: false })(url, {
+    method: "POST",
+    body: JSON.stringify(
+      body([
+        { role: "system", content: "S" },
+        { role: "user", content: "<references>x</references>" },
+      ]),
+    ),
+  })
+  const sent = seen[0] as { messages: Record<string, unknown>[] }
+  assert.equal(sent.messages[1]?.["content"], "<references>x</references>")
+})
+
 // ---------- pembungkus fetch ----------
 
 async function serve(): Promise<{ url: string; seen: unknown[] }> {

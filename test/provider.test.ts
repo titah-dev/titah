@@ -5,11 +5,13 @@ import {
   resolveCredential,
   resolveModel,
   ProviderError,
+  compactionWindowFor,
   contextWindowFor,
   summariserModelFor,
   summariserWindowFor,
   turnModelFor,
   undeclaredContextWindows,
+  ignoredCompactionFocus,
 } from "../src/core/provider.ts"
 import { Config, Provider } from "../src/core/schema.ts"
 
@@ -286,4 +288,130 @@ test("undeclaredContextWindows menyebut model yang dikonfigurasi tanpa batas", (
     },
   })
   assert.deepEqual(undeclaredContextWindows(config), ["ollama/llama3:8b"])
+})
+
+test("ambang pemadatan memakai compactAt model, lalu compaction.target, dan tidak pernah melebihi jendela", () => {
+  const cfg = Config.parse({
+    compaction: { target: 131072 },
+    provider: {
+      p: {
+        models: {
+          besar: { contextWindow: 1_000_000 },
+          fokus: { contextWindow: 1_000_000, compactAt: 200000 },
+          kecil: { contextWindow: 32768 },
+        },
+      },
+    },
+  })
+  assert.equal(compactionWindowFor(cfg, "p/besar"), 131072)
+  // compactAt per model menang atas target global.
+  assert.equal(compactionWindowFor(cfg, "p/fokus"), 200000)
+  // Target lebih besar dari jendela dijepit: kapasitas asli tetap batas keras.
+  assert.equal(compactionWindowFor(cfg, "p/kecil"), 32768)
+
+  const tanpaWindow = Config.parse({
+    compaction: { target: 131072 },
+    provider: { p: { models: { x: {} } } },
+  })
+  // Jendela tidak dideklarasikan berarti pemadatan mati, apa pun targetnya.
+  assert.equal(compactionWindowFor(tanpaWindow, "p/x"), undefined)
+
+  const tanpaTarget = Config.parse({
+    provider: { p: { models: { besar: { contextWindow: 1_000_000 } } } },
+  })
+  assert.equal(compactionWindowFor(tanpaTarget, "p/besar"), 1_000_000)
+})
+
+test("compactAt atau compaction.target tanpa contextWindow dilaporkan sebagai diabaikan", () => {
+  /*
+   * `compactionWindowFor` mengembalikan undefined tanpa jendela: aturan "tidak
+   * dideklarasikan berarti mati" menang atas target. User yang menulis
+   * compactAt 100000 mengira pemadatannya hidup — tanpa laporan ini, ia tidak
+   * punya cara mengetahui angkanya tidak dipakai.
+   */
+  const cfg = Config.parse({
+    compaction: { target: 131072 },
+    provider: {
+      p: {
+        models: {
+          sendiri: { compactAt: 100000 },
+          global: {},
+          sehat: { contextWindow: 200000, compactAt: 100000 },
+        },
+      },
+    },
+  })
+  assert.deepEqual(ignoredCompactionFocus(cfg), [
+    { model: "p/sendiri", setting: "compactAt", value: 100000 },
+    { model: "p/global", setting: "compaction.target", value: 131072 },
+  ])
+  // Tanpa target, model tanpa jendela dan tanpa compactAt tidak menyetel apa pun.
+  const polos = Config.parse({ provider: { p: { models: { x: {} } } } })
+  assert.deepEqual(ignoredCompactionFocus(polos), [])
+})
+
+/**
+ * Badan permintaan yang SUNGGUH dikirim model hasil `resolveModel`.
+ *
+ * `fetch` global diganti sebelum resolve karena provider.ts meneruskan `fetch`
+ * global ke `withCacheControl` saat itu juga. Respons sengaja gagal: yang
+ * diperiksa hanya badan yang berangkat.
+ */
+async function sentBody(providerOverrides: Record<string, unknown>): Promise<string> {
+  const config = Config.parse({
+    model: "gw/m",
+    provider: {
+      gw: {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: "http://gateway.test/v1", apiKey: "k" },
+        models: { m: {} },
+        ...providerOverrides,
+      },
+    },
+  })
+  const original = globalThis.fetch
+  let body = ""
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    body = typeof init?.body === "string" ? init.body : ""
+    return new Response("{}", { status: 500 })
+  }) as typeof fetch
+  try {
+    const model = resolveModel(config) as unknown as {
+      doGenerate: (options: unknown) => Promise<unknown>
+    }
+    await model
+      .doGenerate({
+        prompt: [
+          { role: "system", content: "S" },
+          { role: "user", content: [{ type: "text", text: "<references>\nR" }] },
+          { role: "assistant", content: [{ type: "text", text: "ok" }] },
+          { role: "user", content: [{ type: "text", text: "halo" }] },
+        ],
+        maxRetries: 0,
+      })
+      .catch(() => {})
+  } finally {
+    globalThis.fetch = original
+  }
+  assert.ok(body !== "", "permintaan harus benar-benar dikirim")
+  return body
+}
+
+test("cacheReferences dari config sampai ke withCacheControl, dan bawaannya mati", async () => {
+  /*
+   * Tanda kedua belum diverifikasi di gateway mana pun; sebagian gateway
+   * menolak lebih dari satu cache_control. Jadi opt-in. Yang dipatok di sini
+   * adalah sambungan provider.ts — test cache-control.ts hanya membuktikan
+   * fungsinya sendiri, bukan bahwa nilai config sampai ke sana.
+   */
+  const marks = (body: string): number => body.split('"cache_control"').length - 1
+
+  const bawaan = await sentBody({ cacheControl: true })
+  assert.equal(marks(bawaan), 1, "hanya system")
+
+  const nyala = await sentBody({ cacheControl: true, cacheReferences: true })
+  assert.equal(marks(nyala), 2, "system dan referensi")
+
+  const mati = await sentBody({ cacheControl: false, cacheReferences: true })
+  assert.equal(marks(mati), 0, "tanpa cacheControl tidak ada tanda sama sekali")
 })

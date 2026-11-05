@@ -83,6 +83,12 @@
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
                 },
+                "compactAt": {
+                  "description": "Compact when the context reaches this many tokens, even if the model's window is larger. Keeps long turns focused. Never exceeds contextWindow. For this model; overrides compaction.target.",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
                 "price": {
                   "description": "Price per 1M tokens. Declared, never guessed — `titah stats` reports unpriced models separately rather than counting them as free.",
                   "type": "object",
@@ -114,6 +120,11 @@
           "cacheControl": {
             "default": false,
             "description": "Send cache_control in the request body. Only for OpenAI-compatible gateways that forward it to Anthropic. Ask your gateway operator before turning this on.",
+            "type": "boolean"
+          },
+          "cacheReferences": {
+            "default": false,
+            "description": "With cacheControl on, also mark the end of the pinned references message as a cache breakpoint. Opt-in until verified for your gateway: some gateways reject more than one cache_control mark.",
             "type": "boolean"
           }
         }
@@ -915,6 +926,12 @@
           "description": "Compact automatically when the context fills up",
           "type": "boolean"
         },
+        "target": {
+          "description": "Compact when the context reaches this many tokens, even if the model's window is larger. Keeps long turns focused. Never exceeds contextWindow.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
         "reserved": {
           "default": 8192,
           "description": "Tokens held back from the window for the next response and for the summarisation call. It does NOT cover the growth of the next step: one more tool result is budgeted separately, from the largest one seen so far in the running turn. Capped at a quarter of the window in use.",
@@ -972,9 +989,7 @@
       }
     },
     "limits": {
-      "default": {
-        "continueTurns": 0
-      },
+      "default": {},
       "type": "object",
       "properties": {
         "turnTokens": {
@@ -990,8 +1005,7 @@
           "maximum": 9007199254740991
         },
         "continueTurns": {
-          "default": 0,
-          "description": "How many times Titah may continue on its own after a turn stops at a limit, while the plan still has unchecked items. 0 disables it.",
+          "description": "How many times Titah may continue on its own when a turn ends before the work is done. Unset: until done (up to 50) in the TUI and web client, off for titah run. 0 disables it.",
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991

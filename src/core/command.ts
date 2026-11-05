@@ -47,7 +47,7 @@ export interface ResolvedCommand {
 }
 
 /** Command bawaan tidak boleh ditimpa user — mereka mengubah alur, bukan prompt. */
-export const BUILTIN_COMMANDS = ["consensus", "tim", "compact", "agents", "skills", "commands"] as const
+export const BUILTIN_COMMANDS = ["consensus", "tim", "compact", "agents", "skills", "commands", "pin", "unpin"] as const
 
 /** Ditangani sepenuhnya di TUI (mengubah keadaan klien), tidak dikirim ke server. */
 export const CLIENT_COMMANDS = [
@@ -111,6 +111,8 @@ export function listCommands(config: Config): { name: string; description: strin
     { name: "consensus", description: "Fan one question out to every agent and compare" },
     { name: "tim", description: "Split one task across your sub-agents" },
     { name: "compact", description: "Summarise the session so far to free up context" },
+    { name: "pin", description: "Pin a file or folder as a reference the model keeps, or list them" },
+    { name: "unpin", description: "Release a pinned reference" },
     { name: "agents", description: "List internal and external agents" },
     { name: "skills", description: "List detected skills" },
     { name: "commands", description: "List these commands" },

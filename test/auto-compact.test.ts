@@ -807,3 +807,67 @@ test("baris di belakang batas air tidak pernah ditulis ulang, dan ringkasan lama
 
   assert.equal(latestCompaction(session.id)?.summary.includes("RINGKASAN BARU"), true)
 })
+
+test("ukuran yang dipakai pemicu pemadatan memuat memori dan referensi yang benar-benar dikirim", async () => {
+  // "Yang diukur bukan yang dikirim", dua kali sekaligus. `measure` dulu
+  // merakit permintaan TANPA memori padahal `splitModelRequest` mengirimnya;
+  // referensi adalah blok terlindung berikutnya dan harus lewat jalur yang sama.
+  //
+  // Angkanya disusun supaya keputusan bergantung pada keduanya: sesudah prune,
+  // ekor saja ~100 token, memori ~500, referensi ~500, anggaran 900. Tanpa
+  // salah satunya permintaan muat dan prune dianggap cukup; dengan keduanya ia
+  // tidak muat dan peringkas harus dipanggil.
+  const { referenceBudgetBytes, addReference } = await import("../src/core/references.ts")
+  const { rememberFact } = await import("../src/core/storage/session.ts")
+  const { overBudget } = await import("../src/core/compact.ts")
+
+  // Direktori sendiri: memori dikunci per proyek, dan test lain di berkas ini
+  // memakai `root` — memori di sana akan mengubah angka mereka.
+  const dir = path.join(root, "proyek-referensi")
+  fs.mkdirSync(path.join(dir, "tpl"), { recursive: true })
+  fs.writeFileSync(path.join(dir, "tpl", "style.css"), `.kartu{}${"r".repeat(700)}`)
+  const session = createSession(dir)
+  rememberFact(dir, `fakta proyek ${"m".repeat(1_800)}`)
+  addReference(session.id, path.join(dir, "tpl"))
+  appendModelMessages(session.id, [
+    { role: "user", content: "baca berkas besar" },
+    call("a"),
+    bigResult("a"),
+    { role: "assistant", content: "selesai" },
+    { role: "user", content: "giliran dua" },
+    { role: "assistant", content: "selesai dua" },
+  ])
+
+  const window = 1000
+  const budget = referenceBudgetBytes(window)
+  let sentAtDecision: ModelMessage[] | undefined
+  const result = await autoCompact({
+    sessionID: session.id,
+    compaction: CONFIG,
+    contextWindow: window,
+    lastStepTokens: 1_200,
+    referenceBudget: budget,
+    summarise: async () => {
+      // Saat peringkas dipanggil, prune sudah tertulis dan ringkasan baru belum
+      // ada: inilah persis permintaan yang dinilai `measure`.
+      sentAtDecision ??= listModelMessages(session.id, budget)
+      return "RINGKASAN"
+    },
+  })
+
+  assert.ok(sentAtDecision, "peringkas harus dipanggil: yang dikirim tidak muat")
+  assert.equal(result.summarised, true)
+  const sent = JSON.stringify(sentAtDecision)
+  assert.match(sent, /<project-memory>/)
+  assert.match(sent, /<references>/)
+  assert.equal(overBudget(requestTokens(sentAtDecision), window, CONFIG.reserved), true)
+
+  // Pembanding: tanpa pasangan memori dan referensi permintaan yang sama MUAT —
+  // jadi keduanya, bukan yang lain, yang membuat peringkas dipanggil.
+  const isProtected = (message: ModelMessage | undefined): boolean =>
+    typeof message?.content === "string" && /^<(project-memory|references)>/.test(message.content)
+  const without = sentAtDecision.filter(
+    (message, index) => !isProtected(message) && !isProtected(sentAtDecision?.[index - 1]),
+  )
+  assert.equal(overBudget(requestTokens(without), window, CONFIG.reserved), false)
+})

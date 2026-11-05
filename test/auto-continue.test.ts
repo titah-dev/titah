@@ -104,13 +104,43 @@ function configWith(extra: Record<string, unknown>): void {
   )
 }
 
-/** Model yang tidak pernah berhenti; merekam teks user tiap giliran. */
-function neverStops(): { prompts: string[]; calls: number } {
+/**
+ * Rencana yang ditulis model DI DALAM giliran — `neverStops` menyimpannya pada
+ * panggilan model pertamanya.
+ *
+ * Bukan `savePlan` sebelum `prompt()`: rencana yang lebih tua dari pesan user
+ * dianggap milik pekerjaan lain dan tidak dilanjutkan, bahkan oleh giliran yang
+ * mentok. Menyimpannya sebelum `prompt()` membuat test bergantung pada apakah
+ * keduanya kebetulan jatuh di milidetik yang sama.
+ */
+let pendingPlan: { sessionID: string; text: string } | undefined
+
+function planInTurn(sessionID: string, text: string): void {
+  pendingPlan = { sessionID, text }
+}
+
+afterEach(() => {
+  pendingPlan = undefined
+})
+
+/**
+ * Model yang tidak pernah berhenti; merekam teks user tiap giliran.
+ *
+ * `action` memilih tool tiap langkah. Lanjutan yang hanya membaca tanpa
+ * menyentuh rencana dihitung menganggur dan direm setelah dua, jadi test yang
+ * ingin melihat jatahnya sendiri habis butuh model yang MENULIS. `bash` ada
+ * untuk memastikan perintah shell tidak dihitung bekerja.
+ */
+function neverStops(action: "read" | "write" | "bash" = "read"): { prompts: string[]; calls: number } {
   const seen: { prompts: string[]; calls: number } = { prompts: [], calls: 0 }
 
   const model = new MockLanguageModelV4({
     doStream: async (options: LanguageModelV4CallOptions) => {
       seen.calls += 1
+      if (pendingPlan) {
+        savePlan(pendingPlan.sessionID, pendingPlan.text)
+        pendingPlan = undefined
+      }
       const users = options.prompt.filter((message) => message.role === "user")
       const last = users.at(-1)?.content
       if (Array.isArray(last)) {
@@ -125,8 +155,14 @@ function neverStops(): { prompts: string[]; calls: number } {
             {
               type: "tool-call",
               toolCallId: `c${seen.calls}`,
-              toolName: "read",
-              input: JSON.stringify({ path: "a.txt" }),
+              ...(action === "write"
+                ? {
+                    toolName: "write",
+                    input: JSON.stringify({ path: "a.txt", content: `isi ${seen.calls}\n` }),
+                  }
+                : action === "bash"
+                  ? { toolName: "bash", input: JSON.stringify({ command: "true" }) }
+                  : { toolName: "read", input: JSON.stringify({ path: "a.txt" }) }),
             },
             { type: "finish", finishReason: "tool-calls", usage: USAGE },
           ]
@@ -162,7 +198,7 @@ test("giliran yang mentok DILANJUTKAN selama rencananya masih punya sisa", async
   const seen = neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu\n- [ ] dua")
+  planInTurn(session.id, "- [ ] satu\n- [ ] dua")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 3, "giliran asli + dua lanjutan")
@@ -178,7 +214,7 @@ test("prompt lanjutan menunjuk ke RENCANA, bukan mengulang permintaan asli", asy
   const seen = neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const lanjutan = seen.prompts.filter((text) => text !== "bangun fitur X")
@@ -193,7 +229,7 @@ test("rencana yang SUDAH habis menghentikan loopnya", async () => {
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [x] satu\n- [x] dua")
+  planInTurn(session.id, "- [x] satu\n- [x] dua")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 1, "tidak ada lanjutan sama sekali")
@@ -211,17 +247,17 @@ test("tanpa rencana sama sekali, tidak pernah melanjutkan", async () => {
   assert.equal(turns(session.id), 1)
 })
 
-test("bawaannya MATI — tidak ada yang melanjutkan tanpa diminta", async () => {
+test("tanpa client interaktif, bawaannya MATI — tidak ada yang melanjutkan tanpa diminta", async () => {
   /*
-   * Ia membelanjakan uang tanpa bertanya. Syaratnya memang ketat, tapi "ketat"
-   * bukan "gratis": user yang tidak pernah memintanya tidak boleh menemukan itu
-   * sudah terjadi.
+   * Ia membelanjakan uang tanpa bertanya. `titah run` tidak punya Esc dan
+   * tidak punya penonton, jadi di sana `continueTurns` yang tidak ditulis tetap
+   * berarti mati — "sampai selesai" hanya bawaan di TUI dan web.
    */
   configWith({})
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] masih banyak")
+  planInTurn(session.id, "- [ ] masih banyak")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 1)
@@ -231,20 +267,39 @@ test("jatah lanjutan adalah batas KERAS", async () => {
   // "Sampai selesai" tetap harus punya ujung, kalau tidak rencana yang tidak
   // pernah dicentang akan berputar sampai kuota provider habis.
   configWith({ limits: { continueTurns: 3 } })
-  neverStops()
+  neverStops("write")
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] tidak pernah dicentang")
+  planInTurn(session.id, "- [ ] tidak pernah dicentang")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 4, "asli + tiga lanjutan, lalu berhenti")
 })
 
-test("giliran yang selesai WAJAR tidak dilanjutkan, walau rencananya punya sisa", async () => {
+test("dua lanjutan yang hanya menjalankan bash dengan rencana tak berubah menghentikan rangkaian", async () => {
   /*
-   * Model berhenti sendiri berarti ia menganggap gilirannya selesai — mungkin
-   * ia sedang menunggu jawaban, mungkin rencananya usang. Melanjutkannya berarti
-   * memaksa bekerja atas keputusan yang bukan miliknya.
+   * `bash` memang `mutates` (supaya /undo mengambil snapshot), tapi model yang
+   * berputar menjalankan `ls` dan `git status` tidak sedang bekerja. Kalau bash
+   * dihitung kemajuan, rem menganggur tidak pernah menyala dan rangkaian ini
+   * berjalan sampai jatah lima habis.
+   */
+  configWith({ limits: { continueTurns: 5 } })
+  neverStops("bash")
+
+  const session = createSession(project)
+  planInTurn(session.id, "- [ ] tidak pernah dicentang")
+  await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
+
+  assert.equal(turns(session.id), 3, "asli + 2 lanjutan menganggur, lalu berhenti")
+})
+
+test("giliran yang selesai WAJAR tidak dilanjutkan karena rencana terbuka yang tidak ditulis rangkaian ini", async () => {
+  /*
+   * Rencananya ditulis SEBELUM pesan user ini, jadi bisa saja usang dari
+   * pekerjaan kemarin. Model yang berhenti wajar di atas rencana seperti itu
+   * menganggap gilirannya selesai; melanjutkannya berarti mengerjakan sesuatu
+   * yang tidak diminta hari ini. Rencana yang ditulis di rangkaian ini memang
+   * dilanjutkan — lihat run-until-done.test.ts.
    */
   configWith({ limits: { continueTurns: 5 } })
   const chunks: LanguageModelV4StreamPart[] = [
@@ -264,6 +319,9 @@ test("giliran yang selesai WAJAR tidak dilanjutkan, walau rencananya punya sisa"
 
   const session = createSession(project)
   savePlan(session.id, "- [ ] masih ada")
+  // `updated` dan awal rangkaian sama-sama `Date.now()`; di milidetik yang
+  // sama rencananya terhitung milik rangkaian ini dan test-nya jadi acak.
+  await new Promise((resolve) => setTimeout(resolve, 5))
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 1)
@@ -352,7 +410,7 @@ test("`session.idle` DITAHAN selama masih ada lanjutan", async () => {
 
   const { bus } = await import("../src/core/event.ts")
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
 
   const controller = new AbortController()
   let idle = 0
@@ -415,7 +473,7 @@ test("giliran yang berhenti karena PERKIRAAN anggaran juga dilanjutkan", async (
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] masih ada")
+  planInTurn(session.id, "- [ ] masih ada")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
 
   assert.equal(turns(session.id), 2, "perkiraan yang menghentikan giliran juga memicu lanjutan")
@@ -434,7 +492,7 @@ test("lanjutan TIDAK menulis pesan user ke riwayat", async () => {
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const dariUser = listMessages(session.id)
@@ -457,7 +515,7 @@ test("panah atas tidak pernah memunculkan kalimat karangan Titah", async () => {
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const { promptHistory } = await import("../src/tui/state.ts")
@@ -476,7 +534,7 @@ test("model TETAP menerima giliran user di permintaannya", async () => {
   const seen = neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.ok(

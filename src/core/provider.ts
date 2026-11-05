@@ -121,7 +121,9 @@ export function resolveModel(config: Config, full?: string): LanguageModel {
          * di namespace `anthropic` dibuang sebelum menyentuh kabel — diam-diam.
          * Lihat cache-control.ts.
          */
-        ...(provider.cacheControl ? { fetch: withCacheControl() } : {}),
+        ...(provider.cacheControl
+          ? { fetch: withCacheControl(fetch, { references: provider.cacheReferences }) }
+          : {}),
         // Tanpa ini, endpoint OpenAI-compatible tidak melaporkan token saat
         // streaming, dan penghitung biaya di footer (Q24) selalu kosong.
         includeUsage: provider.options?.includeUsage ?? true,
@@ -193,6 +195,26 @@ export function contextWindowFor(config: Config, full?: string): number | undefi
   const providerId = target.slice(0, slash)
   const modelId = target.slice(slash + 1)
   return config.provider[providerId]?.models[modelId]?.contextWindow
+}
+
+/**
+ * Jendela yang dipakai pemadatan — FOKUS, bukan kapasitas.
+ *
+ * Dipisah dari `contextWindowFor` karena model berjendela sejuta token tetap
+ * lebih tajam kalau dipadatkan jauh sebelum penuh. Dijepit ke `contextWindow`
+ * supaya target yang salah ketik tidak pernah melewati kapasitas asli, dan
+ * `undefined` kalau jendela tidak dideklarasikan: aturan "tidak dideklarasikan
+ * berarti mati" tidak boleh bocor lewat target.
+ */
+export function compactionWindowFor(config: Config, full?: string): number | undefined {
+  const window = contextWindowFor(config, full)
+  if (window === undefined) return undefined
+  const target = full ?? config.model
+  const slash = target === undefined ? -1 : target.indexOf("/")
+  const modelId = target === undefined ? "" : target.slice(slash + 1)
+  const providerId = target === undefined ? "" : target.slice(0, slash)
+  const compactAt = config.provider[providerId]?.models[modelId]?.compactAt
+  return Math.min(compactAt ?? config.compaction.target ?? Infinity, window)
 }
 
 /**
@@ -273,6 +295,31 @@ export function smallModelWindowMissing(config: Config): string | undefined {
   const small = config.smallModel
   if (small === undefined) return undefined
   return contextWindowFor(config, small) === undefined ? small : undefined
+}
+
+/**
+ * Fokus pemadatan yang ditulis user tapi tidak dipakai, untuk `doctor`.
+ *
+ * Tanpa `contextWindow`, `compactionWindowFor` mengembalikan undefined —
+ * "tidak dideklarasikan berarti mati" menang atas compactAt maupun target.
+ * Urutannya sama dengan `compactionWindowFor`: compactAt model dulu, baru
+ * target global, supaya yang dilaporkan adalah angka yang AKAN dipakai begitu
+ * jendelanya ditulis.
+ */
+export function ignoredCompactionFocus(
+  config: Config,
+): { model: string; setting: "compactAt" | "compaction.target"; value: number }[] {
+  const out: { model: string; setting: "compactAt" | "compaction.target"; value: number }[] = []
+  const target = config.compaction.target
+  for (const [providerId, provider] of Object.entries(config.provider)) {
+    for (const [modelId, model] of Object.entries(provider.models)) {
+      if (model.contextWindow !== undefined) continue
+      const id = `${providerId}/${modelId}`
+      if (model.compactAt !== undefined) out.push({ model: id, setting: "compactAt", value: model.compactAt })
+      else if (target !== undefined) out.push({ model: id, setting: "compaction.target", value: target })
+    }
+  }
+  return out
 }
 
 /** Model yang dikonfigurasi tapi belum punya `contextWindow`, untuk dilaporkan `doctor`. */

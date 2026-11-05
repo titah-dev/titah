@@ -93,6 +93,25 @@ test("doctor menyebut model yang belum punya contextWindow beserta jalur confign
   assert.match(output, /provider\.ollama\.models/)
 })
 
+test("doctor bilang compactAt diabaikan bila contextWindow tidak dideklarasikan", () => {
+  const project = isolatedProject(
+    {
+      skills: { discover: [], paths: [] },
+      provider: {
+        ollama: {
+          options: { baseURL: "http://127.0.0.1:11434/v1" },
+          models: { "llama3:8b": { compactAt: 6000 } },
+        },
+      },
+    },
+    {},
+  )
+  const output = runDoctor(project)
+
+  assert.match(output, /ollama\/llama3:8b/)
+  assert.match(output, /compactAt \(6000\) is ignored until contextWindow is declared/)
+})
+
 test("doctor tidak mengeluh saat semua model sudah punya contextWindow", () => {
   const project = isolatedProject(
     {

@@ -279,6 +279,9 @@ async function handle(
     if (isRunning(sessionID)) throw new HttpError(409, "This session is already processing another turn.")
     const model = typeof body["model"] === "string" ? body["model"] : undefined
     const auto = body["auto"] === true
+    // Hanya client yang punya Esc (TUI, web) yang menyatakan ini; tanpa itu
+    // "lanjut sampai selesai" tetap mati dan giliran berhenti di batasnya.
+    const interactive = body["interactive"] === true
     const agent = typeof body["agent"] === "string" ? body["agent"] : undefined
     /*
      * Divalidasi di sini, bukan diteruskan apa adanya.
@@ -292,7 +295,7 @@ async function handle(
     const wantsStream = (req.headers.accept ?? "").includes("text/event-stream")
     if (!wantsStream) {
       try {
-        return json(res, 200, await prompt({ sessionID, text, auto, ...(model ? { model } : {}), ...(agent ? { agent } : {}), ...(effort ? { effort } : {}) }))
+        return json(res, 200, await prompt({ sessionID, text, auto, ...(interactive ? { interactive } : {}), ...(model ? { model } : {}), ...(agent ? { agent } : {}), ...(effort ? { effort } : {}) }))
       } catch (error) {
         if (error instanceof AgentError) throw new HttpError(409, error.message)
         throw error
@@ -310,6 +313,7 @@ async function handle(
       sessionID,
       text,
       auto,
+      ...(interactive ? { interactive } : {}),
       ...(model ? { model } : {}),
       ...(agent ? { agent } : {}),
       ...(effort ? { effort } : {}),

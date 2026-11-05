@@ -341,7 +341,7 @@ el("composer").onsubmit = async e => {
   await api("/session/" + current + "/message", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, interactive: true }),
   }).catch(err => { status.textContent = "error: " + err.message; setWorking(false) })
 }
 

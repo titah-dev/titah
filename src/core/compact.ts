@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai"
 import type { ModelRow } from "./storage/session.ts"
 import type { Config } from "./schema.ts"
+import { compactionWindowFor } from "./provider.ts"
 
 /**
  * Manajemen konteks: memadatkan percakapan yang sudah panjang menjadi ringkasan,
@@ -746,15 +747,20 @@ export function overBudget(
  */
 export function reservedCollisions(
   config: Config,
-): { model: string; reserved: number; contextWindow: number }[] {
+): { model: string; reserved: number; compactionWindow: number }[] {
   const reserved = config.compaction.reserved
-  const out: { model: string; reserved: number; contextWindow: number }[] = []
+  const out: { model: string; reserved: number; compactionWindow: number }[] = []
   for (const [providerId, provider] of Object.entries(config.provider)) {
-    for (const [modelId, model] of Object.entries(provider.models)) {
-      const contextWindow = model.contextWindow
-      if (contextWindow === undefined) continue
-      if (reserved <= Math.floor(contextWindow / RESERVE_FRACTION)) continue
-      out.push({ model: `${providerId}/${modelId}`, reserved, contextWindow })
+    for (const modelId of Object.keys(provider.models)) {
+      const model = `${providerId}/${modelId}`
+      // Jendela yang SAMA dengan yang dipakai runtime (`compactionWindowFor`),
+      // bukan `contextWindow`: model sejuta token dengan compactAt kecil
+      // dijepit di compactAt, dan doctor yang menakar kapasitas melaporkannya
+      // aman padahal tidak.
+      const compactionWindow = compactionWindowFor(config, model)
+      if (compactionWindow === undefined) continue
+      if (reserved <= Math.floor(compactionWindow / RESERVE_FRACTION)) continue
+      out.push({ model, reserved, compactionWindow })
     }
   }
   return out

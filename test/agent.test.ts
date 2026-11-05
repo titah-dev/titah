@@ -1526,6 +1526,63 @@ test("focus giliran diteruskan ke peringkas di KEDUA jalur, antar-giliran maupun
   )
 })
 
+test("giliran lanjutan memadatkan dengan focus permintaan ASLI user, bukan teks [titah]", async () => {
+  /*
+   * Giliran lanjutan membawa `text` buatan Titah ("[titah] Your plan ...").
+   * Menjadikannya focus berarti peringkas diminta menjaga detail instruksi
+   * generik itu — sementara permintaan user, yang justru harus dijaga utuh
+   * melewati pemadatan di tengah rantai, tidak disebut sama sekali.
+   * Dua jalur, karena dua titik panggil `autoCompact` di agent.ts.
+   */
+  const CONTINUE = "[titah] Your plan for this request still has unchecked items."
+  const ORIGINAL = "periksa modul autentikasi"
+
+  // --- jalur antar-giliran ---
+  const dirBetween = projectWith(windowConfig(8192, { compaction: COMPACTING_CONFIG }))
+  const between = createSession(dirBetween)
+  const modelBetween = recordingModel([textChunk("jawaban", usageWith(7800))])
+  await prompt({ sessionID: between.id, text: bulky("giliran satu") })
+  await prompt({ sessionID: between.id, text: CONTINUE, continuation: 1, originalText: ORIGINAL })
+
+  assert.ok(latestCompaction(between.id), "giliran lanjutan seharusnya memadatkan")
+  const sentBetween = JSON.stringify(modelBetween.doStreamCalls.map((call) => call.prompt))
+  assert.match(sentBetween, /pay particular attention to: periksa modul autentikasi/)
+  assert.doesNotMatch(sentBetween, /pay particular attention to: \[titah\]/)
+
+  // --- jalur mid-turn ---
+  const dirMid = projectWith(windowConfig(8192))
+  fs.writeFileSync(path.join(dirMid, "filler.txt"), "konten aman\n")
+  const mid = createSession(dirMid)
+  const modelMid = recordingModel([
+    textChunk("dicatat", usageWith(130)),
+    [
+      { type: "tool-call", toolCallId: "f1", toolName: "read", input: '{"path":"halo.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2000) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "f2", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(2500) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "f3", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(3000) },
+    ],
+    [
+      { type: "tool-call", toolCallId: "f4", toolName: "read", input: '{"path":"filler.txt"}' },
+      { type: "finish", finishReason: "tool-calls", usage: usageWith(7900) },
+    ],
+    textChunk("selesai", usageWith(130)),
+  ])
+  await prompt({ sessionID: mid.id, text: bulky("giliran satu") })
+  assert.equal(latestCompaction(mid.id), undefined, "giliran satu sendiri belum memadatkan")
+  await prompt({ sessionID: mid.id, text: CONTINUE, continuation: 1, originalText: ORIGINAL })
+
+  assert.ok(latestCompaction(mid.id), "pemadatan mid-turn seharusnya menyimpan ringkasan")
+  const sentMid = JSON.stringify(modelMid.doStreamCalls.map((call) => call.prompt))
+  assert.match(sentMid, /pay particular attention to: periksa modul autentikasi/)
+  assert.doesNotMatch(sentMid, /pay particular attention to: \[titah\]/)
+})
+
 /**
  * Model palsu yang melaporkan inputTokens DARI UKURAN PROMPT SUNGGUHAN.
  *

@@ -179,6 +179,26 @@ const MIGRATIONS: string[] = [
    * apa pun di sana — persis alasan aturan "DITAMBAHKAN DI UJUNG".
    */
   `ALTER TABLE tracking ADD COLUMN sync INTEGER NOT NULL DEFAULT 0;`,
+
+  /*
+   * Berkas acuan yang disematkan user ke sebuah sesi (folder template HTML/CSS).
+   *
+   * Tabel sendiri, dengan alasan yang sama seperti `plan`: pemadatan hanya
+   * menyentuh `model_message`, jadi referensi tidak bisa ikut terhapus saat
+   * riwayat diringkas — dan justru setelah ringkasan itulah model paling mudah
+   * menyimpang dari template.
+   *
+   * Yang disimpan hanya PATH, bukan isi: isinya dibaca dari disk tiap
+   * permintaan supaya suntingan user pada template langsung terlihat.
+   *
+   * DITAMBAHKAN DI UJUNG — lihat komentar `memory` di atas.
+   */
+  `CREATE TABLE reference (
+     session_id TEXT    NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+     path       TEXT    NOT NULL,
+     added      INTEGER NOT NULL,
+     PRIMARY KEY (session_id, path)
+   );`,
 ]
 
 export function database(): DatabaseSync {

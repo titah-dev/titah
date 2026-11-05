@@ -82,6 +82,8 @@ export class Client {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         text,
+        // Ada Esc di TUI, jadi aman melanjutkan giliran tanpa menunggu user.
+        interactive: true,
         ...(model ? { model } : {}),
         ...(agent ? { agent } : {}),
         ...(effort ? { effort } : {}),

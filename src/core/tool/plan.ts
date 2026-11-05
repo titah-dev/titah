@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { RESERVE_FRACTION } from "../compact.ts"
+import { addReference, resolveReference } from "../references.ts"
 import { readPlan, savePlan } from "../storage/session.ts"
 import { ToolError, type TitahTool } from "./types.ts"
 
@@ -81,11 +82,24 @@ export function planBudgetBytes(contextWindow: number | undefined): number {
 }
 
 const inputSchema = z.object({
+  // Opsional supaya `references` bisa dikirim sendirian. Teks yang DIHILANGKAN
+  // berarti "jangan sentuh rencana"; string kosong tetap berarti "hapus" —
+  // keduanya sengaja tidak disamakan, karena menghapus rencana tanpa sengaja
+  // lebih mahal daripada gagal menghapusnya.
   text: z
     .string()
+    .optional()
     .describe(
       "The complete plan, as markdown. This REPLACES the previous plan entirely — " +
-        "send the whole document every time, not a diff. An empty string clears it.",
+        "send the whole document every time, not a diff. An empty string clears it. " +
+        "Omit it to leave the current plan as it is (when you only pin references).",
+    ),
+  references: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Paths (files or folders) the user gave as the design or template to follow. " +
+        "Pinned for the whole session and re-sent after compaction.",
     ),
 })
 
@@ -107,11 +121,31 @@ export const planTool: TitahTool<typeof inputSchema> = {
   // pun. Karena itu ia juga tidak butuh snapshot: `/undo` mengembalikan
   // perubahan berkas, dan rencana bukan berkas.
   async execute(input, ctx) {
+    if (input.text === undefined && (input.references === undefined || input.references.length === 0)) {
+      throw new ToolError("Nothing to do: send `text` to write the plan, `references` to pin paths, or both.")
+    }
+
+    // Diresolusi SEBELUM apa pun ditulis: satu path yang ditolak membatalkan
+    // seluruh panggilan, jadi tidak ada keadaan setengah tersemat yang membuat
+    // model mengira semua referensinya terkirim.
+    const pinned = (input.references ?? []).map((target) => resolveReference(ctx.cwd, target))
+    const pinNote =
+      pinned.length === 0 ? "" : ` Pinned ${pinned.length} reference${pinned.length === 1 ? "" : "s"}.`
+
+    if (input.text === undefined) {
+      for (const absolute of pinned) addReference(ctx.sessionID, absolute)
+      return {
+        title: `pinned ${pinned.length} reference${pinned.length === 1 ? "" : "s"}`,
+        output: `The plan is unchanged.${pinNote} They are re-sent with every request, including after compaction.`,
+      }
+    }
+
     const text = input.text.trim()
 
     if (text === "") {
       savePlan(ctx.sessionID, "")
-      return { title: "plan cleared", output: "Plan cleared." }
+      for (const absolute of pinned) addReference(ctx.sessionID, absolute)
+      return { title: "plan cleared", output: `Plan cleared.${pinNote}` }
     }
 
     const bytes = Buffer.byteLength(text, "utf8")
@@ -129,12 +163,13 @@ export const planTool: TitahTool<typeof inputSchema> = {
 
     const previous = readPlan(ctx.sessionID)
     savePlan(ctx.sessionID, text)
+    for (const absolute of pinned) addReference(ctx.sessionID, absolute)
     const steps = text.split("\n").filter((line) => /^\s*(?:[-*+]|\d+[.)])\s/.test(line)).length
     return {
       title: `plan ${previous ? "updated" : "set"}${steps > 0 ? ` (${steps} steps)` : ""}`,
       output:
         `Plan ${previous ? "updated" : "recorded"} (${bytes}/${budget} bytes). ` +
-        "It will be included in every request for this session until you change it.",
+        `It will be included in every request for this session until you change it.${pinNote}`,
     }
   },
 }
