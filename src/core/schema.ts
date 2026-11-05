@@ -99,16 +99,18 @@ export const Provider = z.object({
         "forward it to Anthropic. Ask your gateway operator before turning this on.",
     ),
   /**
-   * Hanya berarti bila `cacheControl` menyala. Default true: referensi yang
-   * di-pin adalah awalan stabil kedua terbesar, dan menandainya adalah alasan
-   * fitur ini ada. Opsi ini untuk gateway yang menolak lebih dari satu tanda.
+   * Hanya berarti bila `cacheControl` menyala. Default false: tanda kedua
+   * belum diverifikasi terhadap gateway mana pun, dan sebagian gateway menolak
+   * lebih dari satu `cache_control` — permintaan yang ditolak jauh lebih mahal
+   * dari cache yang luput. Opt-in sampai terbukti di gateway user sendiri.
    */
   cacheReferences: z
     .boolean()
-    .default(true)
+    .default(false)
     .describe(
       "With cacheControl on, also mark the end of the pinned references message as a " +
-        "cache breakpoint. Turn off if your gateway rejects more than one cache_control mark.",
+        "cache breakpoint. Opt-in until verified for your gateway: some gateways reject " +
+        "more than one cache_control mark.",
     ),
 })
 

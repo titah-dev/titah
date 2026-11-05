@@ -349,3 +349,69 @@ test("compactAt atau compaction.target tanpa contextWindow dilaporkan sebagai di
   const polos = Config.parse({ provider: { p: { models: { x: {} } } } })
   assert.deepEqual(ignoredCompactionFocus(polos), [])
 })
+
+/**
+ * Badan permintaan yang SUNGGUH dikirim model hasil `resolveModel`.
+ *
+ * `fetch` global diganti sebelum resolve karena provider.ts meneruskan `fetch`
+ * global ke `withCacheControl` saat itu juga. Respons sengaja gagal: yang
+ * diperiksa hanya badan yang berangkat.
+ */
+async function sentBody(providerOverrides: Record<string, unknown>): Promise<string> {
+  const config = Config.parse({
+    model: "gw/m",
+    provider: {
+      gw: {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: "http://gateway.test/v1", apiKey: "k" },
+        models: { m: {} },
+        ...providerOverrides,
+      },
+    },
+  })
+  const original = globalThis.fetch
+  let body = ""
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    body = typeof init?.body === "string" ? init.body : ""
+    return new Response("{}", { status: 500 })
+  }) as typeof fetch
+  try {
+    const model = resolveModel(config) as unknown as {
+      doGenerate: (options: unknown) => Promise<unknown>
+    }
+    await model
+      .doGenerate({
+        prompt: [
+          { role: "system", content: "S" },
+          { role: "user", content: [{ type: "text", text: "<references>\nR" }] },
+          { role: "assistant", content: [{ type: "text", text: "ok" }] },
+          { role: "user", content: [{ type: "text", text: "halo" }] },
+        ],
+        maxRetries: 0,
+      })
+      .catch(() => {})
+  } finally {
+    globalThis.fetch = original
+  }
+  assert.ok(body !== "", "permintaan harus benar-benar dikirim")
+  return body
+}
+
+test("cacheReferences dari config sampai ke withCacheControl, dan bawaannya mati", async () => {
+  /*
+   * Tanda kedua belum diverifikasi di gateway mana pun; sebagian gateway
+   * menolak lebih dari satu cache_control. Jadi opt-in. Yang dipatok di sini
+   * adalah sambungan provider.ts — test cache-control.ts hanya membuktikan
+   * fungsinya sendiri, bukan bahwa nilai config sampai ke sana.
+   */
+  const marks = (body: string): number => body.split('"cache_control"').length - 1
+
+  const bawaan = await sentBody({ cacheControl: true })
+  assert.equal(marks(bawaan), 1, "hanya system")
+
+  const nyala = await sentBody({ cacheControl: true, cacheReferences: true })
+  assert.equal(marks(nyala), 2, "system dan referensi")
+
+  const mati = await sentBody({ cacheControl: false, cacheReferences: true })
+  assert.equal(marks(mati), 0, "tanpa cacheControl tidak ada tanda sama sekali")
+})

@@ -40,9 +40,12 @@ Versioning follows [SemVer](https://semver.org/).
 - Referensi dikirim di prefiks terlindung (memori, referensi, ringkasan,
   rencana), dengan anggaran 25% dari ambang pemadatan (manifest + isi), dibaca
   ulang saat mtime atau ukuran berubah.
-- **Opsi provider `cacheReferences`** (bawaan `true`) menambah tanda cache kedua
-  sesudah referensi pada provider OpenAI-compatible yang memakai
-  `cacheControl`.
+- **Tanda cache kedua sesudah referensi.** Provider Anthropic native selalu
+  memasangnya, supaya pembaruan rencana tidak menagih ulang referensi.
+  Pada provider OpenAI-compatible yang memakai `cacheControl`, opsi provider
+  **`cacheReferences`** (bawaan `false`) menyalakannya — opt-in sampai
+  terverifikasi untuk gateway Anda, karena sebagian gateway menolak lebih dari
+  satu tanda `cache_control`.
 
 ### Skrip pengukuran
 

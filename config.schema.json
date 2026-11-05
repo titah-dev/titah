@@ -123,8 +123,8 @@
             "type": "boolean"
           },
           "cacheReferences": {
-            "default": true,
-            "description": "With cacheControl on, also mark the end of the pinned references message as a cache breakpoint. Turn off if your gateway rejects more than one cache_control mark.",
+            "default": false,
+            "description": "With cacheControl on, also mark the end of the pinned references message as a cache breakpoint. Opt-in until verified for your gateway: some gateways reject more than one cache_control mark.",
             "type": "boolean"
           }
         }

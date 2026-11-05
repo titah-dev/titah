@@ -1439,9 +1439,12 @@ call, or a call to a tool that changes something other than through the shell
 `references` field for the same purpose. A file outside the project needs a
 `permission.rules` entry `external_directory(...)`. References travel in the
 protected prefix (memory, references, summary, plan), capped at 25% of the
-compaction threshold, and are re-read when mtime or size changes. On
-OpenAI-compatible providers with `cacheControl`, a second cache mark follows
-them; set the provider option `cacheReferences` to `false` to drop it.
+compaction threshold, and are re-read when mtime or size changes. On the
+native Anthropic provider a second cache breakpoint follows them, so a plan
+update does not re-bill them. On OpenAI-compatible providers with
+`cacheControl`, set the provider option `cacheReferences` to `true` for the same
+second mark — it is opt-in until verified for your gateway, since some gateways
+reject more than one `cache_control` mark.
 
 Every stop says so — the model is told it is on its last step and asked to close
 by naming what remains, and you get a notice that says which limit was hit and

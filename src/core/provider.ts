@@ -122,7 +122,7 @@ export function resolveModel(config: Config, full?: string): LanguageModel {
          * Lihat cache-control.ts.
          */
         ...(provider.cacheControl
-          ? { fetch: withCacheControl(fetch, { references: provider.cacheReferences !== false }) }
+          ? { fetch: withCacheControl(fetch, { references: provider.cacheReferences }) }
           : {}),
         // Tanpa ini, endpoint OpenAI-compatible tidak melaporkan token saat
         // streaming, dan penghitung biaya di footer (Q24) selalu kosong.
