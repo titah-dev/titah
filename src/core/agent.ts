@@ -46,6 +46,7 @@ import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
 import { BUILD_MODES, setPlanExiter } from "./tool/exit-plan.ts"
 import { autoCompact } from "./auto-compact.ts"
+import { referenceBudgetBytes } from "./references.ts"
 import { cancelReflection, countToolCalls, shouldReflect, startReflection } from "./learn.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -783,6 +784,10 @@ export async function prompt(input: PromptInput): Promise<Message> {
   if (contextWindow === undefined) warnUndeclaredWindow(session, config, modelID)
   // Fokus, bukan kapasitas: semua yang berurusan dengan pemadatan memakai ini.
   const compactWindow = compactionWindowFor(config, modelID)
+  // Dihitung SEKALI dari ambang yang sama, lalu dipakai oleh yang mengirim
+  // (`splitModelRequest`) maupun yang mengukur (`autoCompact`). Dua ekspresi
+  // berarti pasangan referensi yang diukur bisa berbeda dari yang dikirim.
+  const referenceBudget = referenceBudgetBytes(compactWindow)
   // Diresolusi LAMBAT: `resolver` baru dipanggil dari DALAM `autoCompact`, dan
   // hanya kalau prune saja tidak cukup sehingga ia benar-benar sampai ke
   // langkah meringkas. `smallModel` sebelum ini TIDAK PERNAH dipakai di mana
@@ -829,6 +834,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
         contextWindow: compactWindow,
         lastStepTokens: lastMeasured,
         systemBytes,
+        referenceBudget,
         summariserWindow,
         summarise,
         focus: text,
@@ -856,7 +862,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
     // di tiga giliran akan disela seolah model macet.
     clearLoopWindow(session.id)
 
-    const split = splitModelRequest(session.id)
+    const split = splitModelRequest(session.id, referenceBudget)
     const cacheDecision = shouldCache({
       npm: providerNpmFor(config, modelID) ?? "@ai-sdk/openai-compatible",
       systemText: system,
@@ -1168,6 +1174,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
             // tertulis jadi baris dan ikut di `current`, jadi menyertakannya lagi
             // berarti menghitungnya dua kali.
             systemBytes: Buffer.byteLength(system),
+            referenceBudget,
             summariserWindow,
             summarise,
             focus: text,
@@ -1194,7 +1201,7 @@ export async function prompt(input: PromptInput): Promise<Message> {
            * lagi — cache ditulis di tempat yang tidak akan pernah cocok, dan
            * satu-satunya gejalanya adalah tagihan yang tidak turun.
            */
-          const after = splitModelRequest(session.id)
+          const after = splitModelRequest(session.id, referenceBudget)
           const rebuilt = buildCachedRequest({
             protectedBlock: after.protectedBlock,
             tail: after.tail,

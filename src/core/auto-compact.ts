@@ -20,7 +20,7 @@ import {
   listModelRows,
   replaceModelMessage,
   saveCompaction,
-  planPair,
+  protectedParts,
   requestShape,
   summaryPair,
 } from "./storage/session.ts"
@@ -87,6 +87,15 @@ export interface AutoCompactInput {
    * system prompt-nya.
    */
   systemBytes?: number
+  /**
+   * Anggaran byte referensi yang dipakai pengirim — lihat `referenceBudgetBytes`.
+   *
+   * Harus angka yang SAMA dengan yang diberikan ke `splitModelRequest`: anggaran
+   * berbeda berarti pasangan referensi yang diukur lebih kecil atau lebih besar
+   * daripada yang dikirim. Tidak dinyatakan berarti bawaan yang sama dengan
+   * yang dipakai `splitModelRequest` tanpa anggaran.
+   */
+  referenceBudget?: number
 }
 
 export interface AutoCompactResult {
@@ -173,9 +182,10 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
    * `listModelMessages` saat sungguh mengirim, bukan salinannya — supaya yang
    * diukur dan yang dikirim tidak bisa berbeda.
    *
-   * Rencana (issue #5) ikut diukur, dan urutannya pun sama: ringkasan, rencana,
-   * ekor. Ia store terlindungi yang menumpang di SETIAP permintaan, jadi
-   * mengecualikannya dari pengukuran akan mengulang persis cacat yang fungsi ini
+   * Rencana (issue #5), memori, dan referensi ikut diukur, dirakit oleh
+   * `protectedParts` — helper yang sama yang dipakai `splitModelRequest`. Ketiganya
+   * store terlindungi yang menumpang di SETIAP permintaan, jadi mengecualikan
+   * satu saja dari pengukuran akan mengulang persis cacat yang fungsi ini
    * ada untuk menutupnya — yang diukur bukan yang dikirim, dan selisihnya baru
    * terlihat ketika sebuah permintaan meluap.
    *
@@ -183,9 +193,9 @@ export async function autoCompact(input: AutoCompactInput): Promise<AutoCompactR
    * system prompt. Ia ikut memakan jendela yang sama, dan mengabaikannya berarti
    * meremehkan permintaan.
    */
-  const planMessages = planPair(sessionID)
+  const { memory, references, plan: planMessages } = protectedParts(sessionID, input.referenceBudget)
   const measure = (summary: string | undefined, tail: ModelMessage[]): number =>
-    requestTokens(requestShape(summary, planMessages, tail), input.systemBytes ?? 0)
+    requestTokens(requestShape(summary, planMessages, tail, memory, references), input.systemBytes ?? 0)
 
   /**
    * Berapa token yang SUDAH dibebaskan giliran ini, untuk mengkredit angka

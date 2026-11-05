@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import path from "node:path"
 import type { ModelMessage } from "ai"
 import type { Message, Session } from "../message.ts"
+import { referenceBudgetBytes, referencePair } from "../references.ts"
 import { database, transaction } from "./db.ts"
 
 interface SessionRow {
@@ -367,7 +368,7 @@ export function latestCompaction(sessionID: string): Compaction | undefined {
  * diam-diam digabung oleh sebagian yang lain. Berlaku sama untuk ringkasan
  * maupun rencana, jadi keduanya memakai fungsi yang sama.
  */
-function protectedPair(content: string, acknowledgement: string): ModelMessage[] {
+export function protectedPair(content: string, acknowledgement: string): ModelMessage[] {
   return [
     { role: "user", content },
     { role: "assistant", content: acknowledgement },
@@ -536,6 +537,7 @@ export function requestShape(
   plan: ModelMessage[],
   tail: ModelMessage[],
   memory: ModelMessage[] = [],
+  references: ModelMessage[] = [],
 ): ModelMessage[] {
   /*
    * Urutannya bukan selera: ia diurutkan dari yang PALING JARANG berubah ke
@@ -543,6 +545,7 @@ export function requestShape(
    * identik byte demi byte (lihat src/core/cag.ts).
    *
    *   memori   — berubah beberapa kali per proyek
+   *   referensi — berubah saat user menyematkan atau menyunting template
    *   ringkasan — berubah saat pemadatan menyala
    *   rencana  — berubah beberapa kali per giliran
    *   ekor     — berubah tiap langkah
@@ -553,6 +556,7 @@ export function requestShape(
    */
   return [
     ...memory,
+    ...references,
     ...(summary === undefined ? [] : summaryPair(summary)),
     ...plan,
     ...tail,
@@ -567,7 +571,8 @@ export function requestShape(
  */
 export interface SplitRequest {
   /**
-   * Blok yang BERTAHAN lintas giliran: ringkasan dan rencana. Ia berubah jauh
+   * Blok yang BERTAHAN lintas giliran: memori, referensi, ringkasan, dan
+   * rencana. Ia berubah jauh
    * lebih jarang daripada ekor.
    */
   protectedBlock: ModelMessage[]
@@ -587,21 +592,41 @@ export interface SplitRequest {
  * `listModelMessages` di bawah tetap ada dan tetap menjadi gabungan persis dari
  * keduanya — itu yang membuat pengukuran dan pengiriman tidak bisa menyimpang.
  */
-export function splitModelRequest(sessionID: string): SplitRequest {
+export function splitModelRequest(sessionID: string, referenceBudget?: number): SplitRequest {
   const rows = listModelRows(sessionID)
-  const plan = planPair(sessionID)
-  const memory = memoryPairForSession(sessionID)
+  const { memory, references, plan } = protectedParts(sessionID, referenceBudget)
   const compaction = latestCompaction(sessionID)
 
   if (!compaction) {
     return {
-      protectedBlock: requestShape(undefined, plan, [], memory),
+      protectedBlock: requestShape(undefined, plan, [], memory, references),
       tail: rows.map((row) => row.message),
     }
   }
   return {
-    protectedBlock: requestShape(compaction.summary, plan, [], memory),
+    protectedBlock: requestShape(compaction.summary, plan, [], memory, references),
     tail: rows.filter((row) => row.seq > compaction.seq).map((row) => row.message),
+  }
+}
+
+/**
+ * Blok-blok terlindung yang menumpang di setiap permintaan, dirakit di SATU
+ * tempat untuk yang mengirim (`splitModelRequest`) maupun yang mengukur
+ * (`measure` di auto-compact.ts).
+ *
+ * `requestShape` sudah menyatukan URUTANNYA, tapi isinya masih dirakit dua kali
+ * — dan memori sempat luput dari yang mengukur: dikirim di setiap permintaan,
+ * tidak pernah dihitung oleh pemicu pemadatan. Referensi, yang bisa sebesar
+ * seperempat ambang, akan mengulang selisih yang sama kalau dirakit terpisah.
+ */
+export function protectedParts(
+  sessionID: string,
+  referenceBudget: number = referenceBudgetBytes(undefined),
+): { memory: ModelMessage[]; references: ModelMessage[]; plan: ModelMessage[] } {
+  return {
+    memory: memoryPairForSession(sessionID),
+    references: referencePair(sessionID, referenceBudget),
+    plan: planPair(sessionID),
   }
 }
 
@@ -617,7 +642,7 @@ function memoryPairForSession(sessionID: string): ModelMessage[] {
   return row ? memoryPair(row.directory) : []
 }
 
-export function listModelMessages(sessionID: string): ModelMessage[] {
-  const { protectedBlock, tail } = splitModelRequest(sessionID)
+export function listModelMessages(sessionID: string, referenceBudget?: number): ModelMessage[] {
+  const { protectedBlock, tail } = splitModelRequest(sessionID, referenceBudget)
   return [...protectedBlock, ...tail]
 }
