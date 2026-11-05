@@ -32,6 +32,7 @@ import {
 } from "../src/core/compact.ts"
 import type { ModelRow } from "../src/core/storage/session.ts"
 import { Config } from "../src/core/schema.ts"
+import { compactionWindowFor } from "../src/core/provider.ts"
 
 const user = (text: string): ModelMessage => ({ role: "user", content: text })
 const assistant = (text: string): ModelMessage => ({ role: "assistant", content: text })
@@ -323,8 +324,43 @@ test("reservedCollisions menyebut model yang reserved-nya menelan jendelanya", (
     },
   })
   assert.deepEqual(reservedCollisions(config), [
-    { model: "ollama/kecil", reserved: 8192, contextWindow: 8192 },
+    { model: "ollama/kecil", reserved: 8192, compactionWindow: 8192 },
   ])
+})
+
+test("doctor dan runtime menakar reserved terhadap jendela pemadatan yang SAMA", () => {
+  /*
+   * Yang diukur harus yang dipakai. Runtime memadatkan pada
+   * `compactionWindowFor` — compactAt/target, bukan kapasitas. Doctor yang
+   * menakar terhadap `contextWindow` menyatakan model berjendela sejuta token
+   * dengan compactAt 16000 aman, padahal reserved 8192 di sana dijepit
+   * runtime menjadi 4000.
+   */
+  const config = Config.parse({
+    compaction: { reserved: 8192, target: 20000 },
+    provider: {
+      p: {
+        models: {
+          fokus: { contextWindow: 1_000_000, compactAt: 16000 },
+          global: { contextWindow: 1_000_000 },
+          lega: { contextWindow: 1_000_000, compactAt: 400000 },
+        },
+      },
+    },
+  })
+  const clashes = reservedCollisions(config)
+  assert.deepEqual(clashes, [
+    { model: "p/fokus", reserved: 8192, compactionWindow: 16000 },
+    { model: "p/global", reserved: 8192, compactionWindow: 20000 },
+  ])
+  for (const clash of clashes) {
+    const runtimeWindow = compactionWindowFor(config, clash.model)
+    assert.equal(clash.compactionWindow, runtimeWindow)
+    // Ambang yang dipakai runtime sama dengan yang tersirat dari laporan doctor.
+    const reported = effectiveReserved(clash.compactionWindow, clash.reserved)
+    assert.equal(overBudget(runtimeWindow! - reported, runtimeWindow, clash.reserved), true)
+    assert.equal(overBudget(runtimeWindow! - reported - 1, runtimeWindow, clash.reserved), false)
+  }
 })
 
 test("REAL_BYTES_PER_TOKEN adalah 4, dan ia satu-satunya rasio yang tersisa", () => {

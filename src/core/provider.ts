@@ -297,6 +297,31 @@ export function smallModelWindowMissing(config: Config): string | undefined {
   return contextWindowFor(config, small) === undefined ? small : undefined
 }
 
+/**
+ * Fokus pemadatan yang ditulis user tapi tidak dipakai, untuk `doctor`.
+ *
+ * Tanpa `contextWindow`, `compactionWindowFor` mengembalikan undefined —
+ * "tidak dideklarasikan berarti mati" menang atas compactAt maupun target.
+ * Urutannya sama dengan `compactionWindowFor`: compactAt model dulu, baru
+ * target global, supaya yang dilaporkan adalah angka yang AKAN dipakai begitu
+ * jendelanya ditulis.
+ */
+export function ignoredCompactionFocus(
+  config: Config,
+): { model: string; setting: "compactAt" | "compaction.target"; value: number }[] {
+  const out: { model: string; setting: "compactAt" | "compaction.target"; value: number }[] = []
+  const target = config.compaction.target
+  for (const [providerId, provider] of Object.entries(config.provider)) {
+    for (const [modelId, model] of Object.entries(provider.models)) {
+      if (model.contextWindow !== undefined) continue
+      const id = `${providerId}/${modelId}`
+      if (model.compactAt !== undefined) out.push({ model: id, setting: "compactAt", value: model.compactAt })
+      else if (target !== undefined) out.push({ model: id, setting: "compaction.target", value: target })
+    }
+  }
+  return out
+}
+
 /** Model yang dikonfigurasi tapi belum punya `contextWindow`, untuk dilaporkan `doctor`. */
 export function undeclaredContextWindows(config: Config): string[] {
   const out: string[] = []
