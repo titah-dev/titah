@@ -147,12 +147,14 @@ test("referencesEnd menunjuk ujung pasangan referensi di blok yang SUNGGUH dikir
   assert.equal(splitModelRequest(kosong).referencesEnd, undefined)
 })
 
-test("giliran Anthropic sungguh mengirim tanda cache di ujung referensi DAN ujung blok", async () => {
-  /*
-   * Unit test `buildCachedRequest` lulus walau agent.ts lupa meneruskan
-   * `referencesEnd` — yang dipatok di sini adalah permintaan yang sampai ke
-   * model.
-   */
+/**
+ * Mengirim dua giliran Anthropic dan mengembalikan prompt giliran kedua.
+ *
+ * `model` opsional dengan sengaja: jalur yang paling sering dipakai adalah
+ * TANPA override — model diambil dari `config.model` — dan jalur itulah yang
+ * dulu diam-diam jatuh ke openai-compatible.
+ */
+async function anthropicTurn(override: string | undefined): Promise<LanguageModelV4Prompt> {
   const { dir, sessionID } = project({ "tpl/index.html": "<p>templat</p>" })
   fs.writeFileSync(
     path.join(dir, "titah.json"),
@@ -190,16 +192,18 @@ test("giliran Anthropic sungguh mengirim tanda cache di ujung referensi DAN ujun
   const restore = setModelResolver(() => model)
   try {
     // Giliran pertama mengisi riwayat; cache baru dipakai mulai giliran kedua.
-    // `model` eksplisit: tanpa override, `providerNpmFor` menerima undefined
-    // dan jatuh ke openai-compatible (dilaporkan terpisah, di luar perbaikan ini).
-    await prompt({ sessionID, text: "satu", model: "a/m" })
+    const model = override === undefined ? {} : { model: override }
+    await prompt({ sessionID, text: "satu", ...model })
     addReference(sessionID, path.join(dir, "tpl"))
     savePlan(sessionID, "- [ ] satu")
-    await prompt({ sessionID, text: "dua", model: "a/m" })
+    await prompt({ sessionID, text: "dua", ...model })
   } finally {
     restore()
   }
+  return sent
+}
 
+function assertReferenceAndBlockMarks(sent: LanguageModelV4Prompt): void {
   const marked = sent
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => message.providerOptions?.["anthropic"]?.["cacheControl"] !== undefined)
@@ -208,6 +212,19 @@ test("giliran Anthropic sungguh mengirim tanda cache di ujung referensi DAN ujun
   assert.equal(opener?.role, "user")
   assert.match(JSON.stringify(opener?.content), /<references>/)
   assert.match(JSON.stringify(sent[(marked[1]?.index ?? 0) - 1]?.content), /<plan>/)
+}
+
+test("giliran Anthropic sungguh mengirim tanda cache di ujung referensi DAN ujung blok", async () => {
+  /*
+   * Unit test `buildCachedRequest` lulus walau agent.ts lupa meneruskan
+   * `referencesEnd` — yang dipatok di sini adalah permintaan yang sampai ke
+   * model.
+   */
+  assertReferenceAndBlockMarks(await anthropicTurn("a/m"))
+})
+
+test("giliran tanpa model eksplisit tetap memakai cache Anthropic dari config.model", async () => {
+  assertReferenceAndBlockMarks(await anthropicTurn(undefined))
 })
 
 test("berkas yang tidak muat hanya muncul di manifest", () => {
