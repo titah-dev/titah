@@ -52,6 +52,12 @@ const SKIPPED_DIRS = new Set(["node_modules", ".git", "dist"])
 /** Berkas sebesar ini hampir pasti hasil build atau vendor, bukan template yang ditulis tangan. */
 const MAX_FILE_BYTES = 256 * 1024
 const BINARY_SNIFF_BYTES = 8 * 1024
+/**
+ * Batas KERJA penelusuran, terpisah dari anggaran byte. Anggaran membatasi apa
+ * yang dikirim; ini membatasi berapa `stat` yang dibayar tiap permintaan ketika
+ * user menyematkan folder yang ternyata seluruh repo.
+ */
+const MAX_WALK_FILES = 2000
 
 interface CachedFile {
   mtimeMs: number
@@ -66,49 +72,85 @@ interface CachedFile {
  * tidak berubah adalah I/O yang sia-sia. Dikunci pada `mtimeMs` DAN `size`:
  * sistem berkas dengan resolusi mtime kasar bisa melewatkan suntingan cepat
  * kalau hanya mtime yang dilihat.
+ *
+ * Dibatasi total byte dan dibuang yang paling lama tak dipakai (urutan sisip
+ * `Map`, disegarkan tiap kena). Server hidup berhari-hari: tanpa batas, setiap
+ * referensi yang pernah dilepas dan setiap berkas yang sudah dihapus tetap
+ * tinggal di memori. LRU, bukan "buang yang tidak terlihat di lintasan ini",
+ * karena satu server melayani banyak sesi — membuang milik sesi lain di tiap
+ * permintaan berarti cache-nya tidak pernah kena.
  */
+const MAX_CACHE_BYTES = 16 * 1024 * 1024
 const cache = new Map<string, CachedFile>()
+let cachedBytes = 0
+
+function remember(file: string, entry: CachedFile): void {
+  const old = cache.get(file)
+  if (old) {
+    cache.delete(file)
+    cachedBytes -= old.size
+  }
+  cache.set(file, entry)
+  cachedBytes += entry.size
+  for (const [key, value] of cache) {
+    if (cachedBytes <= MAX_CACHE_BYTES) break
+    cache.delete(key)
+    cachedBytes -= value.size
+  }
+}
 
 function readText(file: string, stat: fs.Stats): string | undefined {
   const cached = cache.get(file)
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.text
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    remember(file, cached)
+    return cached.text
+  }
   const buffer = fs.readFileSync(file)
   const binary = buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)
   const text = binary ? undefined : buffer.toString("utf8")
-  cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, text })
+  remember(file, { mtimeMs: stat.mtimeMs, size: stat.size, text })
   return text
 }
 
+/** Ukuran cache saat ini — hanya untuk test yang memaku batasnya. */
+export function referenceCacheBytes(): number {
+  return cachedBytes
+}
+
 interface Candidate {
+  file: string
   /** Path yang ditampilkan ke model — relatif ke direktori sesi, supaya bisa langsung dibaca. */
   label: string
   /** Path relatif ke akar referensi, untuk manifest. */
   relative: string
-  size: number
-  text: string
+  stat: fs.Stats
 }
 
 /**
  * Daftar berkas di bawah `dir`, TERURUT. Urutan readdir bergantung sistem
  * berkas, dan pasangan ini harus identik byte demi byte antar permintaan —
  * kalau tidak, cache provider untuknya tidak pernah cocok.
+ *
+ * Mengembalikan `true` bila berhenti di `MAX_WALK_FILES`.
  */
-function walk(dir: string, out: string[]): void {
+function walk(dir: string, out: string[]): boolean {
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
   } catch {
-    return
+    return false
   }
   entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   for (const entry of entries) {
+    if (out.length >= MAX_WALK_FILES) return true
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (!SKIPPED_DIRS.has(entry.name)) walk(full, out)
+      if (!SKIPPED_DIRS.has(entry.name) && walk(full, out)) return true
     } else if (entry.isFile()) {
       out.push(full)
     }
   }
+  return false
 }
 
 /** Berkas yang dirujuk `index.html` lewat `href`/`src` relatif, urut kemunculan. */
@@ -128,6 +170,7 @@ interface Root {
   /** Label akar untuk manifest. */
   label: string
   candidates: Candidate[]
+  truncated: boolean
 }
 
 /**
@@ -136,6 +179,10 @@ interface Root {
  *
  * CSS sebelum HTML karena drift yang paling sering justru di sana — warna,
  * jarak, nama kelas — dan satu stylesheet biasanya melayani semua halaman.
+ *
+ * Hanya `stat` di sini. Isi dibaca belakangan, dan hanya untuk berkas yang
+ * memang akan dikirim — kecuali `index.html`, yang harus dibaca untuk tahu apa
+ * yang dirujuknya.
  */
 function collect(reference: string, sessionDir: string | undefined): Root | undefined {
   let stat: fs.Stats
@@ -146,7 +193,8 @@ function collect(reference: string, sessionDir: string | undefined): Root | unde
   }
   const rootDir = stat.isDirectory() ? reference : path.dirname(reference)
   const files: string[] = []
-  if (stat.isDirectory()) walk(reference, files)
+  let truncated = false
+  if (stat.isDirectory()) truncated = walk(reference, files)
   else if (stat.isFile()) files.push(reference)
 
   const display = (file: string): string => {
@@ -154,7 +202,7 @@ function collect(reference: string, sessionDir: string | undefined): Root | unde
     return rel === "" ? "." : rel.startsWith("..") || path.isAbsolute(rel) ? file : rel
   }
 
-  const readable = new Map<string, Candidate>()
+  const remaining = new Map<string, Candidate>()
   for (const file of files) {
     let fileStat: fs.Stats
     try {
@@ -163,38 +211,51 @@ function collect(reference: string, sessionDir: string | undefined): Root | unde
       continue
     }
     if (fileStat.size > MAX_FILE_BYTES) continue
-    const text = readText(file, fileStat)
-    if (text === undefined) continue
-    readable.set(file, {
-      label: display(file),
-      relative: path.relative(rootDir, file),
-      size: fileStat.size,
-      text,
-    })
+    remaining.set(file, { file, label: display(file), relative: path.relative(rootDir, file), stat: fileStat })
   }
 
   const ordered: Candidate[] = []
   const take = (file: string): void => {
-    const candidate = readable.get(file)
+    const candidate = remaining.get(file)
     if (!candidate) return
     ordered.push(candidate)
-    readable.delete(file)
+    remaining.delete(file)
   }
   const indexFile = path.join(rootDir, "index.html")
-  const index = readable.get(indexFile)
+  const index = remaining.get(indexFile)
   if (index) {
     take(indexFile)
-    for (const linked of linkedFromIndex(rootDir, index.text)) take(linked)
+    const text = readText(indexFile, index.stat)
+    if (text !== undefined) for (const linked of linkedFromIndex(rootDir, text)) take(linked)
   }
-  for (const file of [...readable.keys()]) if (file.endsWith(".css")) take(file)
-  for (const file of [...readable.keys()]) if (file.endsWith(".html")) take(file)
-  for (const file of [...readable.keys()]) take(file)
+  for (const file of [...remaining.keys()]) if (file.endsWith(".css")) take(file)
+  for (const file of [...remaining.keys()]) if (file.endsWith(".html")) take(file)
+  for (const file of [...remaining.keys()]) take(file)
 
-  return { label: display(rootDir), candidates: ordered }
+  return { label: display(rootDir), candidates: ordered, truncated }
 }
 
-function fileBlock(candidate: Candidate): string {
-  return `<file path="${candidate.label}">\n${candidate.text}\n</file>`
+const OPENING = "<references>\n"
+const CLOSING =
+  "</references>\n\n" +
+  "These are the reference files the user pinned. Match them exactly — structure, class names, " +
+  "colours, spacing. Files listed without content did not fit: read them before writing the matching UI."
+/** Ruang yang selalu disisihkan untuk baris "… more files not listed". */
+const MORE_LINE_RESERVE = 64
+
+/**
+ * Bagian pesan user yang TIDAK ditagihkan ke anggaran: pembuka, kalimat
+ * penutup, dan sisihan baris "lebih banyak". Ukurannya tetap, tidak tumbuh
+ * bersama folder — semua yang tumbuh (manifest maupun isi) ditagihkan.
+ */
+export const REFERENCE_OVERHEAD_BYTES = Buffer.byteLength(OPENING + CLOSING, "utf8")
+
+function manifestLine(candidate: Candidate, included: boolean): string {
+  return `${candidate.relative} (${candidate.stat.size} bytes${included ? "" : ", not included"})\n`
+}
+
+function fileBlock(candidate: Candidate, text: string): string {
+  return `<file path="${candidate.label}">\n${text}\n</file>\n`
 }
 
 export function referencePair(sessionID: string, budgetBytes: number): ModelMessage[] {
@@ -208,37 +269,71 @@ export function referencePair(sessionID: string, budgetBytes: number): ModelMess
     .map((reference) => collect(reference, session?.directory))
     .filter((root): root is Root => root !== undefined)
 
-  // Anggaran dibagi ANTAR akar dalam urutan penyematan: akar pertama mengisi
-  // dulu. Manifest tidak dihitung — ia kecil, dan tanpanya model tidak tahu
-  // berkas mana yang harus ia baca sendiri.
-  let remaining = budgetBytes
-  const included = new Set<Candidate>()
+  /*
+   * Anggaran menanggung manifest DAN isi. Pasangan ini menumpang di awalan
+   * terlindung yang tidak bisa dipadatkan, jadi apa pun yang tumbuh bersama
+   * ukuran folder harus dibatasi di sini — folder yang ternyata seluruh repo
+   * tidak boleh meluapkan setiap permintaan sesudahnya.
+   *
+   * Dibagi antar akar dalam urutan penyematan: akar pertama mengisi dulu.
+   * `MORE_LINE_RESERVE` disisihkan sejak awal supaya baris penutup manifest
+   * selalu muat.
+   */
+  let remaining = budgetBytes - MORE_LINE_RESERVE
+  const manifests: string[] = []
   const blocks: string[] = []
+  let unlisted = 0
+  let truncated = false
   for (const root of roots) {
+    truncated ||= root.truncated
+    const open = `<manifest root="${root.label}">\n`
+    const close = "</manifest>\n"
+    const frame = Buffer.byteLength(open + close, "utf8")
+    if (frame > remaining) {
+      unlisted += root.candidates.length
+      continue
+    }
+    remaining -= frame
+    let lines = ""
     for (const candidate of root.candidates) {
-      const block = fileBlock(candidate)
-      const bytes = Buffer.byteLength(block, "utf8")
+      const listed = Buffer.byteLength(manifestLine(candidate, false), "utf8")
+      if (listed > remaining) {
+        unlisted++
+        continue
+      }
+      // Ukuran dari `stat` dulu: berkas yang jelas tidak muat tidak dibaca sama
+      // sekali. Ukuran sebenarnya dihitung ulang dari teks sesudah dibaca.
+      const estimate = Buffer.byteLength(manifestLine(candidate, true), "utf8") + candidate.stat.size
+      const text = estimate <= remaining ? readText(candidate.file, candidate.stat) : undefined
+      if (estimate <= remaining && text === undefined) continue // biner — tidak didaftar sama sekali
+      if (text !== undefined) {
+        const line = manifestLine(candidate, true)
+        const block = fileBlock(candidate, text)
+        const bytes = Buffer.byteLength(line + block, "utf8")
+        if (bytes <= remaining) {
+          remaining -= bytes
+          lines += line
+          blocks.push(block)
+          continue
+        }
+      }
       // Lanjut, bukan berhenti: satu berkas besar tidak boleh menggugurkan
       // berkas-berkas kecil sesudahnya yang masih muat.
-      if (bytes > remaining) continue
-      remaining -= bytes
-      included.add(candidate)
-      blocks.push(block)
+      remaining -= listed
+      lines += manifestLine(candidate, false)
     }
+    manifests.push(open + lines + close)
   }
 
-  const manifests = roots.map((root) => {
-    const lines = root.candidates.map(
-      (candidate) =>
-        `${candidate.relative} (${candidate.size} bytes${included.has(candidate) ? "" : ", not included"})`,
-    )
-    return `<manifest root="${root.label}">\n${lines.join("\n")}\n</manifest>`
-  })
+  let more = ""
+  if (unlisted > 0 || truncated) {
+    more = truncated
+      ? "… and more files not listed (folder too large to scan)\n"
+      : `… and ${unlisted} more files not listed\n`
+  }
 
   return protectedPair(
-    `<references>\n${[...manifests, ...blocks].join("\n")}\n</references>\n\n` +
-      "These are the reference files the user pinned. Match them exactly — structure, class names, " +
-      "colours, spacing. Files listed without content did not fit: read them before writing the matching UI.",
+    OPENING + manifests.join("") + more + blocks.join("") + CLOSING,
     "Understood. I will follow these references.",
   )
 }

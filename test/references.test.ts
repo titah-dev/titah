@@ -10,8 +10,15 @@ process.env.XDG_CONFIG_HOME = path.join(root, "config")
 process.env.TITAH_DB = path.join(root, "refs.db")
 process.env.HOME = path.join(root, "home")
 
-const { addReference, removeReference, listReferences, referenceBudgetBytes, referencePair } =
-  await import("../src/core/references.ts")
+const {
+  addReference,
+  removeReference,
+  listReferences,
+  referenceBudgetBytes,
+  referencePair,
+  referenceCacheBytes,
+  REFERENCE_OVERHEAD_BYTES,
+} = await import("../src/core/references.ts")
 const { createSession, appendModelMessages, saveCompaction, savePlan, listModelMessages } =
   await import("../src/core/storage/session.ts")
 
@@ -180,4 +187,42 @@ test("isi yang berubah di disk terbaca pada permintaan berikutnya", () => {
 test("anggaran referensi adalah seperempat ambang pemadatan dalam token", () => {
   assert.equal(referenceBudgetBytes(131072), 32768 * 4)
   assert.equal(referenceBudgetBytes(undefined), 64 * 1024)
+})
+
+test("folder referensi yang raksasa tidak meluapkan permintaan: manifest ikut anggaran", () => {
+  // Pasangan ini tinggal di awalan terlindung yang tidak bisa dipadatkan. Dulu
+  // hanya ISI yang ditagihkan ke anggaran; 600 berkas kecil menghasilkan
+  // manifest yang tumbuh tanpa batas di setiap permintaan.
+  const files: Record<string, string> = {}
+  for (let i = 0; i < 600; i++) files[`tpl/bagian-${String(i).padStart(4, "0")}.css`] = `.b${i}{}${"k".repeat(80)}`
+  const { dir, sessionID } = project(files)
+  addReference(sessionID, path.join(dir, "tpl"))
+
+  const before = referenceCacheBytes()
+  const budget = 2 * 1024
+  const text = pairText(sessionID, budget)
+
+  assert.ok(
+    Buffer.byteLength(text, "utf8") <= budget + REFERENCE_OVERHEAD_BYTES,
+    `${Buffer.byteLength(text, "utf8")} > ${budget} + ${REFERENCE_OVERHEAD_BYTES}`,
+  )
+  assert.match(text, /… and \d+ more files not listed/)
+  // Positif: anggaran tetap dipakai, bukan dihindari dengan mengirim kosong.
+  assert.match(text, /bagian-0000\.css/)
+  // Berkas yang tidak dikirim tidak dibaca: cache hanya tumbuh sebesar yang muat.
+  assert.ok(referenceCacheBytes() - before <= budget, "isi berkas yang tidak dikirim tidak boleh dibaca")
+})
+
+test("dua permintaan atas folder yang tidak berubah menghasilkan pasangan yang identik", () => {
+  // Cache provider dikunci pada awalan yang identik byte demi byte. Penelusuran
+  // yang tidak diurutkan (urutan readdir bergantung sistem berkas) atau isi yang
+  // bergantung waktu membuat awalan ini tidak pernah kena cache.
+  const { dir, sessionID } = project({
+    "tpl/index.html": '<link href="b.css">',
+    "tpl/b.css": ".b{}",
+    "tpl/a.css": ".a{}",
+    "tpl/sub/c.html": "<p>c</p>",
+  })
+  addReference(sessionID, path.join(dir, "tpl"))
+  assert.deepEqual(referencePair(sessionID, 64 * 1024), referencePair(sessionID, 64 * 1024))
 })
