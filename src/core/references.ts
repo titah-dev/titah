@@ -149,24 +149,36 @@ interface Candidate {
  * berkas, dan pasangan ini harus identik byte demi byte antar permintaan —
  * kalau tidak, cache provider untuknya tidak pernah cocok.
  *
+ * Melebar dulu, bukan mendalam: semua berkas satu tingkat sebelum turun ke
+ * tingkat berikutnya. "assets/" berurut sebelum "index.html", dan penelusuran
+ * mendalam bisa menghabiskan `MAX_WALK_FILES` di dalam folder gambar sebelum
+ * sempat melihat berkas akar yang justru paling penting.
+ *
  * Mengembalikan `true` bila berhenti di `MAX_WALK_FILES`.
  */
 function walk(dir: string, out: string[]): boolean {
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return false
-  }
-  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-  for (const entry of entries) {
-    if (out.length >= MAX_WALK_FILES) return true
-    const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      if (!SKIPPED_DIRS.has(entry.name) && walk(full, out)) return true
-    } else if (entry.isFile()) {
-      out.push(full)
+  let level = [dir]
+  while (level.length > 0) {
+    const next: string[] = []
+    for (const current of level) {
+      let entries: fs.Dirent[]
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      for (const entry of entries) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          if (!SKIPPED_DIRS.has(entry.name)) next.push(full)
+        } else if (entry.isFile()) {
+          if (out.length >= MAX_WALK_FILES) return true
+          out.push(full)
+        }
+      }
     }
+    level = next
   }
   return false
 }

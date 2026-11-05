@@ -191,6 +191,24 @@ test("anggaran referensi adalah seperempat ambang pemadatan dalam token", () => 
   assert.equal(referenceBudgetBytes(undefined), 64 * 1024)
 })
 
+test("index.html di akar tetap terkirim walau folder saudaranya melebihi batas penelusuran", () => {
+  /*
+   * "assets/" berurut sebelum "index.html". Penelusuran depth-first menghabiskan
+   * jatah 2000 berkas di dalam assets/ (gambar biner ikut terhitung) dan tidak
+   * pernah sampai ke index.html — templat yang paling penting justru hilang.
+   */
+  const files: Record<string, string> = {
+    "tpl/index.html": "<h1>halaman-utama</h1>",
+  }
+  for (let i = 0; i < 2001; i++) files[`tpl/assets/g-${String(i).padStart(4, "0")}.png`] = "x"
+  const { dir, sessionID } = project(files)
+  addReference(sessionID, path.join(dir, "tpl"))
+
+  const text = pairText(sessionID, 8 * 1024)
+  assert.match(text, /<file path="[^"]*index\.html">/)
+  assert.match(text, /halaman-utama/)
+})
+
 test("folder referensi yang raksasa tidak meluapkan permintaan: manifest ikut anggaran", () => {
   // Pasangan ini tinggal di awalan terlindung yang tidak bisa dipadatkan. Dulu
   // hanya ISI yang ditagihkan ke anggaran; 600 berkas kecil menghasilkan
