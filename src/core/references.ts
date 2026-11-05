@@ -4,6 +4,7 @@ import type { ModelMessage } from "ai"
 import { REAL_BYTES_PER_TOKEN } from "./compact.ts"
 import { database } from "./storage/db.ts"
 import { protectedPair } from "./storage/session.ts"
+import { resolveInside, ToolError } from "./tool/types.ts"
 
 /**
  * Berkas acuan yang disematkan user ke sesi — biasanya folder template HTML/CSS
@@ -13,6 +14,23 @@ import { protectedPair } from "./storage/session.ts"
  * pemadatan tidak bisa meringkasnya, dan karena itu model tidak pelan-pelan
  * lupa nama kelas atau warna template setelah ringkasan pertama.
  */
+
+/**
+ * Satu pintu untuk `/pin` dan `plan.references`, supaya keduanya menolak hal
+ * yang sama dengan pesan yang sama.
+ *
+ * Batas proyek diserahkan ke `resolveInside` apa adanya — pesannya sudah
+ * menyebut kunci config yang perlu ditambah. Keberadaan path diperiksa di sini
+ * karena referensi yang tidak ada akan diam-diam menjadi bagian kosong di setiap
+ * permintaan, dan user mengira template-nya terkirim.
+ */
+export function resolveReference(cwd: string, target: string): string {
+  const resolved = resolveInside(cwd, target)
+  if (!fs.existsSync(resolved)) {
+    throw new ToolError(`Path "${target}" does not exist (looked for ${resolved}). Nothing was pinned.`)
+  }
+  return resolved
+}
 
 export function addReference(sessionID: string, absPath: string): void {
   // OR IGNORE, bukan OR REPLACE: menyematkan ulang tidak boleh memindah

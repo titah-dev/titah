@@ -46,6 +46,11 @@ About \`plan\`:
   boxes to tell whether work remains when a turn runs out of room, so a plan
   written as prose leaves it unable to tell finished from abandoned.
 
+When the user points at a template, design, or example to follow, pin it with
+plan's references field before you start building, then match it closely. The
+pinned files are re-sent after every compaction, so you never have to work from a
+summary of them.
+
 About the web tools:
 - Your training data has an expiry date; the web does not. When a library's
   behaviour matters, read its current docs instead of recalling them.
@@ -220,7 +225,8 @@ export function rosterSection(config: Config): string | undefined {
     "",
     "Several calls in one step run at the same time; the ones allowed to write files are",
     "serialised for you. A sub-agent never gets more permission than you have, and it",
-    "cannot see this conversation — give it a self-contained brief.",
+    "cannot see this conversation or the pinned references — give it a self-contained",
+    "brief, and write out the path of any reference it needs to follow.",
     ...(config.delegation === "always"
       ? ["", "This project delegates by default: if one of them fits, hand it over."]
       : []),

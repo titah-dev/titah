@@ -46,7 +46,7 @@ import { askUser, NoOneToAsk } from "./question.ts"
 import { setQuestionAsker } from "./tool/question.ts"
 import { BUILD_MODES, setPlanExiter } from "./tool/exit-plan.ts"
 import { autoCompact } from "./auto-compact.ts"
-import { referenceBudgetBytes } from "./references.ts"
+import { addReference, listReferences, referenceBudgetBytes, removeReference, resolveReference } from "./references.ts"
 import { cancelReflection, countToolCalls, shouldReflect, startReflection } from "./learn.ts"
 import { adapterFor, parseMention, listAgents, type Mention } from "./delegate/index.ts"
 import { parseCommand, resolveCommand, isBuiltin, isSkillCommand, listCommands } from "./command.ts"
@@ -1832,6 +1832,7 @@ async function builtinTurn(
   turnModel: string | undefined,
 ): Promise<Message> {
   if (name === "compact") return compactTurn(session, config, args.trim(), input, turnModel)
+  if (name === "pin" || name === "unpin") return pinTurn(session, name, args.trim(), input)
   if (name === "agents") return infoTurn(session, input.text, renderAgents(config))
   if (name === "commands") return infoTurn(session, input.text, renderCommands(config))
   if (name === "skills") return infoTurn(session, input.text, renderSkills(config, session.directory))
@@ -1841,6 +1842,39 @@ async function builtinTurn(
     return infoTurn(session, input.text, "Usage: /consensus <question>", true)
   }
   return consensusTurn(session, config, args.trim(), input)
+}
+
+/**
+ * `/pin` tanpa argumen adalah SATU-SATUNYA tampilan atas apa yang dipegang
+ * model sebagai referensi — tidak ada panel TUI untuknya.
+ */
+function pinTurn(session: Session, name: "pin" | "unpin", arg: string, input: PromptInput): Message {
+  if (arg === "") {
+    if (name === "unpin") return infoTurn(session, input.text, "Usage: /unpin <path>", true)
+    const pinned = listReferences(session.id)
+    return infoTurn(
+      session,
+      input.text,
+      pinned.length === 0
+        ? "No pinned references. Use /pin <path> to keep a template or design in front of the model."
+        : ["Pinned references:", ...pinned.map((p) => `  ${p}`)].join("\n"),
+    )
+  }
+  try {
+    if (name === "pin") {
+      const absolute = resolveReference(session.directory, arg)
+      addReference(session.id, absolute)
+      return infoTurn(session, input.text, `Pinned ${absolute}. It is re-sent with every request, including after compaction.`)
+    }
+    // Tanpa pemeriksaan keberadaan: berkas yang sudah dihapus dari disk tetap
+    // harus bisa dilepas.
+    const absolute = resolveInside(session.directory, arg)
+    return removeReference(session.id, absolute)
+      ? infoTurn(session, input.text, `Unpinned ${absolute}.`)
+      : infoTurn(session, input.text, `${absolute} is not pinned. /pin lists what is.`, true)
+  } catch (error) {
+    return infoTurn(session, input.text, error instanceof Error ? error.message : String(error), true)
+  }
 }
 
 /**

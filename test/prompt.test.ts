@@ -67,3 +67,16 @@ test("model diberi tahu tool skill ada, kalau memang ada skill", () => {
   })
   assert.match(buildSystemPrompt(config, root).system, /skill\(/)
 })
+
+test("prompt menyuruh menyematkan template yang disebut user lewat plan.references", () => {
+  const { system } = buildSystemPrompt(Config.parse({}), tree({}))
+  assert.match(system, /plan's references field/)
+  assert.match(system, /re-sent after every compaction/)
+})
+
+test("roster sub-agent memberi tahu bahwa referensi tidak terlihat oleh mereka", () => {
+  const config = Config.parse({ agent: { penolong: { description: "membantu", mode: "subagent" } } })
+  const { system } = buildSystemPrompt(config, tree({}))
+  assert.match(system, /Sub-agents you may dispatch/)
+  assert.match(system, /pinned references/)
+})

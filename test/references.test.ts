@@ -19,7 +19,9 @@ const {
   referenceCacheBytes,
   REFERENCE_OVERHEAD_BYTES,
 } = await import("../src/core/references.ts")
-const { createSession, appendModelMessages, saveCompaction, savePlan, listModelMessages } =
+const { prompt } = await import("../src/core/agent.ts")
+const { planTool } = await import("../src/core/tool/plan.ts")
+const { createSession, appendModelMessages, saveCompaction, savePlan, readPlan, listModelMessages } =
   await import("../src/core/storage/session.ts")
 
 after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -225,4 +227,110 @@ test("dua permintaan atas folder yang tidak berubah menghasilkan pasangan yang i
   })
   addReference(sessionID, path.join(dir, "tpl"))
   assert.deepEqual(referencePair(sessionID, 64 * 1024), referencePair(sessionID, 64 * 1024))
+})
+
+async function reply(sessionID: string, text: string): Promise<{ text: string; error: string | undefined }> {
+  const assistant = await prompt({ sessionID, text })
+  const part = assistant.parts.find((p) => p.type === "text")
+  return { text: part?.type === "text" ? part.text : "", error: assistant.error }
+}
+
+test("/pin menyimpan path dan /pin tanpa argumen menampilkan daftarnya", async () => {
+  const { dir, sessionID } = project({ "tpl/index.html": "<h1>hai</h1>", "satu.css": "a{}" })
+
+  const empty = await reply(sessionID, "/pin")
+  assert.equal(empty.error, undefined)
+  assert.match(empty.text, /No pinned references/)
+
+  // Relatif terhadap direktori sesi, disimpan ABSOLUT.
+  const pinned = await reply(sessionID, "/pin tpl")
+  assert.equal(pinned.error, undefined)
+  await reply(sessionID, "/pin satu.css")
+  assert.deepEqual(listReferences(sessionID), [path.join(dir, "tpl"), path.join(dir, "satu.css")])
+
+  const listed = await reply(sessionID, "/pin")
+  assert.match(listed.text, new RegExp(path.join(dir, "tpl").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  assert.match(listed.text, /satu\.css/)
+})
+
+test("/unpin menghapus path", async () => {
+  const { dir, sessionID } = project({ "tpl/index.html": "x" })
+  addReference(sessionID, path.join(dir, "tpl"))
+
+  const done = await reply(sessionID, "/unpin tpl")
+  assert.equal(done.error, undefined)
+  assert.deepEqual(listReferences(sessionID), [])
+
+  // Yang tidak pernah disematkan dilaporkan, bukan diam-diam dianggap berhasil.
+  const again = await reply(sessionID, "/unpin tpl")
+  assert.ok(again.error)
+  assert.match(again.text, /not pinned/)
+})
+
+test("/pin path yang tidak ada ditolak dengan pesan yang menyebut path-nya", async () => {
+  const { sessionID } = project({})
+  const result = await reply(sessionID, "/pin tidak-ada/folder")
+  assert.ok(result.error)
+  assert.match(result.text, /tidak-ada\/folder/)
+  assert.deepEqual(listReferences(sessionID), [])
+})
+
+test("/pin di luar proyek ditolak dan menyebut external_directory", async () => {
+  const { sessionID } = project({})
+  const luar = path.join(root, "luar")
+  fs.mkdirSync(luar, { recursive: true })
+  const result = await reply(sessionID, `/pin ${luar}`)
+  assert.ok(result.error)
+  assert.match(result.text, /external_directory/)
+  assert.deepEqual(listReferences(sessionID), [])
+})
+
+test("/unpin tanpa argumen memberi petunjuk penggunaan", async () => {
+  const { sessionID } = project({})
+  const result = await reply(sessionID, "/unpin")
+  assert.match(result.error ?? "", /Usage/)
+})
+
+const planCtx = (dir: string, sessionID: string) =>
+  ({
+    cwd: dir,
+    sessionID,
+    callID: "call_1",
+    signal: new AbortController().signal,
+    config: {} as never,
+  }) as never
+
+test("plan dengan references menyimpan referensi tanpa mengganti rencana menjadi kosong", async () => {
+  const { dir, sessionID } = project({ "tpl/index.html": "x" })
+  savePlan(sessionID, "- [ ] bangun halaman")
+
+  // `text` opsional: hanya references berarti rencananya tidak disentuh.
+  await planTool.execute({ references: ["tpl"] }, planCtx(dir, sessionID))
+
+  assert.deepEqual(listReferences(sessionID), [path.join(dir, "tpl")])
+  assert.equal(readPlan(sessionID)?.text, "- [ ] bangun halaman")
+})
+
+test("plan dengan text dan references mengganti rencana dan menyematkan keduanya", async () => {
+  const { dir, sessionID } = project({ "a.css": "a{}" })
+  await planTool.execute({ text: "- [ ] satu", references: ["a.css"] }, planCtx(dir, sessionID))
+  assert.equal(readPlan(sessionID)?.text, "- [ ] satu")
+  assert.deepEqual(listReferences(sessionID), [path.join(dir, "a.css")])
+})
+
+test("plan menolak references di luar proyek dan tidak menyematkan satu pun", async () => {
+  const { dir, sessionID } = project({ "ok.css": "a{}" })
+  await assert.rejects(
+    planTool.execute({ references: ["ok.css", "../../etc"] }, planCtx(dir, sessionID)),
+    /external_directory/,
+  )
+  // Semua atau tidak sama sekali: sebagian tersemat membuat model mengira semuanya tersemat.
+  assert.deepEqual(listReferences(sessionID), [])
+})
+
+test("plan tanpa text maupun references ditolak, bukan dianggap menghapus rencana", async () => {
+  const { dir, sessionID } = project({})
+  savePlan(sessionID, "- [ ] jangan hilang")
+  await assert.rejects(planTool.execute({}, planCtx(dir, sessionID)), /text|references/)
+  assert.equal(readPlan(sessionID)?.text, "- [ ] jangan hilang")
 })
