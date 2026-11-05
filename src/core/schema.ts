@@ -946,7 +946,8 @@ export const Config = z.object({
         .min(0)
         .optional()
         .describe(
-          "How many times Titah may continue on its own when a turn ends before the work is done. Unset: until done (up to 50) in the TUI and web client, off for titah run. 0 disables it.",
+          "How many times Titah may continue on its own when a turn ends before the work is done. " +
+            "Unset: until done (up to 50) in the TUI and web client, off for titah run. 0 disables it.",
         ),
     })
     .default({}),

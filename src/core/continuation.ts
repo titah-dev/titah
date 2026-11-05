@@ -47,15 +47,49 @@ export const IDLE_LIMIT = 2
 export function continueReason(ending: TurnEnding): ContinueReason | undefined {
   const text = ending.lastText.trimEnd()
   if (ending.calledQuestion || text.endsWith("?")) return undefined
-  if (ending.stoppedAtLimit && hasOpenWork(ending.plan?.text)) return "limit"
+  /*
+   * Rencana yang tidak disentuh rangkaian ini bisa saja usang dari pekerjaan
+   * kemarin. Berlaku juga untuk giliran yang mentok: pertanyaan sampingan yang
+   * kebetulan mentok batas di sesi dengan rencana setengah jadi tidak boleh
+   * membangunkan rencana itu — melanjutkannya berarti mengerjakan sesuatu yang
+   * tidak diminta hari ini.
+   */
+  const freshPlan =
+    ending.plan !== undefined &&
+    hasOpenWork(ending.plan.text) &&
+    ending.plan.updated >= ending.chainStarted
+  if (ending.stoppedAtLimit && freshPlan) return "limit"
   if (/<tool_call>|<function=/.test(ending.lastText)) return "text-tool-call"
   if (text.endsWith(":")) return "announced"
-  // Rencana yang tidak disentuh rangkaian ini bisa saja usang dari pekerjaan
-  // kemarin; melanjutkannya berarti mengerjakan sesuatu yang tidak diminta hari ini.
-  if (ending.plan && hasOpenWork(ending.plan.text) && ending.plan.updated >= ending.chainStarted) {
-    return "open-plan"
-  }
+  if (freshPlan) return "open-plan"
   return undefined
+}
+
+/**
+ * Teks yang menutup giliran: teks langkah TERAKHIR saja, dan kosong kalau
+ * langkah itu memanggil tool.
+ *
+ * Teks dari langkah sebelumnya sudah dijawab oleh tool call sesudahnya —
+ * "Let me read the file:" yang diikuti `read` bukan pengumuman tanpa aksi.
+ * Giliran yang mentok batas berakhir pada tool call, jadi membaca teks
+ * terakhir seluruh giliran membuat setiap giliran mentok terlihat "announced".
+ */
+export function closingText(
+  steps: readonly { text: string; toolCalls: readonly unknown[] }[],
+): string {
+  const last = steps.at(-1)
+  if (!last || last.toolCalls.length > 0) return ""
+  return last.text
+}
+
+/**
+ * Tool call yang dihitung kemajuan oleh rem menganggur: yang mengubah sesuatu,
+ * atau yang mendelegasikan. `task` sendiri tidak `mutates` — yang menulis
+ * adalah sub-agentnya, di sesi lain — jadi lanjutan yang hanya mendelegasikan
+ * akan terlihat diam padahal pekerjaannya sedang dikerjakan.
+ */
+export function isProgressCall(toolName: string, mutating: ReadonlySet<string>): boolean {
+  return toolName === "task" || mutating.has(toolName)
 }
 
 /**

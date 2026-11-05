@@ -6,8 +6,10 @@ import test, { afterEach, beforeEach, after } from "node:test"
 import type { LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider"
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 import {
+  closingText,
   continueReason,
   isIdleContinuation,
+  isProgressCall,
   type TurnEnding,
 } from "../src/core/continuation.ts"
 
@@ -87,12 +89,42 @@ test("rencana lama yang tidak disentuh giliran ini tidak memicu lanjutan", () =>
 test("giliran yang selesai wajar dengan rencana tuntas tidak dilanjutkan", () =>
   assert.equal(continueReason(end({ lastText: "Selesai.", plan: fresh("- [x] a") })), undefined))
 
-test("giliran yang mentok dengan rencana lama yang masih terbuka tetap memicu 'limit'", () =>
-  // Rencana lama tidak menghalangi: mentok batas adalah bukti sendiri bahwa
-  // pekerjaannya terpotong, bukan keputusan model untuk berhenti.
+test("giliran yang mentok batas dengan rencana terbuka dari rangkaian ini memicu 'limit'", () =>
+  assert.equal(continueReason(end({ stoppedAtLimit: true, plan: fresh("- [ ] a") })), "limit"))
+
+test("giliran yang mentok batas dengan rencana lama tidak melanjutkan rencana itu", () =>
+  /*
+   * Pertanyaan sampingan di sesi interaktif yang kebetulan mentok batas, di
+   * atas rencana setengah jadi dari kemarin. Melanjutkan dengan "Continue the
+   * unfinished items in your plan" berarti membangunkan pekerjaan yang tidak
+   * diminta hari ini — anti-tujuan spec.
+   */
   assert.equal(
-    continueReason(end({ stoppedAtLimit: true, plan: { text: "- [ ] a", updated: 1 } })),
-    "limit",
+    continueReason(end({ stoppedAtLimit: true, plan: { text: "- [ ] a", updated: 500 }, chainStarted: 1000 })),
+    undefined,
+  ))
+
+test("teks yang disusul tool call di langkah yang sama bukan pengumuman tanpa aksi", () => {
+  /*
+   * Giliran yang mentok batas berakhir pada tool call. "Let me read the file:"
+   * dari langkah sebelumnya sudah dijawab oleh `read` sesudahnya; membacanya
+   * sebagai teks penutup membuat setiap giliran mentok terlihat "announced".
+   */
+  const steps = [
+    { text: "Let me read the file:", toolCalls: [{}] },
+    { text: "Now the next one:", toolCalls: [{}] },
+  ]
+  assert.equal(closingText(steps), "")
+  assert.equal(continueReason(end({ stoppedAtLimit: true, lastText: closingText(steps) })), undefined)
+})
+
+test("teks penutup diambil dari langkah terakhir saja", () =>
+  assert.equal(
+    closingText([
+      { text: "Sekarang tulis berkas:", toolCalls: [{}] },
+      { text: "Selesai.", toolCalls: [] },
+    ]),
+    "Selesai.",
   ))
 
 test("lanjutan tanpa tool call dihitung menganggur", () => assert.equal(isIdleContinuation(0, 0, "a", "b"), true))
@@ -105,6 +137,17 @@ test("lanjutan yang hanya membaca dan tidak menyentuh rencana dihitung menganggu
 
 test("lanjutan yang hanya membaca tapi memperbarui rencana tetap kemajuan", () =>
   assert.equal(isIdleContinuation(3, 0, "- [ ] a", "- [x] a"), false))
+
+test("lanjutan yang hanya mendelegasikan lewat task tetap kemajuan", () => {
+  // `task` tidak `mutates` — yang menulis adalah sub-agentnya, di sesi lain.
+  // Tanpa ini, koordinator yang terus mendelegasikan direm setelah dua lanjutan.
+  const mutating = new Set(["write", "edit"])
+  assert.equal(isProgressCall("task", mutating), true)
+  assert.equal(isProgressCall("write", mutating), true)
+  assert.equal(isProgressCall("read", mutating), false)
+  const progress = ["task", "read"].filter((name) => isProgressCall(name, mutating)).length
+  assert.equal(isIdleContinuation(2, progress, "a", "a"), false)
+})
 
 // ---------- loopnya ----------
 
@@ -283,9 +326,14 @@ test("dua lanjutan menganggur berturut-turut menghentikan rangkaian", async () =
 
 test("abort sesudah giliran selesai tetap memutus rangkaian", async () => {
   /*
-   * Esc yang ditekan saat notice lanjutan muncul harus berarti berhenti.
-   * Handler bus berjalan asinkron — sesudah giliran sebelumnya membersihkan
-   * `running` — jadi ini menguji celah antar-giliran, bukan pembatalan biasa.
+   * Yang dipatok: Esc yang ditekan saat notice lanjutan muncul mencegah
+   * panggilan model berikutnya. Handler bus berjalan asinkron, jadi `abort()`
+   * mendarat di controller giliran LANJUTAN (yang dipasang sinkron) dan
+   * membatalkannya sebelum model dipanggil.
+   *
+   * Pemeriksaan `abortRequested` sebelum rekursi TIDAK dilalui test ini —
+   * hari ini tidak ada `await` di celah itu, jadi ia hanya pertahanan untuk
+   * `await` yang kelak ditambahkan di sana.
    */
   configWith({})
   const seen = alwaysAnnounces()

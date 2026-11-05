@@ -105,6 +105,25 @@ function configWith(extra: Record<string, unknown>): void {
 }
 
 /**
+ * Rencana yang ditulis model DI DALAM giliran — `neverStops` menyimpannya pada
+ * panggilan model pertamanya.
+ *
+ * Bukan `savePlan` sebelum `prompt()`: rencana yang lebih tua dari pesan user
+ * dianggap milik pekerjaan lain dan tidak dilanjutkan, bahkan oleh giliran yang
+ * mentok. Menyimpannya sebelum `prompt()` membuat test bergantung pada apakah
+ * keduanya kebetulan jatuh di milidetik yang sama.
+ */
+let pendingPlan: { sessionID: string; text: string } | undefined
+
+function planInTurn(sessionID: string, text: string): void {
+  pendingPlan = { sessionID, text }
+}
+
+afterEach(() => {
+  pendingPlan = undefined
+})
+
+/**
  * Model yang tidak pernah berhenti; merekam teks user tiap giliran.
  *
  * `writes` membuatnya MENULIS berkas alih-alih membaca. Lanjutan yang hanya
@@ -118,6 +137,10 @@ function neverStops(writes = false): { prompts: string[]; calls: number } {
   const model = new MockLanguageModelV4({
     doStream: async (options: LanguageModelV4CallOptions) => {
       seen.calls += 1
+      if (pendingPlan) {
+        savePlan(pendingPlan.sessionID, pendingPlan.text)
+        pendingPlan = undefined
+      }
       const users = options.prompt.filter((message) => message.role === "user")
       const last = users.at(-1)?.content
       if (Array.isArray(last)) {
@@ -173,7 +196,7 @@ test("giliran yang mentok DILANJUTKAN selama rencananya masih punya sisa", async
   const seen = neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu\n- [ ] dua")
+  planInTurn(session.id, "- [ ] satu\n- [ ] dua")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 3, "giliran asli + dua lanjutan")
@@ -189,7 +212,7 @@ test("prompt lanjutan menunjuk ke RENCANA, bukan mengulang permintaan asli", asy
   const seen = neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const lanjutan = seen.prompts.filter((text) => text !== "bangun fitur X")
@@ -204,7 +227,7 @@ test("rencana yang SUDAH habis menghentikan loopnya", async () => {
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [x] satu\n- [x] dua")
+  planInTurn(session.id, "- [x] satu\n- [x] dua")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 1, "tidak ada lanjutan sama sekali")
@@ -232,7 +255,7 @@ test("tanpa client interaktif, bawaannya MATI — tidak ada yang melanjutkan tan
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] masih banyak")
+  planInTurn(session.id, "- [ ] masih banyak")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 1)
@@ -245,7 +268,7 @@ test("jatah lanjutan adalah batas KERAS", async () => {
   neverStops(true)
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] tidak pernah dicentang")
+  planInTurn(session.id, "- [ ] tidak pernah dicentang")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.equal(turns(session.id), 4, "asli + tiga lanjutan, lalu berhenti")
@@ -368,7 +391,7 @@ test("`session.idle` DITAHAN selama masih ada lanjutan", async () => {
 
   const { bus } = await import("../src/core/event.ts")
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
 
   const controller = new AbortController()
   let idle = 0
@@ -431,7 +454,7 @@ test("giliran yang berhenti karena PERKIRAAN anggaran juga dilanjutkan", async (
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] masih ada")
+  planInTurn(session.id, "- [ ] masih ada")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "build-auto" })
 
   assert.equal(turns(session.id), 2, "perkiraan yang menghentikan giliran juga memicu lanjutan")
@@ -450,7 +473,7 @@ test("lanjutan TIDAK menulis pesan user ke riwayat", async () => {
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const dariUser = listMessages(session.id)
@@ -473,7 +496,7 @@ test("panah atas tidak pernah memunculkan kalimat karangan Titah", async () => {
   neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "bangun fitur X", agent: "pendek" })
 
   const { promptHistory } = await import("../src/tui/state.ts")
@@ -492,7 +515,7 @@ test("model TETAP menerima giliran user di permintaannya", async () => {
   const seen = neverStops()
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu")
+  planInTurn(session.id, "- [ ] satu")
   await prompt({ sessionID: session.id, text: "kerjakan", agent: "pendek" })
 
   assert.ok(

@@ -175,7 +175,10 @@ test("giliran yang auto-lanjut merefleksikan PERMINTAAN ASLI, bukan teks lanjuta
   configWith({ enabled: true }, { limits: { continueTurns: 1 }, agent: { pendek: { mode: "primary", steps: 10 } } })
 
   const session = createSession(project)
-  savePlan(session.id, "- [ ] satu\n- [ ] dua")
+  // Ditulis DI DALAM giliran (panggilan model pertama), bukan sebelum
+  // `prompt()`: rencana yang lebih tua dari pesan user tidak dilanjutkan,
+  // bahkan oleh giliran yang mentok batas.
+  let planWritten = false
 
   let reflectionPrompt = ""
   let reflections = 0
@@ -238,6 +241,10 @@ test("giliran yang auto-lanjut merefleksikan PERMINTAAN ASLI, bukan teks lanjuta
                 { type: "finish", finishReason: "stop", usage: USAGE },
               ]
       } else {
+        if (!planWritten) {
+          planWritten = true
+          savePlan(session.id, "- [ ] satu\n- [ ] dua")
+        }
         // Segmen pertama: SELALU tool call selama tool-nya ditawarkan, biar
         // jatah langkahnya habis (stoppedAtLimit) dan giliran dilanjutkan.
         const hasTools = (options.tools ?? []).length > 0

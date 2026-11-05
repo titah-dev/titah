@@ -15,10 +15,12 @@ import type { Message, Part, Session, ToolState } from "./message.ts"
 import { buildSystemPrompt, type Effort } from "./prompt.ts"
 import { ensureDeclared, scaffoldNotice } from "./scaffold.ts"
 import {
+  closingText,
   continuationText,
   continueReason,
   IDLE_LIMIT,
   isIdleContinuation,
+  isProgressCall,
   UNTIL_DONE_CEILING,
   type ContinueReason,
 } from "./continuation.ts"
@@ -739,7 +741,8 @@ export async function prompt(input: PromptInput): Promise<Message> {
    */
   const mutating = new Set<string>()
   let toolCalls = 0
-  let mutatingCalls = 0
+  let progressCalls = 0
+  let lastText = ""
   let calledQuestion = false
 
   const controller = new AbortController()
@@ -1346,8 +1349,9 @@ export async function prompt(input: PromptInput): Promise<Message> {
     const steps = await result.steps
     for (const step of steps) {
       toolCalls += step.toolCalls.length
-      mutatingCalls += step.toolCalls.filter((call) => mutating.has(call.toolName)).length
+      progressCalls += step.toolCalls.filter((call) => isProgressCall(call.toolName, mutating)).length
     }
+    lastText = closingText(steps)
     calledQuestion = steps.at(-1)?.toolCalls.some((call) => call.toolName === "question") ?? false
 
     /*
@@ -1443,12 +1447,11 @@ export async function prompt(input: PromptInput): Promise<Message> {
      */
     const done = input.continuation ?? 0
     const plan = readPlan(session.id)
-    const lastText = assistant.parts.findLast((part) => part.type === "text")?.text ?? ""
     reason = continueReason({ stoppedAtLimit, lastText, calledQuestion, plan, chainStarted })
     // Hanya lanjutan yang dinilai: giliran asli yang tidak memanggil tool
     // adalah jawaban biasa, bukan tanda rangkaiannya berputar di tempat.
     if (isContinuation) {
-      idleStreak = isIdleContinuation(toolCalls, mutatingCalls, planBefore, plan?.text)
+      idleStreak = isIdleContinuation(toolCalls, progressCalls, planBefore, plan?.text)
         ? idleStreak + 1
         : 0
     }
