@@ -3,6 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test, { before, after } from "node:test"
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test"
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "titah-server-"))
 process.env.XDG_DATA_HOME = root
@@ -18,6 +19,8 @@ process.env.XDG_CONFIG_HOME = path.join(root, "config")
 
 const { listen } = await import("../src/server/index.ts")
 const { bus } = await import("../src/core/event.ts")
+const { setModelResolver } = await import("../src/core/agent.ts")
+const { listMessages } = await import("../src/core/storage/session.ts")
 
 let base: string
 let close: () => Promise<void>
@@ -254,4 +257,104 @@ test("GET /session/:id/children pada sesi yang tidak ada tetap 404", async () =>
   // tidak dikenal dijawab 404, bukan daftar kosong yang terbaca seperti
   // "sesinya ada, sub-agent-nya belum".
   assert.equal((await api("GET", "/session/ses_tidak_ada/children")).status, 404)
+})
+
+/*
+ * Satu-satunya hal yang membedakan giliran interaktif dari yang tidak adalah
+ * apakah ia dilanjutkan, jadi itulah yang diamati: model yang menulis rencana
+ * berbutir terbuka lalu terus membaca. Menangkap `PromptInput` langsung tidak
+ * mungkin dari luar proses server, dan test yang hanya memeriksa body yang
+ * dikirim tidak akan tahu kalau salah satu dari DUA panggilan `prompt` di rute
+ * ini lupa meneruskannya.
+ */
+async function assistantTurns(opts: { interactive?: boolean; stream: boolean }): Promise<number> {
+  const project = path.join(root, `proyek-${Math.random().toString(36).slice(2)}`)
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(path.join(project, "a.txt"), "isi\n")
+  fs.writeFileSync(
+    path.join(project, "titah.json"),
+    JSON.stringify({
+      skills: { discover: [], paths: [] },
+      scaffold: false,
+      permission: { bash: "allow", edit: "allow", write: "allow" },
+      agent: { pendek: { mode: "primary", steps: 2 } },
+    }),
+  )
+  const created = await api("POST", "/session", { directory: project })
+  const session = (await created.json()) as { id: string }
+  const usage = {
+    inputTokens: { total: 5, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 5, text: undefined, reasoning: undefined },
+  }
+  let calls = 0
+  const model = new MockLanguageModelV4({
+    doStream: async (options) => {
+      calls += 1
+      // Rencana ditulis di DALAM giliran: yang lebih tua dari pesan user dianggap usang.
+      if (calls === 1) {
+        const { savePlan } = await import("../src/core/storage/session.ts")
+        savePlan(session.id, "- [ ] satu\n- [ ] dua")
+      }
+      const chunks =
+        (options.tools ?? []).length > 0
+          ? [
+              { type: "stream-start" as const, warnings: [] },
+              { type: "tool-call" as const, toolCallId: `c${calls}`, toolName: "read", input: JSON.stringify({ path: "a.txt" }) },
+              { type: "finish" as const, finishReason: "tool-calls" as const, usage },
+            ]
+          : [
+              { type: "stream-start" as const, warnings: [] },
+              { type: "text-start" as const, id: "t" },
+              { type: "text-delta" as const, id: "t", delta: "mentok" },
+              { type: "text-end" as const, id: "t" },
+              { type: "finish" as const, finishReason: "stop" as const, usage },
+            ]
+      return { stream: simulateReadableStream({ chunks }) }
+    },
+  })
+  const restore = setModelResolver(() => model)
+  try {
+    const res = await fetch(`${base}/session/${session.id}/message`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(opts.stream ? { accept: "text/event-stream" } : {}),
+      },
+      body: JSON.stringify({
+        text: "kerjakan",
+        agent: "pendek",
+        ...(opts.interactive === undefined ? {} : { interactive: opts.interactive }),
+      }),
+    })
+    await res.text()
+  } finally {
+    restore()
+  }
+  return listMessages(session.id).filter((message) => message.role === "assistant").length
+}
+
+test("POST message dengan interactive:true diteruskan ke giliran (non-stream)", async () => {
+  assert.ok((await assistantTurns({ interactive: true, stream: false })) > 1, "giliran yang mentok dilanjutkan")
+})
+
+test("POST message dengan interactive:true diteruskan ke giliran (stream)", async () => {
+  assert.ok((await assistantTurns({ interactive: true, stream: true })) > 1, "giliran yang mentok dilanjutkan")
+})
+
+test("POST message tanpa interactive tidak melanjutkan giliran yang mentok", async () => {
+  assert.equal(await assistantTurns({ stream: false }), 1)
+  assert.equal(await assistantTurns({ stream: true }), 1)
+})
+
+test("titah run tidak menandai dirinya interaktif", () => {
+  /*
+   * Membaca sumber, bukan memata-matai: `titah run` memanggil `prompt()` dalam
+   * proses dan memanggil `process.exit` sesudahnya, jadi tidak ada seam untuk
+   * menangkap PromptInput tanpa menjalankan CLI utuh. Bawaan lanjut-sampai-
+   * selesai harus tetap mati di sini; tidak ada yang bisa menekan Esc.
+   */
+  const source = fs.readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8")
+  const blocks = [...source.matchAll(/\bprompt\(\{[\s\S]*?\n  \}\)/g)].map((match) => match[0])
+  assert.ok(blocks.length > 0, "blok prompt({ ... }) ditemukan di cli.ts")
+  for (const block of blocks) assert.doesNotMatch(block, /interactive/)
 })
